@@ -140,8 +140,8 @@ Each component answers three questions: what it does, how it is used, what it de
 - Does: builds the MCP `Tool` list from the catalog and policy, decodes arguments, runs handlers, formats results.
 - Depends on: ResourceCatalog, Policy, NameResolver, Waiter, MCP SDK types.
 
-**SessionRegistry and Principal** (in HummingbirdMCP plus OpenStackMCPServer)
-- Does: creates one SDK `Server` and `StatefulHTTPServerTransport` per MCP session, binds the session to a principal, evicts idle sessions, zeroizes credentials.
+**SessionRegistry** (in HummingbirdMCP plus OpenStackMCPServer)
+- Does: creates one SDK `Server` and `StatefulHTTPServerTransport` per MCP session for **protocol state only** (identity is token-per-request, section 6.1), hosts the login-minted token store (section 6.1b), evicts idle sessions, and zeroizes any login-minted token at session end.
 - Depends on: MCP SDK, Hummingbird.
 
 **HummingbirdMCP** (library target, reusable, no OpenStack knowledge)
@@ -153,39 +153,59 @@ Each component answers three questions: what it does, how it is used, what it de
 
 ## 6. Authentication and authorization
 
-Two independent layers. The MCP spec forbids passing a client's bearer token through to upstream APIs; the design honors that because the upstream credential is a Keystone token the server obtains itself.
+The server is a **Keystone-first OpenStack citizen**: it is registered in the Keystone service catalog (section 6.5), it authenticates clients with **Keystone tokens**, and it uses **only Keystone tokens** to talk to the upstream services. It is multi-tenant by construction — tenant isolation is enforced by Keystone via the project scope embedded in each presented token, not by the server keeping per-user identity state.
+
+The design conforms to the MCP 2025-11-25 authorization spec the way any authenticated MCP does (bearer on every request, 401 challenge with `resource_metadata`, 403 `insufficient_scope`, out-of-band credential entry via **URL-mode elicitation**), while remaining fully usable on clouds with **no OAuth** (e.g. `sat0.cloudnull.dev`), because Keystone itself plays the role of the authorization server. The one thing it never does is **token passthrough to a third party**: the Keystone token is validated by Keystone (the authorization server) and used to reach *this deployment's own* upstream OpenStack services, which is the server's own resource access, not transit.
+
+### 6.0 Auth profiles
+
+Two profiles, selected by **deployment config** (`auth.profile`), with an identical server skeleton. The client never needs to know which is in use — it presents a bearer token and follows the 401 challenge; login is either client-side mint or the server's URL page.
+
+- **P1 — `keystone_token` (default).** For clouds with plain Keystone v3 and no OAuth. The client's bearer token **is** a Keystone v3 token. The server validates it with Keystone (`GET /v3/auth/tokens`), checks it is for a project this deployment serves (our audience step), and uses it upstream. The Protected Resource Metadata document's `authorization_servers` names the **Keystone** URL.
+- **P2 — `oauth`.** For clouds that front an OAuth 2.1 authorization server (Keycloak/OIDC). Same skeleton; the metadata's `authorization_servers` names that AS and the server validates via its introspection/JWKS endpoint. **Phase 1 ships the metadata indirection and config only; the AS validation path is a phase 2 build.** P2 is designed-for, not built, in phase 1.
+
+`auth.profile` defaults to `keystone_token`. Changing it is a deployment decision, not a per-client one.
 
 ### 6.1 Layer 1: MCP client to server
 
-**HTTP mode (default, `auth.mode = application_credential`)**
+**Token per request (both profiles)**
 
-- The client sends `Authorization: Bearer <application_credential_id>:<application_credential_secret>` on every request. Keystone credential IDs are 32 hex characters and never contain a colon, so the server splits on the first colon only; secrets may contain colons.
-- The client may send `X-OpenStack-Cloud: <name>` to choose among configured clouds. If absent, the configured `default_cloud` is used. The client never supplies `auth_url`; only server configuration names clouds. This keeps the server from being an open proxy to arbitrary Keystones.
-- On the `initialize` request the server authenticates the credential against the chosen cloud's Keystone. Failure returns HTTP 401 with `WWW-Authenticate: Bearer error="invalid_token"` and no session. Success creates the session and binds it to a SHA-256 fingerprint of `cloud + credential id + secret`.
-- Every later request on that session must present a credential with the same fingerprint, otherwise 401. This prevents session hijacking with a stolen session ID alone.
-- The secret is held in memory only, inside the principal, for re-authentication when the Keystone token nears expiry. It is never logged, never written to disk, and is overwritten with zeros when the session ends.
-- Rate limiting: failed authentications per source IP are limited (default 10 per minute), then 429.
+- The client sends `Authorization: Bearer <token>` on **every** request, including those in an established MCP session (MCP 2025-11-25 requires the Authorization header on each request, even within a logical session). In P1 the token is a Keystone v3 token; in P2 it is the AS-issued access token.
+- The server validates the token on every request (P1: Keystone `GET /v3/auth/tokens`, cached — see below). An invalid or expired token returns **401** with `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="https://<host>/.well-known/oauth-protected-resource"`. Insufficient permission returns **403** with `error="insufficient_scope"` and the required `scope` (section 6.1.2).
+- **No session-to-identity binding.** The MCP session (`Mcp-Session-Id`) carries only protocol state (tool list, SSE stream). Identity and tenancy come from the token on each request. A single long-lived MCP session may present different tenants' tokens across requests; each request is scoped to that token's project. This is what keeps the server multi-tenant without per-user stored identity.
+
+**Token validation cache (P1).** Validating every request with a live Keystone round-trip is a latency cost, so the server caches **token metadata only** — token id → `{project, domain, roles, catalog, expires_at}` — for the token's remaining lifetime (bounded, short-TTL, LRU). The cache holds no passwords or application-credential secrets; the token id is itself the bearer of identity, so a shared/short cache is safe. `fresh` semantics do not apply to this cache (it is not resource data).
+
+**Login facilitation — getting the client its first token.** The server helps a client obtain a token using **local credentials** (an application credential or user password for the target cloud) without ever requiring the cloud to run OAuth. Two paths, both spec-compliant:
+
+- **(a) Client-side mint (preferred; zero server state).** The harness or operator mints the Keystone token itself — exactly as the OpenStack CLI and SDKs do — using its local app-cred (from `clouds.yaml`) or `OS_AUTH_URL`+password, and stores it at `~/.config/openstack/mcp-tokens/<cloud>.token` (mode `0600`; `~/.config/openstack/mcp-token` for a single-cloud setup). It then sends that token as the bearer on each request. The server never sees the local credential. The `openstack-mcp:login` prompt, when the client is capable of minting, emits these exact instructions (path, mode, "re-run on 401").
+- **(b) URL-mode elicitation (for harnesses that cannot mint, e.g. a desktop host with no `openstack` SDK).** Per the MCP 2025-11-25 elicitation spec, credentials **MUST NOT** be collected via form-mode elicitation; **URL mode** is required. The `openstack-mcp:login` prompt triggers a **URL-mode elicitation**: the server returns a URL (`https://<host>/v1/login?elicitationId=<id>`) and a message. The client presents it to the user (showing the host, gathering consent); the user opens it in a browser and enters their app-cred or password **directly into our HTTPS page** — out-of-band, never through the MCP client or LLM context. The server performs the Keystone exchange, **stores the resulting token bound to that session/user** (the one stateful element the spec mandates for the facilitated path; TTL = token expiry, zeroized on session end), and sends `notifications/elicitation/complete`. A request blocked on login may return `URLElicitationRequiredError` (code `-32042`). The server **never returns the minted credential to the client** — the client only ever *sends* tokens it already holds.
+
+**The server holds no user credential on either path.** On (a) it holds nothing. On (b) it holds only the *resulting Keystone token* (not the password/app-cred secret), bound to the session and zeroized at session end. This is the spec-mandated "the MCP server is responsible for tokens" statefulness, and nothing more.
 
 **stdio mode**
 
-- Per the MCP spec, stdio servers read credentials from the environment. The server accepts `OS_CLOUD` with a `clouds.yaml` entry that uses `auth_type: v3applicationcredential`, or the trio `OS_AUTH_URL`, `OS_APPLICATION_CREDENTIAL_ID`, `OS_APPLICATION_CREDENTIAL_SECRET` (plus optional `OS_REGION_NAME`, `OS_INTERFACE`, `OS_CACERT`).
-- One principal for the process lifetime. Logs go to stderr only; stdout carries MCP messages only.
+- stdio servers read credentials from the environment per the MCP spec. The server accepts `OS_CLOUD` (a `clouds.yaml` entry with `auth_type: v3applicationcredential`) **or** the local-credential trio `OS_AUTH_URL`, `OS_APPLICATION_CREDENTIAL_ID`, `OS_APPLICATION_CREDENTIAL_SECRET` (plus optional `OS_REGION_NAME`, `OS_INTERFACE`, `OS_CACERT`), **or** a ready `OS_AUTH_TOKEN`. It mints/adopts a token at startup from whatever is present and then behaves identically to P1 (token used upstream; the original local credential is discarded after mint). One token for the process lifetime; logs to stderr only; stdout carries MCP messages only.
 
-**Phase 2 options (designed for, not built in phase 1)**
+### 6.1.2 Scopes and 403
 
-- `auth.mode = static_tokens`: a server-side map from opaque bearer tokens to `clouds.yaml` profiles, for clients that cannot carry a two-part credential.
-- `auth.mode = oauth`: the server acts as an OAuth 2.1 resource server. The SDK already ships `BearerTokenValidator` and `ProtectedResourceMetadataValidator`; the server would serve `/.well-known/oauth-protected-resource`, validate audience-bound tokens from an external authorization server (Keycloak or similar), and map the token subject to a stored application credential in a secret store. Requires a secret store, so it is out of phase 1.
+The server advertises `scopes_supported` in its Protected Resource Metadata and enforces them server-side, **derived from the presented token's Keystone roles plus policy** (no OAuth server required in P1):
+
+- `openstack:read` — the 9 read-only tools (`os_list`, `os_get`, `os_describe`, `os_topology`, `os_find`, `os_whoami`, `os_quota`, `os_clouds`, `os_wait`). Granted when the token's roles satisfy the read path (effectively any authenticated project token).
+- `openstack:write` — all 15 tools. Granted when the token's roles + `policy` permit mutation.
+
+A mutating tool call presented with a read-only-scoped token returns **403** `WWW-Authenticate: Bearer error="insufficient_scope", scope="openstack:write", resource_metadata="..."`. Per-service scopes (`compute:write`, `network:write`, …) are a P2/config refinement, not phase 1. Scope derivation is defense in depth on top of Keystone roles and access rules (section 6.3), not a substitute.
 
 ### 6.2 Layer 2: server to OpenStack
 
-- `POST /v3/auth/tokens` with `methods: ["application_credential"]` and `application_credential: {id, secret}`. Application credentials are always project scoped, so the response carries the project, roles, and service catalog.
-- Token lifetime comes from `expires_at`. The principal refreshes at 80 percent of lifetime or on the first 401 from any service, at most once per request. A second 401 fails the tool call with an authentication error and marks the session for re-initialization.
+- The **only** credential the server presents to any upstream OpenStack service is a **Keystone token** (`X-Auth-Token`). It never sends a password or application-credential secret to Nova/Neutron/Cinder/Glance.
+- In P1 the token is the one the client presented (validated) or the one minted at login (path b). Token lifetime comes from `expires_at`; the server does **not** refresh a client-presented token on the client's behalf — when one expires the client receives a 401 and re-mints (path a) or re-runs login (path b). For a login-minted token (path b) the server may renew it via Keystone token→token re-auth (`POST /v3/auth/tokens` with `methods: ["token"]`) while the session lives, since it holds that token; it still never holds the original password/app-cred.
 - One Keystone token serves all regions of a cloud; region only selects endpoints from the catalog.
-- The principal exposes `whoami`: application credential name and ID, project, domain, roles, `expires_at`, `unrestricted`, `access_rules`, and the regions and services present in the catalog. Application credentials can read their own definition through `GET /v3/users/{user_id}/application_credentials/{id}`.
+- `os_whoami` reflects the **presented token**: project, domain, roles, `expires_at`, the derived scopes, and the regions/services present in that token's catalog. For an application-credential token the server may additionally read the credential's own definition (`GET /v3/users/{user_id}/application_credentials/{id}`) to surface `unrestricted`/`access_rules`, tolerating 403/404.
 
 ### 6.3 Least privilege with Keystone access rules
 
-Application credentials support access rules (`service`, `method`, `path`, with `*` for one segment and `**` for many). The resource catalog knows every path and method each tool uses, so the server can emit rules:
+(unchanged) Application credentials support access rules (`service`, `method`, `path`, with `*` for one segment and `**` for many). The resource catalog knows every path and method each tool uses, so the server can emit rules:
 
 ```
 openstack-mcp access-rules --mode read-only            # GET rules only
@@ -207,29 +227,44 @@ Configuration, evaluated before any tool runs and reflected in `tools/list`:
 
 Policy is defense in depth on top of Keystone roles and access rules, not a substitute.
 
+### 6.5 Keystone service catalog registration
+
+`openstack-mcp` is a **first-class service in the Keystone catalog**, registered the same way an operator registers any other service (manual, operator-driven; the running server holds no admin/bootstrap credential and performs no self-registration).
+
+- **Identity:** `openstack service create --type mcp --name openstack-mcp "OpenStack MCP"`. The `service_type` is `mcp` (short, filterable — other tools discover it via `service_type == "mcp"`); the name is `openstack-mcp`.
+- **Endpoints:** per region and interface. Example for region `SAT0`: public `https://mcp.sat0.cloudnull.dev/v1`, internal `http://openstack-mcp.openstack.svc.cluster.local:8080/v1`, admin same as internal. The endpoint URL **is the MCP server** (the transport path, section 7.1), so any client that can read a Keystone catalog can discover and reach the MCP server exactly as it would Nova.
+- **We ship the commands.** `deploy/register-catalog.sh` takes `--cloud --region --public-url --internal-url` (admin defaults to internal) and is **idempotent**: it skips `service create` if a service with `type=mcp`+`name=openstack-mcp` exists, then creates the public/internal/admin endpoints (skipping any that already exist). The README documents the equivalent bare `openstack` commands.
+- **Catalog-driven upstream topology.** Because every validated token carries the full service catalog, the server resolves its upstream endpoints (Nova/Neutron/Cinder/Glance) from the **token's catalog** via the existing endpoint resolver (interface preference public→internal→admin, region selection). `clouds.yaml` therefore drops from *the* config to a **fallback/override**: still used for multi-cloud deployments, per-host TLS `cacert`/`verify`, and stdio mode. A single-cloud, catalog-registered deployment needs no `clouds.yaml` at all.
+
 ## 7. Sessions and transport hosting
 
 ### 7.1 Streamable HTTP on Hummingbird
 
-The MCP endpoint is one path (default `/mcp`) handling POST, GET, and DELETE per the 2025-11-25 transport rules.
+The MCP endpoint is one path, default **`/v1`** (matching the catalog endpoint URL, section 6.5). **`/mcp` is retained as a deprecated alias** for one release. The path handles POST, GET, and DELETE per the 2025-11-25 transport rules.
+
+Because identity is token-per-request (section 6.1), the **session is not bound to a principal.** The `SessionRegistry` still exists to manage MCP protocol state (the per-session SDK `Server`/transport, SSE streams, and the login-minted token store from section 6.1b), but it no longer stores or checks a credential fingerprint.
 
 Request flow inside the `HummingbirdMCP` adapter:
 
-1. Middleware collects the body (limit `server.max_body_bytes`, default 1 MiB), runs the bearer authenticator, and attaches the principal candidate to the request context.
+1. Middleware collects the body (limit `server.max_body_bytes`, default 1 MiB), then runs **token validation**: read `Authorization: Bearer <token>`, validate it (P1: Keystone `GET /v3/auth/tokens`, using the token-metadata cache), confirm the token's project is one this deployment serves, and derive its scopes (section 6.1.2). Absent/invalid/expired → **401** with the `resource_metadata` challenge (no session created). Present but insufficient scope for the requested operation → **403** `insufficient_scope`. On success the validated token + derived scope set are attached to the request context.
 2. The route builds an SDK `HTTPRequest(method:headers:body:path:)`.
-3. `SessionRegistry` (an actor) looks up `Mcp-Session-Id`.
-   - Present and known: verify the credential fingerprint, touch `lastAccessedAt`, forward to that session's `transport.handleRequest`.
-   - Absent and the body is a JSON-RPC `initialize`: authenticate the principal against Keystone, create `StatefulHTTPServerTransport` with the configured validation pipeline, create an SDK `Server` via the factory (which registers tools bound to the principal), `server.start(transport:initializeHook:)`, then forward the request. The transport assigns the session ID and returns it in the response header.
+3. `SessionRegistry` (an actor) looks up `Mcp-Session-Id` **for protocol state only**:
+   - Present and known: touch `lastAccessedAt`, forward to that session's `transport.handleRequest`. (Identity is already established in step 1 from *this* request's token, independent of the session.)
+   - Absent and the body is a JSON-RPC `initialize`: create `StatefulHTTPServerTransport` with the configured validation pipeline, create an SDK `Server` via the factory (which registers tools; tool *availability* is scoped by the step-1 token, not a bound principal), `server.start(transport:initializeHook:)`, then forward. The transport assigns the session ID and returns it in the response header.
    - Absent otherwise: 400 with a JSON-RPC error.
    - Present but unknown or expired: 404, so the client re-initializes.
 4. The SDK `HTTPResponse` maps to Hummingbird: `.accepted` to 202, `.ok` to 200, `.data` to 200 with `application/json`, `.stream` to 200 with `text/event-stream`, `Cache-Control: no-cache`, `X-Accel-Buffering: no`, body `ResponseBody(asyncSequence:)` over the stream's `Data` chunks, `.error` to its status with the JSON-RPC error body.
-5. DELETE terminates the session: `server.stop()`, transport disconnect, principal zeroized, 200.
+5. DELETE terminates the session: `server.stop()`, transport disconnect, **any login-minted token for that session zeroized**, 200.
+
+**Non-MCP routes on the same app** (the auth/login/metadata surface):
+- `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-protected-resource/v1` — the Protected Resource Metadata document (section 6.1). In P1 `authorization_servers` names the Keystone URL; in P2 the AS URL.
+- `GET/POST /v1/login` — the URL-mode elicitation page (section 6.1b): an HTTPS form that takes an app-cred or password, performs the Keystone exchange, stores the token bound to the `elicitationId`'s session, and returns a completion page; the server then sends `notifications/elicitation/complete`.
 
 Validation pipeline (SDK validators, in order): `OriginValidator` with configured `server.allowed_origins` (default: localhost only, a present invalid `Origin` is 403), `AcceptHeaderValidator(.sseRequired)`, `ContentTypeValidator`, `ProtocolVersionValidator`, `SessionValidator`.
 
-Session limits: `session.idle_ttl` (default 30 min), `session.max_lifetime` (default 12 h), `session.max_sessions` (default 500), `session.max_streams_per_session` (default 4). A cleanup task runs every minute. Eviction behaves like DELETE.
+Session limits: `session.idle_ttl` (default 30 min), `session.max_lifetime` (default 12 h), `session.max_sessions` (default 500), `session.max_streams_per_session` (default 4). A cleanup task runs every minute. Eviction behaves like DELETE (zeroizes any login-minted token).
 
-The `initializeHook` records the client's name, version, and capabilities on the session, in particular whether it supports elicitation, which changes how `os_delete` confirms (section 8.3).
+The `initializeHook` records the client's name, version, and capabilities on the session, in particular whether it supports **elicitation** (which enables the URL-mode login path, section 6.1b), **progress** (used by `os_wait`), and elicitation-for-delete (which changes how `os_delete` confirms, section 8.3).
 
 ### 7.2 stdio
 
@@ -240,7 +275,7 @@ The `initializeHook` records the client's name, version, and capabilities on the
 - `GET /healthz`: process liveness, 200.
 - `GET /readyz`: for each configured cloud, Keystone version discovery reachable within 2 s; 503 with details otherwise. Never authenticates.
 - `GET /metrics`: Prometheus text format via swift-prometheus. Not authenticated by default; bind or firewall accordingly, or set `server.metrics_token`.
-- `GET /.well-known/oauth-protected-resource`: phase 2.
+- `GET /.well-known/oauth-protected-resource`: the Protected Resource Metadata document (section 6.1 / 7.1). Served in P1 (names Keystone) and P2 (names the AS).
 
 TLS: either terminate at a reverse proxy (recommended, documented for Caddy and nginx with SSE buffering disabled) or use `HummingbirdTLS` with `server.tls.cert` and `server.tls.key`.
 
@@ -248,13 +283,13 @@ TLS: either terminate at a reverse proxy (recommended, documented for Caddy and 
 
 ### 8.1 Tools
 
-Every tool takes optional `cloud` and `region` arguments. `cloud` defaults to the session's cloud; a session may only address the cloud its credential authenticated against, so `cloud` is accepted for forward compatibility and must match. `region` defaults to `clouds.yaml` `region_name`, else the first region in the catalog.
+Every tool takes optional `cloud` and `region` arguments. Identity and project scope come from the **presented token** (section 6.1), not a bound session. `cloud` defaults to the deployment's cloud (the cloud the token validated against); because a token is project-scoped to one cloud, `cloud` is accepted for forward compatibility and must match the token's cloud. `region` defaults to the token catalog's region for that cloud (or `clouds.yaml` `region_name` when present), else the first region in the token's catalog.
 
 | Tool | Purpose | Annotations |
 |---|---|---|
 | `os_describe` | Return the resource catalog: resources, verbs, actions, links, and the JSON schema for `create` and `update` of one resource or all. The model's discovery entry point. | readOnly |
-| `os_clouds` | List configured clouds and their regions, interfaces, and which one the session is bound to. | readOnly |
-| `os_whoami` | Principal details: credential, project, roles, expiry, access rules, catalog summary. | readOnly |
+| `os_clouds` | List configured clouds and their regions, interfaces, and which one the presented token is bound to. | readOnly |
+| `os_whoami` | The presented token's identity: project, domain, roles, derived scopes, expiry, access rules, and the regions/services present in its catalog. | readOnly |
 | `os_list` | List a resource with filters, `limit`, `marker`, `fields`, `fresh`. Returns items plus `next_marker`. | readOnly |
 | `os_get` | Fetch one resource by `id` or `name`. Name resolution errors on ambiguity with candidates. | readOnly |
 | `os_find` | Resolve a free-form identifier (name, ID, IPv4/IPv6, MAC, hostname) to matching resources across services in a region. | readOnly |
@@ -414,6 +449,7 @@ Terminal states per resource live in the catalog (server: `ACTIVE`, `SHUTOFF`, `
 
 ### Prompts
 
+- `login`: no arguments (or an optional `cloud`). Facilitates authentication per section 6.1: if the client can mint a token itself, it returns the client-side-mint instructions (store the Keystone token at `~/.config/openstack/mcp-tokens/<cloud>.token`, mode `0600`, re-run on 401); if the client declared elicitation support, it issues a **URL-mode elicitation** to the server's `/v1/login` page so the user can enter local credentials out-of-band. This is the user-facing entry point for "get me a token."
 - `provision_server`: arguments `name`, `flavor`, `image`, `network`, `public` (bool), `volume_gb`. Produces the ordered plan (find, create server, wait, create floating IP, attach, attach volume) as a user message the model executes.
 - `diagnose_connectivity`: arguments `from` (server), `to` (address or server), `port`, `protocol`. Directs the model to `os_topology` with `diagnosis: true` on both ends and to explain the first blocking finding.
 - `audit_security_groups`: lists groups with `0.0.0.0/0` ingress on sensitive ports and unused groups.
@@ -455,16 +491,20 @@ swift-configuration with providers in priority order: command line flags, enviro
 |---|---|---|
 | `server.host` | `127.0.0.1` | Bind address; the spec's DNS-rebinding guidance |
 | `server.port` | `8080` | |
-| `server.endpoint` | `/mcp` | |
+| `server.endpoint` | `/v1` | MCP transport path; `/mcp` retained as a deprecated alias |
 | `server.allowed_origins` | localhost origins | `Origin` allow list; `*` disables the check (not recommended) |
 | `server.max_body_bytes` | `1048576` | |
 | `server.tls.cert`, `server.tls.key` | unset | Enable HummingbirdTLS |
 | `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
-| `auth.mode` | `application_credential` | `static_tokens`, `oauth` in phase 2 |
+| `server.public_url` | unset | Canonical public base URL used in the Protected Resource Metadata and login URL (e.g. `https://mcp.sat0.cloudnull.dev`); defaults to the request's Host when unset |
+| `auth.profile` | `keystone_token` | `keystone_token` (P1, default) or `oauth` (P2, phase 2) — section 6.0 |
+| `auth.keystone_url` | from token catalog / `clouds.yaml` | Keystone base URL named in the Protected Resource Metadata `authorization_servers` (P1) |
+| `auth.token_cache_ttl` | `60s` | Max age of a cached validated-token entry, capped at the token's own `expires_at` (section 6.1) |
 | `auth.failed_auth_per_minute` | `10` | Per source IP |
-| `clouds.default` | first in `clouds.yaml` | Cloud used when `X-OpenStack-Cloud` is absent |
+| `auth.login_page_enabled` | `true` | Serve the `/v1/login` URL-mode elicitation page (section 6.1b) |
+| `clouds.default` | first in `clouds.yaml` (or the catalog-registered cloud) | Cloud used when no cloud is otherwise determined |
 | `clouds.allowed` | all | Names a session may select |
-| `clouds.file` | search order | Path to `clouds.yaml` |
+| `clouds.file` | search order | Path to `clouds.yaml` — **fallback/override**; not required for a single-cloud catalog-registered deployment (section 6.5) |
 | `session.idle_ttl` | `30m` | |
 | `session.max_lifetime` | `12h` | |
 | `session.max_sessions` | `500` | |
@@ -483,9 +523,10 @@ swift-configuration with providers in priority order: command line flags, enviro
 
 - `openstack-mcp serve [--config path] [--host] [--port] [--read-only]`
 - `openstack-mcp stdio [--cloud name] [--read-only]`
-- `openstack-mcp check --cloud name`: authenticate with the environment's application credential, print project, roles, regions, services, negotiated versions, extensions, and access-rule gaps. Exit non-zero on failure. Used by `readyz` logic and by operators.
+- `openstack-mcp check --cloud name`: validate the environment's token (or mint one from the environment's local credential), print project, roles, derived scopes, regions, services, negotiated versions, extensions, and access-rule gaps. Exit non-zero on failure. Used by `readyz` logic and by operators.
 - `openstack-mcp access-rules --mode read-only|operator [--services a,b] [--resources x,y]`
 - `openstack-mcp tools [--read-only] [--json]`: dump the tool list and schemas for documentation and for diffing across versions.
+- `openstack-mcp register-catalog --cloud name --region R --public-url U [--internal-url V]`: idempotently create the `type=mcp`/`name=openstack-mcp` service and its endpoints (same as `deploy/register-catalog.sh`). Operator run with an identity-admin credential; the running server never needs it.
 
 ## 12. Observability and security hardening
 
@@ -496,20 +537,23 @@ swift-configuration with providers in priority order: command line flags, enviro
 
 ## 13. Deployment
 
-- Build: `swift build -c release --static-swift-stdlib` on Rocky 9 with the Swift 6.2 toolchain from swiftly. Output is a single binary plus the system TLS trust store.
-- Container: multi-stage `Dockerfile` (swift:6.2 builder, `rockylinux:9-minimal` runtime with `ca-certificates`), non-root user, `clouds.yaml` mounted read-only at `/etc/openstack/clouds.yaml`, config at `/etc/openstack-mcp/config.yaml`, port 8080.
+- Build: `swift build -c release --static-swift-stdlib` with the Swift 6.4 toolchain in the `swift:6.4-rhel-ubi10` container (owner's toolchain; UBI10 base). Output is a single static binary plus the system TLS trust store.
+- Container: multi-stage `Dockerfile` (`swift:6.4-rhel-ubi10` builder, `registry.access.redhat.com/ubi10/ubi10-minimal` runtime with `ca-certificates`), non-root user, config at `/etc/openstack-mcp/config.yaml`, `clouds.yaml` mounted read-only at `/etc/openstack/clouds.yaml` **when used** (not required for a single-cloud catalog-registered deployment, section 6.5), port 8080.
+- **Catalog registration:** run `deploy/register-catalog.sh` (or `openstack-mcp register-catalog`) once per cloud/region as an operator with an identity-admin credential to create the `type=mcp` service and endpoints (section 6.5).
 - systemd unit with `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, environment file for `OSMCP_*`.
-- Client setup examples in the README: Claude Code `claude mcp add --transport http openstack https://host/mcp --header "Authorization: Bearer ID:SECRET" --header "X-OpenStack-Cloud: prod"`; Claude Desktop stdio entry with `OS_CLOUD`.
+- Client setup examples in the README:
+  - Catalog-registered HTTP client: discover the server from the Keystone catalog (`service_type=mcp`), then `claude mcp add --transport http openstack https://mcp.sat0.cloudnull.dev/v1 --header "Authorization: Bearer <keystone-token>"`. The token is minted per section 6.1 (client-side or `login`).
+  - stdio (Claude Desktop): an entry with `OS_CLOUD` (or the local-credential trio / `OS_AUTH_TOKEN`) so the server mints/adopts a token at startup (section 6.1 stdio).
 
 ## 14. Testing strategy
 
-1. Unit tests (Swift Testing): catalog completeness (every resource has schemas, terminal states, and at least one verb), schema validation error messages, name resolution including ambiguity, error normalization per service, microversion selection and feature gating, credential parsing, redaction.
-2. Fake OpenStack: a Hummingbird application in the test target that serves Keystone (`/v3/auth/tokens` with application credential validation, catalog with two regions), Nova, Neutron, Cinder, and Glance from in-memory state with microversion checks and realistic error bodies. Every catalog operation has a test against it. The fake is also runnable as `openstack-mcp-fake` for manual client testing.
-3. MCP in-process tests: the SDK `Client` connected through `InMemoryTransport` to a server bound to the fake; exercises `initialize`, `tools/list` under each policy, every tool's happy path and one error path, elicitation on delete, progress on wait, resources and prompts.
-4. Transport tests with `HummingbirdTesting`: session creation and fingerprint binding, missing and unknown session IDs, origin rejection, SSE stream framing, DELETE, idle eviction, body limit, auth rate limit.
-5. Conformance: run the MCP Inspector and the SDK conformance client against `serve` in CI.
+1. Unit tests (Swift Testing): catalog completeness (every resource has schemas, terminal states, and at least one verb), schema validation error messages, name resolution including ambiguity, error normalization per service, microversion selection and feature gating, token parsing and the protected-resource-metadata document, scope derivation from roles, redaction.
+2. Fake OpenStack: a Hummingbird application in the test target that serves Keystone (`/v3/auth/tokens` issuing tokens **and** `GET /v3/auth/tokens` token validation with app-cred and password methods, catalog with two regions; a `type=mcp` service present in the catalog for the discovery path), Nova, Neutron, Cinder, and Glance from in-memory state with microversion checks and realistic error bodies. Every catalog operation has a test against it. The fake is also runnable as `openstack-mcp-fake` for manual client testing.
+3. MCP in-process tests: the SDK `Client` connected through `InMemoryTransport` to a server bound to the fake; exercises `initialize` **with a presented token**, `tools/list` scoped by the token's roles under each policy, every tool's happy path and one error path, **a 401 on an expired/absent token and a 403 `insufficient_scope` on a write with a read-only token**, URL-mode login (elicitation) minting a token, progress on wait, resources and prompts.
+4. Transport tests with `HummingbirdTesting`: session creation (protocol state, no principal binding), token-per-request validation (two different tenants' tokens on one server → strict project isolation), missing/unknown session IDs, origin rejection, SSE stream framing, DELETE, idle eviction, body limit, auth rate limit, and the `/.well-known/oauth-protected-resource` + `/v1/login` routes.
+5. Conformance: run the MCP Inspector and the SDK conformance client against `serve` in CI; verify the authorization surface (401 challenge with `resource_metadata`, 403 `insufficient_scope`, URL-mode elicitation) against the 2025-11-25 spec.
 6. Integration (opt-in, `OSMCP_IT_CLOUD` set): a read-only pass and a create-attach-detach-delete pass on a scratch project of a real cloud, tagged resources cleaned up in `defer`.
-7. Concurrency: strict concurrency enabled; a soak test with 50 concurrent sessions against the fake, checking no cross-session cache or credential leakage by asserting each session sees only its own project's resources.
+7. Concurrency: strict concurrency enabled; a soak test with 50 concurrent sessions **presenting interleaved tokens from multiple projects** against the fake, checking no cross-session cache or token leakage by asserting each request sees only its own token's project's resources.
 
 ## 15. Repository layout and dependencies
 
@@ -518,8 +562,8 @@ openstack-mcp/
   Package.swift
   Sources/
     OpenStackClient/        # library: no MCP dependency
-      CloudConfig/          # clouds.yaml, secure.yaml, env
-      Identity/             # app-cred auth, token, whoami, regions
+      CloudConfig/          # clouds.yaml (fallback/override), secure.yaml, env
+      Identity/             # token auth, token VALIDATION (GET /v3/auth/tokens), password/app-cred mint for login, whoami, scope derivation
       Transport/            # HTTPClient wrapper, retry, errors, request id
       Versioning/           # microversions, extensions, feature table
       Services/Identity Compute Network BlockStorage Image
@@ -529,16 +573,17 @@ openstack-mcp/
       Tools/
       Links/                # attach, detach, topology, diagnosis
       Policy/
-      Session/
+      Session/              # token store (login-minted), scope-aware tool availability
+      Auth/                 # Protected Resource Metadata doc, token validation wiring, login page (URL-mode elicitation)
     HummingbirdMCP/         # library: reusable Hummingbird <-> MCP SDK adapter
-    OpenStackMCP/           # executable: subcommands, config wiring
+    OpenStackMCP/           # executable: subcommands, config wiring (incl. register-catalog)
   Tests/
     OpenStackClientTests/
     OpenStackMCPServerTests/
     HummingbirdMCPTests/
     FakeOpenStack/          # test support target
   docs/
-  deploy/                   # Dockerfile, systemd unit, Caddy and nginx snippets
+  deploy/                   # Dockerfile, systemd unit, register-catalog.sh, Caddy and nginx snippets
 ```
 
 | Dependency | Version | Purpose |
@@ -552,21 +597,21 @@ openstack-mcp/
 | swift-configuration | 1.2.x | Configuration providers |
 | swift-argument-parser | 1.x | CLI |
 | Yams | 5.x | `clouds.yaml` |
-| swift-crypto | 3.x | SHA-256 fingerprints |
+| swift-crypto | 3.x | token-id keying / digests (fingerprints no longer used for session binding) |
 
 `OpenStackClient` and `HummingbirdMCP` have no dependency on each other and may be split into their own packages later without API change.
 
 ## 16. Delivery phases
 
 **Phase 1 (this spec's implementation plan)**
-1. `OpenStackClient` core: cloud config, application credential auth, catalog, version negotiation, transport, errors, fake Keystone.
+1. `OpenStackClient` core: cloud config (now fallback/override), **token auth + token validation (`GET /v3/auth/tokens`) + password/app-cred mint for login**, catalog-driven endpoint resolution, version negotiation, transport, errors, fake Keystone.
 2. Services and models: Identity read, Compute, Network, Block Storage, Image, with the fake for each.
-3. Catalog and verb tools with policy, name resolution, validation, output shaping.
+3. Catalog and verb tools with policy, name resolution, validation, output shaping, **scope-aware tool availability**.
 4. Links, topology, diagnosis, wait with progress.
-5. `HummingbirdMCP` adapter, sessions, auth, routes, metrics; stdio mode.
-6. CLI subcommands, access-rules generator, deployment assets, docs.
+5. `HummingbirdMCP` adapter, **de-identified sessions (token-per-request)**, **Protected Resource Metadata + `/v1/login` URL-mode elicitation page**, routes, metrics; stdio mode.
+6. CLI subcommands (incl. `register-catalog`), access-rules generator, **`deploy/register-catalog.sh`**, deployment assets, docs.
 
-**Phase 2**: object storage, key manager, load balancer, DNS; `static_tokens` and `oauth` auth modes; resource subscriptions.
+**Phase 2**: object storage, key manager, load balancer, DNS; **P2 `auth.profile=oauth` (AS introspection/JWKS validation, step-up scopes)**; per-service scopes; resource subscriptions.
 
 **Phase 3**: container infrastructure, orchestration, shared file systems; MCP Tasks once the SDK supports the 2026-07-28 revision.
 
@@ -577,7 +622,7 @@ openstack-mcp/
 | The SDK's HTTP transports are young (0.12) and the spec revision it implements (2025-11-25) lags the latest (2026-07-28) | Adapter isolates the SDK; version negotiation is the SDK's; conformance tests in CI catch regressions on upgrade |
 | Tool count versus schema precision: verb tools push field knowledge into `os_describe` | Descriptions carry the most common fields inline; validation errors quote the schema; a phase 2 flag can generate per-resource typed tools from the same catalog if clients want them |
 | Cloud diversity: extensions missing, old microversions, vendor quirks | Feature gating with clear errors; `check` reports the negotiated surface; fake covers minimum and maximum versions |
-| A leaked bearer header equals a leaked application credential | Documented: use short-lived credentials with access rules and expiry; TLS required off-host; rate limits; session fingerprint binding |
+| A leaked bearer header equals a leaked Keystone token | Documented: tokens are short-lived by nature; use app-creds with access rules and expiry; TLS required off-host; rate limits; the server holds no user credential (only a login-minted token bound to a session, zeroized on end) |
 | Long operations exceed client tool timeouts | `wait` bounded and resumable through `os_wait`; progress notifications |
 | Context bloat from large lists | Default `limit` 50, projections, `count` and `next_marker` |
 
@@ -586,12 +631,13 @@ openstack-mcp/
 Assumptions made to keep moving; each can be changed before the implementation plan.
 
 1. **Interconnectivity** is interpreted per section 3. If it was meant to include load balancers and DNS in phase 1, Octavia and Designate move up from phase 2.
-2. **Bearer format** `id:secret` is acceptable for the clients in use. If a client cannot set custom headers, `static_tokens` moves to phase 1.
+2. **Auth model** is token-per-request (P1 `keystone_token`) with Keystone as the authorization server; login is facilitated via client-side mint (a) and URL-mode elicitation (b). The client presents a Keystone token on every request and the server holds no user credential. (Supersedes the earlier `id:secret`-bearer-per-request model.)
 3. **Phase 1 service scope** is identity, compute, network, block storage, and image.
 4. **Identity administration** (users, projects, roles) ships in the catalog but is denied by default.
-5. **Name**: the package and executable are `openstack-mcp` until a name is chosen.
-6. **Spec location**: this file lives in the home folder as requested; it is not in a git repository, so it has not been committed.
-7. **Substation upstreaming**: nothing from this project is expected to flow back into Substation, though `OpenStackClient` could later replace `OSClient` if wanted.
+5. **Catalog registration** is operator-manual (section 6.5); the running server performs no self-registration and holds no admin credential.
+6. **Name**: the package and executable are `openstack-mcp`; the Keystone `service_type` is `mcp`.
+7. **Spec location**: this file lives in the project repo at `specs/openstack-mcp-spec.md` and is committed.
+8. **Substation upstreaming**: nothing from this project is expected to flow back into Substation, though `OpenStackClient` could later replace `OSClient` if wanted.
 
 ## 19. References
 
