@@ -88,7 +88,8 @@ public actor Transport {
             token = try await tokenSource()
         }
 
-        var url = baseURL.appendingPathComponent(path)
+        let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        var url = baseURL.appendingPathComponent(cleanPath)
         if !query.isEmpty {
             if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 comps.queryItems = query
