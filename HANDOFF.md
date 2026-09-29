@@ -1,35 +1,34 @@
-# Handoff: OpenStack MCP Phase 1 — Task 12 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 13 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 11 (commit `274da22`). All tasks through 11 merged.
-- **Latest commit**: `3df4ae5` — feat(client): OpenStackClient facade over services
-- **Tests**: 154 tests in 17 suites, all green
+- **Main**: up through Task 12 (commit `3147630`). All tasks through 12 merged.
+- **Latest commit**: `8c4d054` — feat(server): phase-1 resource catalog with schemas, actions, links
+- **Tests**: 191 tests in 18 suites, all green
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 12: Resource catalog — all phase 1 entries**
+**Start Task 13: Policy + name resolution + validation + output shaping**
 
-The resource catalog is the declarative backbone of the MCP server. It describes
-every resource (33 names per spec §8.5) with verbs, actions, links, terminal
-states, and JSON schemas. This is the seam that keeps the MCP layer declarative
-while the `ServiceDispatch` closures wire to `OpenStackClient` (Task 11).
+Three components:
+1. **Policy** — `struct Policy` with `readOnly`, `denyResources`, `denyVerbs`,
+   `denyActions`, `maxListLimit`, `maxCallsPerMinute`. `effective(catalog:)`
+   applies denials. `toolsEnabled(readOnlyList:)` returns the 9 read-only tools.
+   Default policy denies the 6 identity-admin names.
+2. **NameResolver** — `actor NameResolver` that resolves `id_or_name` to a
+   concrete ID: exact ID first (get by id; 404 → not ID), exact name filter,
+   then case-insensitive scan. ≥2 matches → `AmbiguousNameError` listing candidates.
+3. **ResultFormatting** — `project()` (top-level field projection),
+   `errorParagraph()` (one paragraph: what, status, message, request ID, hint;
+   redacts token/secret substrings). `ListResult` and `MutationResult` types.
+   `checkFilters()` validates list filters against the descriptor.
 
-Key types to create: `ResourceDescriptor`, `ActionSpec`, `ParamSpec`, `LinkSpec`,
-`ResourceRef`, `JSONSchema` (small subset with `validate()`), `ResourceCatalog`
-(`static func phase1()`), `ServiceDispatch`, `Verb` enum, `Service` enum.
-
-Completeness tests assert: every `.create` has `createSchema`, every `.update`
-has `updateSchema`, 33 resource names match §8.5, actions match §8.6 (destructive
-flags), terminal states match §8.9, links match §8.7.
-
-## Remaining Tasks After 11
+## Remaining Tasks After 12
 
 | Task | Description |
 |------|-------------|
-| 12 | Resource catalog — all phase 1 entries |
 | 13 | Policy + name resolution + validation + output shaping |
 | 14 | Tool registry + describe tools + verb tools (in-process MCP tests) |
 | 15 | Links, topology, diagnosis, waiter with progress |
@@ -41,16 +40,17 @@ flags), terminal states match §8.9, links match §8.7.
 | 21 | Deployment assets + README |
 | 22 | Integration test (opt-in) + conformance pass + final hardening sweep |
 
-## Services Completed (Tasks 1-11)
+## Services Completed (Tasks 1-12)
 
 | Service | File | Region Type | Key Details |
 |---------|------|-------------|-------------|
 | Identity (Keystone) | `KeystoneService.swift` | — | Token decode, catalog, scopes |
 | Compute (Nova) | `ComputeService.swift` | `ComputeRegion` | Microversion gating (2.90/2.96), actions, attachments |
 | Network (Neutron) | `NetworkService.swift` | `NetworkRegion` | Extension gating, auto-assign IPs, IP conflict 409 |
-| Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions (extend/retype/bootable/upload/reset-status) |
-| Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload, tags, protect, deactivate |
-| **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator, `compute/network/blockStorage/image(region:)`, `regions(vt)`, `whoami(vt)`** |
+| Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions |
+| Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload |
+| **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator** |
+| **Catalog** | **`Catalog/*.swift`** (9 files) | — | **35 resources, 25 server actions, 7 links, JSONSchema validate(), 37 tests** |
 
 ## Fakes
 
@@ -133,6 +133,18 @@ public struct XRegion: Sendable {
 - Each Region's `resolveRegion(vt)` is `throws` and calls `guardEndpoint` after resolving the region string
 - `serviceType` per region: compute→"compute", network→"network", blockStorage→"volumev3", image→"image"
 - **Fixed bug**: BlockStorageRegion/ImageRegion ignored the `region` param — now plumbed as `defaultRegion`
+
+### Catalog Pattern (Task 12)
+- `JSONValue`: Sendable enum (string/integer/float/bool/null/array/object), ExpressibleBy* literals
+- `JSONSchema`: **class** (not struct) because recursive (properties/items nest schemas), `@unchecked Sendable`
+- `JSONSchema.validate(_ value: JSONValue) -> [ValidationIssue]` — checks type, enum, required, nested props, array items
+- `ValidationIssue`: path, expected, found, fragment (for self-correctable errors per §8.2)
+- `ResourceDescriptor`: **class** (not struct) because contains `ServiceDispatch` (closures) + `JSONSchema` (recursive)
+- `ServiceDispatch`: closure bundle (list/get/create/update/delete/action/link), all `@Sendable`
+- `DispatchRequest`: region, filters, limit, marker, id, body, fresh
+- `ResourceCatalog.phase1()` → 35 resources (10+10+9+5+1), `byName` lookup dict
+- Entry files: `IdentityEntries`, `ComputeEntries`, `NetworkEntries`, `BlockStorageEntries`, `ImageEntries` — each a `static let all: [ResourceDescriptor]`
+- 37 completeness tests in `CatalogCompletenessTests.swift`
 
 ### Model Pattern
 - `Sendable, Codable, Identifiable` for resource models
