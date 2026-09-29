@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Build/test environment:** ALL `swift build` / `swift test` / `swift run` commands run inside the Linux container: `docker run --rm --platform linux/amd64 -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 <cmd>` (use `podman` if that is the host's runtime; the plan writes `docker` and assumes it exists). `--platform linux/amd64` is required on Apple Silicon hosts so the UBI10 image matches the release/CI target (on x86_64 hosts the flag is a no-op). Never build natively on macOS. Task 1 verifies the container works and pins this exact command shape in `scripts/swift`; later tasks invoke Swift only through `scripts/swift <args>`.
+- **Build/test environment:** ALL `swift build` / `swift test` / `swift run` commands run inside the Linux container image `swift:6.4-rhel-ubi10`, driven by whichever container runtime the host has. Resolution order in `scripts/swift`: `docker`, else `podman`, else Apple `container`. The base invocation is `run --rm -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 <cmd>`. **Platform:** do NOT pin `--platform linux/amd64` — Apple `container` runs the host's native arch (`linux/arm64` on Apple Silicon, `linux/amd64` on Intel), which is the fast path (no QEMU); docker/podman on an Apple-Silicon host should likewise use the native arch for build/test. The `--platform linux/amd64` flag applies ONLY to the shipping `Dockerfile` build in Task 21 (the release artifact targets amd64). Never build natively on macOS. Task 1 verifies the container works and pins this exact command shape in `scripts/swift`; later tasks invoke Swift only through `scripts/swift <args>`.
 - **Swift version:** 6.4 toolchain; language mode 6 with strict concurrency enabled (`swiftLanguageModes: [.v6]`, `StrictConcurrency: complete`). No `@preconcurrency` workarounds in library public APIs.
 - **Target cloud:** OpenStack 2026.1 Gazpacho and later; older clouds supported by negotiation. Nova microversion floor 2.79, client max tracks what the models decode (Gazpacho max 2.104). Cinder v3 floor 3.44.
 - **Phase 1 services:** identity (Keystone v3), compute (Nova), network (Neutron), block storage (Cinder), image (Glance v2). Nothing else. Octavia/Designate/Swift/Barbican are phase 2/3 and must NOT appear in the catalog.
@@ -173,7 +173,7 @@ Target boundaries (spec §15): `OpenStackClient` and `HummingbirdMCP` never impo
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `scripts/swift <args>` — runs `docker run --rm --platform linux/amd64 -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 swift <args>` (podman fallback if `docker` is absent; see Global Constraints). All later tasks invoke Swift through this wrapper. Package manifest declaring all four targets' names/paths now (empty directories are fine) so later tasks never edit `Package.swift` structure, only dependency versions if resolution demands it.
+- Produces: `scripts/swift <args>` — resolves the container runtime as `docker`, else `podman`, else Apple `container` (error clearly if none), then runs `run --rm -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 swift <args>` (no pinned platform — host-native arch; see Global Constraints). All later tasks invoke Swift through this wrapper. Package manifest declaring all four targets' names/paths now (empty directories are fine) so later tasks never edit `Package.swift` structure, only dependency versions if resolution demands it.
 
 - [ ] **Step 1: Initialize git and write `Package.swift`**
 
@@ -196,7 +196,7 @@ Note: `FakeOpenStack` must be importable by test targets AND buildable as `opens
 
 - [ ] **Step 2: Write `scripts/swift` and make it executable**
 
-A POSIX sh script: resolve runtime as `docker`, else `podman`; error clearly if neither. `exec "$RT" run --rm --platform linux/amd64 -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 swift "$@"`. Same pattern for `scripts/build.sh` (`swift build -c release --static-swift-stdlib`).
+A POSIX sh script: resolve runtime as `docker`, else `podman`, else Apple `container` (`command -v container`); error clearly if none. `exec "$RT" run --rm -v "$PWD":/work -w /work swift:6.4-rhel-ubi10 swift "$@"` (NO `--platform` flag — use the host-native arch; the `--platform linux/amd64` pin is only for Task 21's shipping Dockerfile). Same pattern for `scripts/build.sh` (`swift build -c release --static-swift-stdlib`).
 
 - [ ] **Step 3: Write the failing scaffold test**
 
