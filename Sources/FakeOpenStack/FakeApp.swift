@@ -21,6 +21,8 @@ public enum FakeApp {
         KeystoneFake.registerRoutes(router, state: state, baseHost: { hostBox.value })
         NovaFake.registerRoutes(router, state: state)
         NeutronFake.registerRoutes(router, state: state)
+        CinderFake.registerRoutes(router, state: state)
+        GlanceFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()

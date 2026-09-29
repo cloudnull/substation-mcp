@@ -192,6 +192,154 @@ public actor FakeState {
         public var addresses: [String]
     }
 
+    // MARK: - Cinder Types
+
+    public struct FakeVolume: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var size: Int
+        public var volumeType: String
+        public var availabilityZone: String?
+        public var bootable: Bool
+        public var description: String
+        public var multiattach: Bool
+        public var metadata: [String: String]?
+        public var sourceVolumeID: String?
+        public var imageID: String?
+        public var attachments: [FakeVolumeAttachment]
+        public var created: String
+
+        public init(
+            id: String,
+            projectID: String,
+            name: String = "",
+            status: String = "creating",
+            size: Int = 1,
+            volumeType: String = "lvmdriver-1",
+            availabilityZone: String? = nil,
+            bootable: Bool = false,
+            description: String = "",
+            multiattach: Bool = false,
+            metadata: [String: String]? = nil,
+            sourceVolumeID: String? = nil,
+            imageID: String? = nil,
+            attachments: [FakeVolumeAttachment] = [],
+            created: String = ""
+        ) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.size = size
+            self.volumeType = volumeType
+            self.availabilityZone = availabilityZone
+            self.bootable = bootable
+            self.description = description
+            self.multiattach = multiattach
+            self.metadata = metadata
+            self.sourceVolumeID = sourceVolumeID
+            self.imageID = imageID
+            self.attachments = attachments
+            self.created = created
+        }
+    }
+
+    public struct FakeVolumeAttachment: Sendable, Identifiable {
+        public let id: String
+        public var serverID: String?
+        public var volumeID: String
+        public var device: String
+    }
+
+    public struct FakeVolumeType: Sendable, Identifiable {
+        public let id: String
+        public var name: String
+        public var extraSpecs: [String: String]?
+    }
+
+    public struct FakeSnapshot: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var volumeID: String
+        public var size: Int
+        public var description: String
+        public var force: Bool
+        public var created: String
+    }
+
+    public struct FakeBackup: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var volumeID: String
+        public var size: Int
+        public var description: String
+        public var created: String
+    }
+
+    // MARK: - Glance Types
+
+    public struct FakeImage: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var statusReason: String?
+        public var visibility: String
+        public var diskFormat: String
+        public var containerFormat: String
+        public var size: Int
+        public var minRAM: Int
+        public var protected: Bool
+        public var tags: [String]
+        public var properties: [String: String]
+        public var created: String
+        public var updated: String
+        /// Stored payload bytes (for base64 upload) or nil (web-download).
+        public var data: Data?
+
+        public init(
+            id: String,
+            projectID: String,
+            name: String = "",
+            status: String = "queued",
+            statusReason: String? = nil,
+            visibility: String = "private",
+            diskFormat: String = "raw",
+            containerFormat: String = "bare",
+            size: Int = 0,
+            minRAM: Int = 0,
+            protected: Bool = false,
+            tags: [String] = [],
+            properties: [String: String] = [:],
+            created: String = "",
+            updated: String = "",
+            data: Data? = nil
+        ) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.statusReason = statusReason
+            self.visibility = visibility
+            self.diskFormat = diskFormat
+            self.containerFormat = containerFormat
+            self.size = size
+            self.minRAM = minRAM
+            self.protected = protected
+            self.tags = tags
+            self.properties = properties
+            self.created = created
+            self.updated = updated
+            self.data = data
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
@@ -206,6 +354,11 @@ public actor FakeState {
     public private(set) var ports: [FakePort] = []
     public private(set) var floatingIPs: [FakeFloatingIP] = []
     public private(set) var addressGroups: [FakeAddressGroup] = []
+    public private(set) var volumes: [FakeVolume] = []
+    public private(set) var volumeTypes: [FakeVolumeType] = []
+    public private(set) var snapshots: [FakeSnapshot] = []
+    public private(set) var backups: [FakeBackup] = []
+    public private(set) var images: [FakeImage] = []
     public var extensions: Set<String> = ["provider", "qos", "security-group", "address-group"]
 
     public func removeExtension(_ alias: String) {
@@ -222,6 +375,11 @@ public actor FakeState {
     private var sgRuleIDCounter = 0
     private var fipIDCounter = 0
     private var agIDCounter = 0
+    private var volIDCounter = 0
+    private var volTypeIDCounter = 0
+    private var snapIDCounter = 0
+    private var backupIDCounter = 0
+    private var imgIDCounter = 0
     private var _baseHost: String = "http://127.0.0.1:0"
 
     public var baseHost: String { _baseHost }
@@ -350,6 +508,39 @@ public actor FakeState {
             fixedIPAddress: nil,
             routerID: "router-1",
             status: "DOWN"
+        ))
+
+        // Cinder: volume types + a seeded volume
+        volTypeIDCounter = 2
+        volumeTypes = [
+            FakeVolumeType(id: "vt-1", name: "lvmdriver-1", extraSpecs: ["volume_backend_name": "lvmdriver-1"]),
+            FakeVolumeType(id: "vt-2", name: "lvmdriver-2", extraSpecs: ["volume_backend_name": "lvmdriver-2"])
+        ]
+        volIDCounter += 1
+        volumes.append(FakeVolume(
+            id: "seed-vol",
+            projectID: "proj-one",
+            name: "seed-vol",
+            status: "available",
+            size: 10,
+            volumeType: "lvmdriver-1",
+            created: "2026-01-01T00:00:00.000"
+        ))
+
+        // Glance: a seeded active image
+        imgIDCounter = 1
+        images.append(FakeImage(
+            id: "img-1",
+            projectID: "proj-one",
+            name: "ubuntu-24.04",
+            status: "active",
+            visibility: "public",
+            diskFormat: "qcow2",
+            containerFormat: "bare",
+            size: 1024,
+            minRAM: 512,
+            created: "2026-01-01T00:00:00.000",
+            updated: "2026-01-01T00:00:00.000"
         ))
     }
 
@@ -936,5 +1127,285 @@ public actor FakeState {
         guard let idx else { return false }
         addressGroups.remove(at: idx)
         return true
+    }
+
+    // MARK: - Cinder: Volumes
+
+    public func listVolumes(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeVolume] {
+        var result = volumes.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getVolume(id: String, projectID: String) -> FakeVolume? {
+        volumes.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createVolume(projectID: String, name: String, size: Int, volumeType: String = "lvmdriver-1", imageID: String? = nil, sourceVolumeID: String? = nil, snapshotID: String? = nil, description: String = "", availabilityZone: String? = nil, multiattach: Bool = false, metadata: [String: String]? = nil) -> FakeVolume {
+        volIDCounter += 1
+        let id = "vol-\(volIDCounter)"
+        let vol = FakeVolume(
+            id: id,
+            projectID: projectID,
+            name: name,
+            status: "creating",
+            size: size,
+            volumeType: volumeType,
+            availabilityZone: availabilityZone,
+            multiattach: multiattach,
+            metadata: metadata,
+            sourceVolumeID: sourceVolumeID,
+            imageID: imageID,
+            created: "2026-01-01T00:00:00.000"
+        )
+        volumes.append(vol)
+        return vol
+    }
+
+    public func updateVolume(id: String, projectID: String, size: Int? = nil, volumeType: String? = nil, bootable: Bool? = nil, name: String? = nil) -> FakeVolume? {
+        guard let idx = volumes.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let size { volumes[idx].size = size }
+        if let volumeType { volumes[idx].volumeType = volumeType }
+        if let bootable { volumes[idx].bootable = bootable }
+        if let name { volumes[idx].name = name }
+        return volumes[idx]
+    }
+
+    public func deleteVolume(id: String, projectID: String) -> Bool {
+        let idx = volumes.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        volumes.remove(at: idx)
+        return true
+    }
+
+    /// Upload-to-image: returns a new image ID and registers it as an active image.
+    public func uploadVolumeToImage(id: String, projectID: String) -> String? {
+        guard let vol = getVolume(id: id, projectID: projectID) else { return nil }
+        imgIDCounter += 1
+        let imageID = "img-\(imgIDCounter)"
+        images.append(FakeImage(
+            id: imageID,
+            projectID: projectID,
+            name: vol.name.isEmpty ? "upload-from-\(vol.id)" : vol.name,
+            status: "active",
+            diskFormat: "raw",
+            containerFormat: "bare",
+            size: vol.size,
+            created: "2026-01-01T00:00:00.000",
+            updated: "2026-01-01T00:00:00.000"
+        ))
+        return imageID
+    }
+
+    // MARK: - Cinder: Volume Types
+
+    public func listVolumeTypes() -> [FakeVolumeType] { volumeTypes }
+
+    public func getVolumeType(id: String) -> FakeVolumeType? {
+        volumeTypes.first { $0.id == id }
+    }
+
+    @discardableResult
+    public func createVolumeType(name: String, extraSpecs: [String: String]? = nil) -> FakeVolumeType {
+        volTypeIDCounter += 1
+        let vt = FakeVolumeType(id: "vt-\(volTypeIDCounter)", name: name, extraSpecs: extraSpecs)
+        volumeTypes.append(vt)
+        return vt
+    }
+
+    public func deleteVolumeType(id: String) -> Bool {
+        let idx = volumeTypes.firstIndex { $0.id == id }
+        guard let idx else { return false }
+        volumeTypes.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Cinder: Snapshots
+
+    public func listSnapshots(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeSnapshot] {
+        var result = snapshots.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getSnapshot(id: String, projectID: String) -> FakeSnapshot? {
+        snapshots.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createSnapshot(projectID: String, volumeID: String, name: String = "", description: String = "", force: Bool = false) -> FakeSnapshot? {
+        guard let vol = getVolume(id: volumeID, projectID: projectID) else { return nil }
+        snapIDCounter += 1
+        let snap = FakeSnapshot(
+            id: "snap-\(snapIDCounter)",
+            projectID: projectID,
+            name: name,
+            status: "creating",
+            volumeID: volumeID,
+            size: vol.size,
+            description: description,
+            force: force,
+            created: "2026-01-01T00:00:00.000"
+        )
+        snapshots.append(snap)
+        return snap
+    }
+
+    public func deleteSnapshot(id: String, projectID: String) -> Bool {
+        let idx = snapshots.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        snapshots.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Cinder: Backups
+
+    public func listBackups(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeBackup] {
+        var result = backups.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getBackup(id: String, projectID: String) -> FakeBackup? {
+        backups.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createBackup(projectID: String, volumeID: String, name: String = "", description: String = "") -> FakeBackup? {
+        guard let vol = getVolume(id: volumeID, projectID: projectID) else { return nil }
+        backupIDCounter += 1
+        let backup = FakeBackup(
+            id: "backup-\(backupIDCounter)",
+            projectID: projectID,
+            name: name,
+            status: "available",
+            volumeID: volumeID,
+            size: vol.size,
+            description: description,
+            created: "2026-01-01T00:00:00.000"
+        )
+        backups.append(backup)
+        return backup
+    }
+
+    public func deleteBackup(id: String, projectID: String) -> Bool {
+        let idx = backups.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        backups.remove(at: idx)
+        return true
+    }
+
+    /// Restore a backup into a new volume carrying the backup_id marker.
+    public func restoreBackup(id: String, projectID: String) -> FakeVolume? {
+        guard let backup = getBackup(id: id, projectID: projectID) else { return nil }
+        volIDCounter += 1
+        let vol = FakeVolume(
+            id: "vol-\(volIDCounter)",
+            projectID: projectID,
+            name: "restored-from-\(backup.id)",
+            status: "creating",
+            size: backup.size,
+            metadata: ["os-extended-vol-backup:backup_id": backup.id],
+            created: "2026-01-01T00:00:00.000"
+        )
+        volumes.append(vol)
+        return vol
+    }
+
+    // MARK: - Glance: Images
+
+    public func listImages(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeImage] {
+        var result = images.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getImage(id: String, projectID: String) -> FakeImage? {
+        images.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createImage(projectID: String, name: String, visibility: String = "private", diskFormat: String = "raw", containerFormat: String = "bare", minRAM: Int = 0, properties: [String: String] = [:]) -> FakeImage {
+        imgIDCounter += 1
+        let img = FakeImage(
+            id: "img-\(imgIDCounter)",
+            projectID: projectID,
+            name: name,
+            status: "queued",
+            visibility: visibility,
+            diskFormat: diskFormat,
+            containerFormat: containerFormat,
+            minRAM: minRAM,
+            properties: properties,
+            created: "2026-01-01T00:00:00.000",
+            updated: "2026-01-01T00:00:00.000"
+        )
+        images.append(img)
+        return img
+    }
+
+    public func updateImage(id: String, projectID: String, name: String? = nil, visibility: String? = nil, protected: Bool? = nil, status: String? = nil) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { images[idx].name = name }
+        if let visibility { images[idx].visibility = visibility }
+        if let protected { images[idx].protected = protected }
+        if let status { images[idx].status = status }
+        images[idx].updated = "2026-01-01T00:00:00.000"
+        return images[idx]
+    }
+
+    public func setImageData(id: String, projectID: String, data: Data) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        images[idx].data = data
+        images[idx].size = data.count
+        images[idx].status = "active"
+        return images[idx]
+    }
+
+    public func setImportResult(id: String, projectID: String, active: Bool, size: Int, statusReason: String?) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if active {
+            images[idx].status = "active"
+            images[idx].size = size
+            images[idx].statusReason = nil
+        } else {
+            images[idx].status = "killed"
+            images[idx].statusReason = statusReason ?? "import failed"
+        }
+        return images[idx]
+    }
+
+    public func deleteImage(id: String, projectID: String) -> Bool {
+        let idx = images.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        images.remove(at: idx)
+        return true
+    }
+
+    public func addTags(id: String, projectID: String, tags: [String]) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        images[idx].tags = Array(Set(images[idx].tags + tags))
+        return images[idx]
+    }
+
+    public func removeTag(id: String, projectID: String, tag: String) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        images[idx].tags.removeAll { $0 == tag }
+        return images[idx]
     }
 }

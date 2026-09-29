@@ -6,4 +6,5 @@ public enum FakeHeaders {
     public static let xAuthToken = HTTPField.Name("X-Auth-Token")!
     public static let xSubjectToken = HTTPField.Name("X-Subject-Token")!
     public static let xOpenStackNovaAPIVersion = HTTPField.Name("X-OpenStack-Nova-API-Version")!
+    public static let openstackAPIVersion = HTTPField.Name("OpenStack-API-Version")!
 }
