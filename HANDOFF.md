@@ -1,67 +1,28 @@
-# Handoff: OpenStack MCP Phase 1 — Task 10 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 11 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 9 (merge commit `26ed426`). All tasks through 9 merged.
-- **Latest commit**: `26ed426` — merge of Task 9 (NetworkService)
-- **Tests**: 107 tests in 13 suites, all green
+- **Main**: up through Task 10 (commit `9f17db8`). All tasks through 10 merged.
+- **Latest commit**: `9f17db8` — feat(client): cinder block storage + glance image services
+- **Tests**: 139 tests in 15 suites, all green
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 10: BlockStorageService (Cinder) + ImageService (Glance) + fakes**
+**Start Task 11: OpenStackClient facade**
 
-**Files to create:**
-- `Sources/FakeOpenStack/NeutronFake.swift` — extend fake with:
-  - networks CRUD (provider attrs gated on extension `provider`)
-  - subnets CRUD (allocation pools, `ip_version` 4/6, `enable_dhcp`, gateway)
-  - ports CRUD (`fixed_ips`, `security_groups`, `extra_dhcp_opts`, `device_id/owner`, `admin_state_up`, `port_security_enabled`)
-  - routers CRUD (+ `external_gateway_info` update)
-  - floating IPs CRUD (+ `port_id`/`fixed_ip_address` update = associate/disassociate)
-  - security groups CRUD + rules create/delete/list (immutable: no rule update)
-  - address groups CRUD gated on extension `address-group`
-  - quotas get/update
-  - 404 `NeutronError{type:"ItemNotFound"}`, 400 `InvalidInput`, 409 `IpAddressInUse`
-  - `limit/marker/_links` pagination
-  - extension discovery endpoint returning seeded aliases
+A thin facade that composes the per-service clients behind a single entry point:
+`OpenStackClient(cloud:transport:cache:logger:)` with accessors like
+`client.compute(region:)`, `client.network(region:)`,
+`client.blockStorage(region:)`, `client.image(region:)`.
 
-- `Sources/OpenStackClient/Services/NetworkService.swift`
-- `Sources/OpenStackClient/Models/NetworkModels.swift`
-- `Tests/OpenStackClientTests/NetworkServiceTests.swift`
+No new fakes or models — pure composition of existing services.
 
-**Interfaces (same vt-first convention as Task 8):**
-- `NetworkService { init(cloud:transport:cache:logger:basePath:); func region(_ r: String?) -> NetworkRegion }`
-- `NetworkRegion` with:
-  - networks CRUD, subnets CRUD, ports CRUD, routers CRUD
-  - floating IPs CRUD (+ associate/disassociate via update)
-  - security groups CRUD + rules
-  - address groups (extension-gated: throw feature error when alias absent)
-  - quotas get/update
-- Service type: `network`, no microversion header
-- Cache TTL: 300s for networks/subnets/security_groups, 60s for ports/floating_ips
-- Invalidation on mutation within resource + obvious parents only (cross-resource is MCP layer's job in Task 12)
-
-**Test coverage required:**
-- CRUD each resource against fake
-- `createPort(fixed_ips: [])` auto-assigns (fake picks from pool)
-- `associateFloatingIP` sets `status ACTIVE` + `port_id`; `disassociate` back to `DOWN`
-- Extension-gated: fake without `address-group` → `listAddressGroups()` throws feature error
-- 404 `NeutronError` normalized (code `ItemNotFound`)
-- Pagination via `marker`+`_links.next`
-
-**Steps:**
-1. Write failing tests (`scripts/swift test --filter NetworkServiceTests`)
-2. Implement NeutronFake routes
-3. Implement NetworkModels + NetworkService
-4. Run tests to green
-5. Commit: `git commit -m "feat(client): neutron network service with extension gating"`
-
-## Remaining Tasks After 9
+## Remaining Tasks After 10
 
 | Task | Description |
 |------|-------------|
-| 10 | BlockStorageService (Cinder) + ImageService (Glance) + fakes |
 | 11 | OpenStackClient facade — `cloud.compute(region:)` etc. |
 | 12 | Resource catalog — all phase 1 entries |
 | 13 | Policy + name resolution + validation + output shaping |
@@ -75,14 +36,47 @@
 | 21 | Deployment assets + README |
 | 22 | Integration test (opt-in) + conformance pass + final hardening sweep |
 
-## Key Implementation Patterns (learned from Tasks 1-8)
+## Services Completed (Tasks 1-10)
+
+| Service | File | Region Type | Key Details |
+|---------|------|-------------|-------------|
+| Identity (Keystone) | `KeystoneService.swift` | — | Token decode, catalog, scopes |
+| Compute (Nova) | `ComputeService.swift` | `ComputeRegion` | Microversion gating (2.90/2.96), actions, attachments |
+| Network (Neutron) | `NetworkService.swift` | `NetworkRegion` | Extension gating, auto-assign IPs, IP conflict 409 |
+| Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions (extend/retype/bootable/upload/reset-status) |
+| Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload, tags, protect, deactivate |
+
+## Fakes
+
+| Fake | File | Base Path | Error Shape |
+|------|------|-----------|-------------|
+| Keystone | `KeystoneFake.swift` | `/keystone/v3` | `{"error":{"code","message"}}` |
+| Nova | `NovaFake.swift` | `/nova` | `{"itemNotFound":{"message"}}` |
+| Neutron | `NeutronFake.swift` | `/neutron/v2.0` | `{"NeutronError":{"type","message"}}` |
+| Cinder | `CinderFake.swift` | `/cinder/v3` | `{"badRequest":{"message"}}` / `{"itemNotFound":{"message"}}` |
+| Glance | `GlanceFake.swift` | `/glance/v2` | Plain text (`404 Not Found`) |
+
+## Seeded Fixture Facts
+
+- `proj-one`: `net-ext`/`net-int`, `subnet-ext` (10.0.0.0/24)/`subnet-int` (192.168.1.0/24),
+  `port-001` (10.0.0.5), `fip-001` (203.0.113.10 DOWN), `sg-default`, `router-1`,
+  `seed-vol` (available, 10GB, lvmdriver-1), `img-1` (ubuntu-24.04, active, public, qcow2)
+- `proj-two`: minimal (for isolation tests)
+- Volume types: `vt-1` (lvmdriver-1), `vt-2` (lvmdriver-2)
+- Quotas: volume=10, gigabytes=1000, snapshots=10; network=10, subnet=10, port=50
+- Service catalog: `RegionOne` has all 5 services; `RegionTwo` lacks `cinder`
+- Cinder service type: `volumev3` (fall back to `volume`)
+- Glance service type: `image`
+
+## Key Implementation Patterns (learned from Tasks 1-10)
 
 ### Transport
 - `Transport` is an **actor**, base URL = `cloud.authURL` (the host root)
-- `transport.request(method:service:path:query:body:tokenOverride:extraHeaders:)` 
-- Path includes the service prefix: `"nova/servers"`, `"neutron/v2.0/networks"`
-- `basePath` parameter on each service (e.g. `"nova"`, `"neutron/v2.0"`) controls the URL prefix
+- `transport.request(method:service:path:query:body:tokenOverride:extraHeaders:timeoutOverride:)`
+- Path includes the service prefix: `"nova/servers"`, `"neutron/v2.0/networks"`, `"cinder/v3/volumes"`, `"glance/v2/images"`
+- `basePath` parameter on each service controls the URL prefix
 - `tokenOverride` = the validated token ID (presented as `X-Auth-Token`)
+- `extraHeaders` for service-specific headers (e.g. `OpenStack-API-Version`)
 - `syncShutdown()` is `nonisolated public` for use in `defer` blocks
 - **Content-Type: application/json** is set on every request
 
@@ -90,26 +84,54 @@
 - `Cache` is an actor. Methods: `get(_:ttl:as:)`, `put(_:ttl:value:)`, `invalidate(resource:tokenID:region:)`
 - `CacheKey(tokenID:region:resource:suffix:)`
 - **Use `put` not `set`**
+- List methods include `limit` and `marker` in the suffix to avoid cross-page cache hits
+- TTLs: volumes 60s, images 300s, servers 60s, networks 300s
 
-### Service Pattern (from ComputeService)
+### Service Pattern
 ```swift
-public struct ComputeService: Sendable {
+public struct XService: Sendable {
     let cloud: CloudEntry
     let transport: Transport
     let cache: Cache
     let logger: Logger
-    let basePath: String  // e.g. "nova"
-    
-    public func region(_ region: String? = nil) -> ComputeRegion { ... }
+
+    public func region(_ region: String? = nil) -> XRegion { ... }
 }
 
-public struct ComputeRegion: Sendable {
+public struct XRegion: Sendable {
+    let cloud: CloudEntry
+    let transport: Transport
+    let cache: Cache
+    let logger: Logger
+    let basePath: String
+
     // Every operation takes `_ vt: ValidatedToken` as first arg
-    public func listServers(_ vt: ValidatedToken, filters:..., limit:..., marker:...) async throws -> [Server]
-    public func createServer(_ vt: ValidatedToken, _ spec: CreateServerSpec) async throws -> Server
+    public func listXs(_ vt: ValidatedToken, filters:..., limit:..., marker:...) async throws -> [X]
+    public func createX(_ vt: ValidatedToken, _ spec: CreateXSpec) async throws -> X
     // ...
 }
 ```
+
+### Model Pattern
+- `Sendable, Codable, Identifiable` for resource models
+- Custom `init(from:)` + `func encode(to:)` when CodingKeys differ from property names
+- **`init(from:)` must be `public`** (protocol requirement)
+- **CodingKeys case names must NOT collide with stored property names** when the raw value differs (use `createdAt = "created_at"` not `created = "created_at"`)
+- `CreateXSpec` structs: `Sendable` only, with `func body() -> String` for JSON construction
+- JSON body: use array-of-parts + `joined(separator:)` pattern, not multi-line string interpolation
+
+### Fake Pattern
+- Manual JSON string construction (no `JSONSerialization` in hot paths)
+- `arrayForValue` uses depth-tracking bracket matching (NOT `range(of: "]", options: .backwards)`)
+- `extractInt` must handle unquoted numeric values (not delegate to `extractString` which only handles quoted strings)
+- `extractBool` checks `hasPrefix("true")` / `hasPrefix("false")` after trimming
+- `objectForKey` uses depth-tracking for nested objects
+- `queryParam` uses `req.uri.queryParameters[Substring(name)]` (Hummingbird URI API)
+- Custom headers: use `HTTPField.Name("...")!` constants in `FakeHeaders`
+- `HTTPFields` is a struct: use `var headers = HTTPFields()` + subscript, not dictionary literal
+- `Response(status:headers:body:)` takes `HTTPFields`, not `[String: String]`
+- Routes: register more specific paths BEFORE less specific ones (e.g. `/images/:id/tags` before `/images/:id`)
+- Seed data in `FakeState.seed()`; counters start at appropriate values to avoid collisions with seeded IDs
 
 ### Test Pattern
 ```swift
@@ -135,16 +157,6 @@ public struct ComputeRegion: Sendable {
 }
 ```
 
-### Fake Registration
-- `KeystoneFake.registerRoutes(router, state:baseHost:)`
-- `NovaFake.registerRoutes(router, state:)`
-- New: `NeutronFake.registerRoutes(router, state:)`
-- Register in `FakeApp.start()` alongside the others
-- Routes use `RouterPath` or string paths like `"/neutron/v2.0/networks"`
-- Auth check: `req.headers[FakeHeaders.xAuthToken]` → `state.validateToken(tokenID)`
-- JSON responses: manual string construction (avoid `try!` in fakes)
-- Error responses: `NeutronError{type:"..."}` format for 404/400/409
-
 ### Linux/Swift Gotchas
 - `import FoundationNetworking` in tests that use `URLRequest`/`URLSession`
 - `.timeLimit(.minutes(n))` not `.seconds(n)`
@@ -153,8 +165,13 @@ public struct ComputeRegion: Sendable {
 - `Transport.syncShutdown()` is `nonisolated public` — safe in `defer`
 - Swift 6.4 compiler bug: avoid `if case`/`guard case` on enums with `[Int8]` payloads in actor contexts
 - `String(bytes:encoding:)` expects `[UInt8]` not `[Int8]`
-- JSON body construction: use explicit string concatenation, not multi-line string interpolation (silent JSON corruption)
-- On Linux, nested `Decodable` structs in route handlers may fail to decode — use hardcoded responses in fakes if needed
+- JSON body construction: use explicit string concatenation or array-of-parts, not multi-line string interpolation
+- **Swift string interpolation `\(array)` wraps in `[...]`** — for JSON arrays, build the string manually and use literal brackets, not `\[...\]`
+- `protocol` is a Swift reserved word — use `ipProtocol` in model properties (JSON key stays `"protocol"` via CodingKeys)
+- `NeutronExtensions` made `Codable` for cache storage
+- `OpenStackError.normalize` checks `NeutronError` key **first** (before generic firstKey branch)
+- `ipInCidr` uses numerical prefix match (string `hasPrefix` fails for CIDR comparison)
+- `FakeState.extensions` is a public mutable `Set<String>`; `removeExtension(_:)` for tests
 
 ### Package.swift
 - `OpenStackClientTests` depends on: `OpenStackClient`, `FakeOpenStack`, `HummingbirdTesting`, `Hummingbird`
@@ -162,6 +179,7 @@ public struct ComputeRegion: Sendable {
 
 ### Git / SDD Discipline
 - Commit per task with descriptive message
+- Merge to main after each task, sync worktree
 - SDD ledger at `.superpowers/sdd/2026-09-28-openstack-mcp-phase-1/progress.md` (gitignored, local-only)
 - Plan at `docs/superpowers/plans/2026-09-28-openstack-mcp-phase-1.md`
 - Spec at `specs/openstack-mcp-spec.md`
