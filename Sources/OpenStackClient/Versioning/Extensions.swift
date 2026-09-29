@@ -26,7 +26,7 @@ public enum NovaFeature: String, Sendable, CaseIterable {
 }
 
 /// Neutron extension aliases tracked for capability detection.
-public struct NeutronExtensions: Sendable, Equatable {
+public struct NeutronExtensions: Sendable, Equatable, Codable {
     public let aliases: Set<String>
 
     public init(aliases: Set<String>) {
