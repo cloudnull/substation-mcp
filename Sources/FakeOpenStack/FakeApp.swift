@@ -95,7 +95,7 @@ public struct FakeHandle {
     public let url: URL
     public let keystoneURL: URL
 
-    public func stop() async {
+    public func stop() {
         runTask.cancel()
     }
 }

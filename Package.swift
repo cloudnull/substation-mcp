@@ -112,6 +112,7 @@ let package = Package(
             name: "OpenStackClientTests",
             dependencies: [
                 .target(name: "OpenStackClient"),
+                .target(name: "FakeOpenStack"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "Hummingbird", package: "hummingbird"),
             ],

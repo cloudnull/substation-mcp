@@ -66,7 +66,7 @@ public actor Transport {
         try? client.syncShutdown()
     }
 
-    nonisolated func syncShutdown() {
+    nonisolated public func syncShutdown() {
         try? client.syncShutdown()
     }
 
@@ -100,6 +100,7 @@ public actor Transport {
         var req = try HTTPClient.Request(url: url.absoluteString, method: .init(rawValue: method))
         req.headers.add(name: "X-Auth-Token", value: token)
         req.headers.add(name: "Accept", value: "application/json")
+        req.headers.add(name: "Content-Type", value: "application/json")
         req.headers.add(name: "User-Agent", value: "openstack-mcp/\(openStackClientVersion)")
         req.headers.add(name: "X-OpenStack-Request-Id", value: requestID)
         for (name, value) in extraHeaders {

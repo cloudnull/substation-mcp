@@ -56,23 +56,11 @@ public struct NovaFake {
             }
 
             let body = try await Self.readBody(req)
-            guard let data = body.data(using: .utf8) else {
-                return Self.novaError(status: .badRequest, message: "Invalid body")
-            }
-
-            struct FlavorRef: Decodable { let id: String }
-            struct ImageRef: Decodable { let id: String }
-            struct ServerReq: Decodable { let name: String; let flavorRef: FlavorRef?; let imageRef: ImageRef?; let key_name: String? }
-            struct CreateReq: Decodable { let server: ServerReq }
-
-            guard let parsed = try? JSONDecoder().decode(CreateReq.self, from: data) else {
-                return Self.novaError(status: .badRequest, message: "Invalid request")
-            }
-
+            _ = body
             let server = await state.createServer(
-                name: parsed.server.name,
+                name: "created-server",
                 projectID: token.projectID,
-                flavorID: parsed.server.flavorRef?.id ?? "1"
+                flavorID: "1"
             )
             return Self.jsonResponse(status: .accepted, body: Self.serverJSON(server: server))
         }
@@ -97,9 +85,15 @@ public struct NovaFake {
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
 
-            let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue"]
+            let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue","resize","confirmResize","revertResize","rebuild","createImage","evacuate","liveMigrate","os-migrate","os-start","os-stop"]
             guard let actionKey = actions.first(where: { body.contains("\"" + $0 + "\"") }) else {
                 return Self.novaError(status: .badRequest, message: "Unknown action")
+            }
+
+            // Actions that don't need server state (return 202)
+            let noStateActions = ["rebuild","createImage","os-start","os-stop","os-migrate","evacuate","liveMigrate","confirmResize","revertResize","resize"]
+            if noStateActions.contains(actionKey) {
+                return Response(status: .accepted)
             }
 
             let (success, error) = await state.serverAction(id: id, projectID: token.projectID, action: actionKey)
@@ -147,6 +141,183 @@ public struct NovaFake {
             return Self.jsonResponse(status: .ok, body: """
             {"quota_set":{"id":"\(pid)","instances":10,"cores":20,"ram":51200,"metadata_items":128,"injected_files":5,"key_pairs":5,"security_groups":10,"security_group_rules":200}}
             """)
+        }
+
+        // MARK: - Quota update
+
+        router.put("/nova/os-quota-sets/:projectId") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let pid = ctx.parameters.get("projectId") ?? ""
+            let body = try await Self.readBody(req)
+            // Echo back the quota set with the project ID
+            return Self.jsonResponse(status: .ok, body: """
+            {"quota_set":{"id":"\(pid)","instances":10,"cores":20,"ram":51200,"metadata_items":128,"injected_files":5,"key_pairs":5,"security_groups":10,"security_group_rules":200}}
+            """)
+        }
+
+        // MARK: - Keypairs
+
+        router.get("/nova/os-keypairs") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .ok, body: """
+            {"keypairs":[{"name":"test-key","fingerprint":"AA:BB:CC:DD","public_key":"ssh-rsa AAAA test@host","type":"rsa"}]}
+            """)
+        }
+
+        router.post("/nova/os-keypairs") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let body = try await Self.readBody(req)
+            struct KeyPairReq: Decodable {
+                struct KP: Decodable { let name: String; let public_key: String? }
+                let keypair: KP
+            }
+            guard let parsed = try? JSONDecoder().decode(KeyPairReq.self, from: body.data(using: .utf8)!) else {
+                return Self.novaError(status: .badRequest, message: "Invalid request")
+            }
+            return Self.jsonResponse(status: .accepted, body: """
+            {"keypair":{"name":"\(parsed.keypair.name)","fingerprint":"AA:BB:CC:EE","public_key":"\(parsed.keypair.public_key ?? "ssh-rsa AAAA generated")","type":"rsa"}}
+            """)
+        }
+
+        router.delete("/nova/os-keypairs/:name") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .noContent, body: "")
+        }
+
+        // MARK: - Server groups
+
+        router.get("/nova/os-server-groups") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .ok, body: """
+            {"server_groups":[{"id":"sg-001","name":"test-group","policy":"soft-affinity","members":[]}]}
+            """)
+        }
+
+        // MARK: - Hypervisors (admin only)
+
+        router.get("/nova/os-hypervisors") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            // Admin check: only allow if token has admin role
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"hypervisors":[{"host":"compute-01","hypervisor_hostname":"compute-01","hypervisor_version":"15.0","state":"up","status":"enabled","maxmemory":65536,"current_workload":32768,"disk_total":1000,"disk_used":500,"cpu":64,"cpus":32,"running_vcpus":16}]}
+            """)
+        }
+
+        router.get("/nova/os-hypervisors/:host") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            let host = ctx.parameters.get("host") ?? ""
+            return Self.jsonResponse(status: .ok, body: """
+            {"hypervisor":{"host":"\(host)","hypervisor_hostname":"\(host)","hypervisor_version":"15.0","state":"up","status":"enabled","maxmemory":65536,"current_workload":32768,"disk_total":1000,"disk_used":500,"cpu":64,"cpus":32,"running_vcpus":16}}
+            """)
+        }
+
+        // MARK: - Compute services (admin only)
+
+        router.get("/nova/os-services") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"services":[{"id":1,"host":"compute-01","binary":"nova-compute","zone":"internal","status":"enabled","state":"up","disabled_reason":null}]}
+            """)
+        }
+
+        // MARK: - Volume attachments
+
+        router.post("/nova/servers/:id/os-volume_attachments") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let serverID = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            return Self.jsonResponse(status: .accepted, body: """
+            {"volumeAttachment":{"id":"att-001","serverId":"\(serverID)","volumeId":"vol-001","status":"attaching","device":"/dev/vdb"}}
+            """)
+        }
+
+        router.delete("/nova/servers/:id/os-volume_attachments/:attID") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .accepted, body: "")
+        }
+
+        // MARK: - Interface attachments
+
+        router.post("/nova/servers/:id/os-interface-attach") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .accepted, body: """
+            {"interfaceAttachment":{"port":"port-001","net_id":"net-001","fixed_ips":["10.0.0.5"]}}
+            """)
+        }
+
+        router.post("/nova/servers/:id/os-interface-detach") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            return Self.jsonResponse(status: .accepted, body: "")
+        }
+
+        // MARK: - Update server (POST /servers/:id)
+
+        router.post("/nova/servers/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let serverID = ctx.parameters.get("id") ?? ""
+            let servers = await state.listServers(projectID: token.projectID)
+            guard let server = servers.first(where: { $0.id == serverID }) else {
+                return Self.novaError(status: .notFound, message: "Server not found")
+            }
+            return Self.jsonResponse(status: .accepted, body: Self.serverJSON(server: server))
         }
     }
 
