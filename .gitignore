@@ -1,3 +1,9 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+worktrees/
 .worktrees/
 .superpowers/
 .pi/

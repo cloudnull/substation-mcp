@@ -1,0 +1,30 @@
+#!/bin/sh
+# Wrapper to run the Swift toolchain inside the pinned Linux container image.
+# Resolves a container runtime (docker, podman, Apple container) and runs the
+# command with the repo mounted at /work. All Swift work goes through this script.
+set -eu
+
+# Resolve a container runtime in the plan's preference order.
+RT=""
+if command -v docker >/dev/null 2>&1; then
+  RT="docker"
+elif command -v podman >/dev/null 2>&1; then
+  RT="podman"
+elif command -v container >/dev/null 2>&1; then
+  RT="container"
+else
+  echo "scripts/swift: no container runtime found (tried docker, podman, container)." >&2
+  echo "  Install one (e.g. Apple Container: 'xcrun container' / colima / docker) and retry." >&2
+  exit 127
+fi
+
+IMAGE="swift:6.4-rhel-ubi10"
+
+# Apple `container` supports --cpus/--memory; docker/podman do not share those
+# flag names, so only pass them for `container`. 8 cpus + 16GiB is the floor
+# for a full Swift server build (NIO + Hummingbird + MCP SDK).
+if [ "$RT" = "container" ]; then
+  exec "$RT" run --rm --cpus 8 --memory 16g -v "$PWD":/work -w /work "$IMAGE" swift "$@"
+else
+  exec "$RT" run --rm -v "$PWD":/work -w /work "$IMAGE" swift "$@"
+fi
