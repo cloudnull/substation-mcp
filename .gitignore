@@ -3,7 +3,6 @@
 .swiftpm/
 *.xcodeproj
 xcuserdata/
-worktrees/
 .worktrees/
 .superpowers/
 .pi/
