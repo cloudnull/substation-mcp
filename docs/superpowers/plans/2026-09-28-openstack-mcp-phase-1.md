@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build `openstack-mcp`, a Hummingbird-hosted Swift MCP server that lets an LLM client consume an OpenStack cloud (identity, compute, network, block storage, image) through 15 catalog-driven tools, with application-credential auth, links/topology, sessions, metrics, and a fake-cloud test harness.
+**Goal:** Build `openstack-mcp`, a Hummingbird-hosted Swift MCP server that lets an LLM client consume an OpenStack cloud (identity, compute, network, block storage, image) through 15 catalog-driven tools, with **Keystone-token-per-request auth** (multi-tenant, no held user credentials), links/topology, sessions, metrics, and a fake-cloud test harness.
 
-**Architecture:** Four targets. `OpenStackClient` (library, no MCP knowledge) does clouds.yaml config, Keystone application-credential auth, endpoint/version negotiation, transport with retry and error normalization, and typed service APIs over AsyncHTTPClient. `OpenStackMCPServer` (library) holds the declarative resource catalog, policy, name resolution, waiter, the 15 verb/link/topology tools, MCP resources and prompts. `HummingbirdMCP` (library, no OpenStack knowledge) adapts Hummingbird routes to the MCP Swift SDK's `StatefulHTTPServerTransport` with an actor session registry. `openstack-mcp` (executable) wires config, subcommands (`serve`, `stdio`, `check`, `access-rules`, `tools`), routes, and metrics. Every catalog operation is tested against an in-process fake OpenStack (a Hummingbird app in a test-support target).
+**Architecture:** Four targets. `OpenStackClient` (library, no MCP knowledge) does clouds.yaml config (fallback/override), **Keystone token validation + login mint + whoami + scope derivation**, endpoint/version negotiation, transport with retry and error normalization, and typed service APIs over AsyncHTTPClient that take a per-call `ValidatedToken`. `OpenStackMCPServer` (library) holds the declarative resource catalog, policy, name resolution, waiter, the 15 verb/link/topology tools (scope-aware availability), MCP resources and prompts, the login page / token store, and protected-resource-metadata. `HummingbirdMCP` (library, no OpenStack knowledge) adapts Hummingbird routes to the MCP Swift SDK's `StatefulHTTPServerTransport` with an actor session registry (protocol state only — identity is per-request via an injected token-validator seam). `openstack-mcp` (executable) wires config, subcommands (`serve`, `stdio`, `check`, `access-rules`, `tools`, plus `register-catalog`), routes, and metrics. Every catalog operation is tested against an in-process fake OpenStack (a Hummingbird app in a test-support target).
 
 **Tech Stack:** Swift 6.4 (strict concurrency), Linux only — builds and tests run in the `swift:6.4-rhel-ubi10` container. Hummingbird 2.26.x, modelcontextprotocol/swift-sdk 0.12.x (protocol revision 2025-11-25), async-http-client 1.36.x, swift-nio-ssl, swift-log 1.x, swift-metrics 2.x, swift-prometheus 2.x, swift-configuration 1.2.x, swift-argument-parser 1.x, Yams 5.x, swift-crypto 3.x. Testing: Swift Testing + HummingbirdTesting.
 
@@ -61,7 +61,7 @@ openstack-mcp/
       Versioning/Microversion.swift          # Microversion, Negotiator, feature table
       Versioning/Extensions.swift            # Neutron extension discovery
       EndpointResolver.swift                 # + ServiceCatalog/TokenResponse (IdentityModels extended in Task 5)
-      Cache.swift                            # actor, LRU, TTL, principal-keyed (Task 4, before Versioning)
+      Cache.swift                            # actor, LRU, TTL, keyed by (token id, region, resource) (Task 4, before Versioning)
       Services/IdentityService.swift
       Services/ComputeService.swift
       Services/NetworkService.swift
@@ -91,8 +91,7 @@ openstack-mcp/
       Auth/Scopes.swift                      # openstack:read / openstack:write derivation from roles + policy
       Session/TokenStore.swift               # login-minted tokens bound to session, TTL=expiry, zeroized on evict
       Resources/MCPResources.swift           # openstack:// catalog + lazy resource URIs
-      Prompts/MCPPrompts.swift               # provision_server, diagnose_connectivity, audit_security_groups
-      Session/Principal.swift                # REMOVED — replaced by per-request token context + Session/TokenStore.swift
+      Prompts/MCPPrompts.swift               # provision_server, diagnose_connectivity, audit_security_groups, login (URL-mode elicitation)
     HummingbirdMCP/
       HummingbirdMCP.swift                   # MCPRoute, request/response mapping incl. SSE
       SessionRegistry.swift                  # actor registry, limits, cleanup task
@@ -266,7 +265,7 @@ Run: `scripts/swift test --filter CloudConfigTests` — expected: all pass.
 
 ```bash
 git add Sources/OpenStackClient/CloudConfig/ Tests/OpenStackClientTests/CloudConfigTests.swift Tests/OpenStackClientTests/CredentialParsingTests.swift
-git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bearer parsing"
+git commit -m "feat(client): clouds.yaml/secure.yaml tolerant loading"
 ```
 
 ---
@@ -307,7 +306,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 ---
 
-## Task 4: Cache — principal-keyed, TTL, LRU, invalidation
+## Task 4: Cache — token-id-keyed, TTL, LRU, invalidation
 
 **Files:**
 - Create: `Sources/OpenStackClient/Cache.swift`
@@ -316,8 +315,8 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 **Interfaces:**
 - Consumes: nothing beyond stdlib/Foundation + `swift-crypto` not needed.
 - Produces:
-  - `struct CacheKey: Hashable, Sendable { principalFingerprint: String; region: String; resource: String; suffix: String }` — `suffix` disambiguates filter sets for lists (`"f:" + sorted query string) and resource ids for gets.
-  - `actor Cache { init(maxEntries: Int = 2000); func get<T: Codable & Sendable>(_ key: CacheKey, ttl: Duration, as type: T.Type) async -> T?` — returns decoded value if fresh (TTL per call, caller passes the resource's default from the table in Global Constraints); `func put<T: Codable & Sendable>(_ key: CacheKey, ttl: Duration, value: T) async; func invalidate(resource: String, principal: String, region: String) async` — clears all keys for that resource (used on mutation, including linked-resource invalidation by callers); `var stats: (hits: Int, misses: Int)` — feeds `osmcp_cache_hits_total{resource}` metric.
+  - `struct CacheKey: Hashable, Sendable { tokenID: String; region: String; resource: String; suffix: String }` — `tokenID` is the presented Keystone token id (or a stable per-deployment constant for pre-auth version docs, Task 6), so two tenants never share an entry (Review Focus 2). `suffix` disambiguates filter sets for lists (`"f:" + sorted query string) and resource ids for gets.
+  - `actor Cache { init(maxEntries: Int = 2000); func get<T: Codable & Sendable>(_ key: CacheKey, ttl: Duration, as type: T.Type) async -> T?` — returns decoded value if fresh (TTL per call, caller passes the resource's default from the table in Global Constraints); `func put<T: Codable & Sendable>(_ key: CacheKey, ttl: Duration, value: T) async; func invalidate(resource: String, tokenID: String, region: String) async` — clears all keys for that resource (used on mutation, including linked-resource invalidation by callers); `var stats: (hits: Int, misses: Int)` — feeds `osmcp_cache_hits_total{resource}` metric.
   - LRU: on put/eviction beyond `maxEntries` (default 2000), drop least-recently-accessed; access = get hit or put.
   - Stored as JSON `Data` (values already decoded from the wire once).
 
@@ -325,7 +324,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
   - put/get round-trip with `suffix`; TTL expiry with injected clock (add `clock` param defaulting to `ContinuousClock`); second get after expiry returns nil.
   - LRU: `maxEntries: 3`, put A,B,C, get A, put D → B evicted (assert B nil, A/C/D present).
   - `invalidate(resource:)` clears all suffixes for that resource only.
-  - Different principals with same region+resource do not share entries.
+  - Different token ids with same region+resource do not share entries.
   - `stats.hits` increments on hit only.
 
 - [ ] **Step 2: Run to verify failure** — `scripts/swift test --filter CacheTests`.
@@ -334,7 +333,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 - [ ] **Step 4: Run to verify pass** — `scripts/swift test --filter CacheTests`.
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(client): principal-keyed TTL/LRU cache with invalidation"`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(client): token-id-keyed TTL/LRU cache with invalidation"`.
 
 ---
 
@@ -349,7 +348,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 - Consumes: `Transport`, `CloudConfig` (fallback), `ServiceCatalog`/`TokenResponse` (Task 6), `Cache` (Task 4).
 - Produces:
   - `struct Token: Sendable { id: String; expiresAt: Date; catalog: ServiceCatalog; project: IdentityRef; domain: IdentityRef; user: IdentityRef; roles: [String] }` where `IdentityRef { id, name, domain }`. Decoded from both the auth response and `GET /v3/auth/tokens`.
-  - **`actor TokenValidator`** — the per-request identity authority. `init(transport: Transport, cache: Cache, servedProjects: Set<String>, tokenCacheTTL: Duration, clock: any Clock<Duration> = ContinuousClock())`; `func validate(_ tokenID: String) async throws -> ValidatedToken` where `struct ValidatedToken: Sendable { token: Token; scopes: [TokenScope] }`. Behavior: on miss, `GET /v3/auth/tokens` with `X-Auth-Token` = the presented id; 401/403 → throw `OpenStackError(status: 401)` (the caller maps to the HTTP 401 challenge); on success, confirm `token.project.id ∈ servedProjects` (our audience check; else 403), derive `scopes` (below), and cache the metadata under `CacheKey(resource: "__token__", suffix: tokenID)` with TTL = `min(tokenCacheTTL, time-to-expiry)`. **Cache is keyed by token id** so two tenants never share an entry (Review Focus 2). No password/app-cred is ever stored here.
+  - **`actor TokenValidator`** — the per-request identity authority. `init(transport: Transport, cache: Cache, servedProjects: Set<String>, tokenCacheTTL: Duration, clock: any Clock<Duration> = ContinuousClock())`; `func validate(_ tokenID: String) async throws -> ValidatedToken` where `struct ValidatedToken: Sendable { token: Token; scopes: [TokenScope] }`. Behavior: on miss, `GET /v3/auth/tokens` with `X-Auth-Token` = the presented id; 401/403 → throw `OpenStackError(status: 401)` (the caller maps to the HTTP 401 challenge); on success, confirm `token.project.id ∈ servedProjects` (our audience check; else 403), derive `scopes` (below), and cache the metadata under `CacheKey(tokenID: tokenID, region: "_auth_", resource: "__token__", suffix: "")` with TTL = `min(tokenCacheTTL, time-to-expiry)`. **Cache is keyed by token id** so two tenants never share an entry (Review Focus 2). No password/app-cred is ever stored here.
   - **`enum TokenScope: String { case read = "openstack:read"; case write = "openstack:write" }`** + `func scopes(roles: [String], policy: PolicyRoles) -> [TokenScope]` — `read` granted to any authenticated project token; `write` granted when the roles include a mutating role (default: `admin`, or `member`+`_member_` with compute/network/block-storage roles — configurable via `policy.write_roles` list, default `["admin"]` plus the standard member-write heuristic). Pure function, unit-testable without a cloud.
   - **`actor LoginMinter`** — facilitates login (spec §6.1). `init(transport: Transport)`; `func mint(method: MintMethod) async throws -> Token` where `enum MintMethod { case applicationCredential(id: String, secret: [Int8]); case password(userID: String, domain: String?, password: String, projectName: String?) }`. Does `POST /v3/auth/tokens` with the appropriate `methods` body; on success returns the `Token`; **zeroizes the secret/password buffer immediately after building the request** (the minter holds the credential only for the duration of one encode+send). This is used by the `/v1/login` page (Task 17/18) and by stdio/check env mint (Task 18/20).
   - `struct Whoami: Sendable { project: IdentityRef; domain: IdentityRef; roles: [String]; scopes: [TokenScope]; expiresAt: Date; credentialName: String?; unrestricted: Bool?; accessRules: [[String: String]]?; regions: [String]; services: [String: [String]] }` — built from a `ValidatedToken`; for an app-cred token additionally reads `GET /v3/users/{user_id}/application_credentials/{id}` (name/`unrestricted`/`access_rules`), tolerating 403/404.
@@ -401,7 +400,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 - [ ] **Step 2: Run to verify failure** — `scripts/swift test --filter VersioningTests`.
 
-- [ ] **Step 3: Implement** — version docs are cached in the shared `Cache` (Task 4) with TTL 1800s under resource key `__versions__/<service>/<region>` (e.g. `__versions__/nova/RegionOne`). No separate version-document cache exists; the `VersionNegotiator` takes a `Cache` in its init and stores/fetches through it. The `principalFingerprint` field of `CacheKey` is the **token id** for authenticated calls, or a stable per-deployment constant for the pre-auth version docs (version docs are the same for every tenant of a cloud) — tests pass a fixed constant.
+- [ ] **Step 3: Implement** — version docs are cached in the shared `Cache` (Task 4) with TTL 1800s under resource key `__versions__/<service>/<region>` (e.g. `__versions__/nova/RegionOne`). No separate version-document cache exists; the `VersionNegotiator` takes a `Cache` in its init and stores/fetches through it. the `tokenID` field of `CacheKey` is the **token id** for authenticated calls, or a stable per-deployment constant for the pre-auth version docs (version docs are the same for every tenant of a cloud) — tests pass a fixed constant.
 
 - [ ] **Step 4: Run to verify pass** — `scripts/swift test --filter VersioningTests`.
 
@@ -453,8 +452,8 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 **Interfaces:**
 - Consumes: `ValidatedToken` (Task 5, passed per call), `Transport` (Task 3), `VersionNegotiator` + `EndpointResolver` (Task 6), `Cache` (Task 4), `FakeState` (Task 7, tests).
 - Produces: `struct ComputeService { init(cloud: CloudEntry, cache: Cache, logger: Logger) }; func region(_ r: String?) -> ComputeRegion` where `ComputeRegion` (bound to one region, resolves endpoint + negotiates once lazily) exposes the same operations as before, **each taking the request's `vt: ValidatedToken` as its first argument** (e.g. `listServers(vt, filters: [String:String] = [:], limit: Int? = nil, marker: String? = nil)`; `getServer(vt, id:)`; `createServer(vt, spec)`; `action(vt, serverID:, action:)`; etc.) — the service is stateless w.r.t. identity and only ever presents the passed token upstream. Region defaults to the token-catalog's region for the cloud (or `clouds.yaml` `region_name` when present) else the first region in the token's catalog.
-  - `listServers(filters: [String:String] = [:], limit: Int? = nil, marker: String? = nil) async throws -> [Server]`; `getServer(id:)`; `createServer(_ spec: CreateServerSpec) async throws -> Server`; `updateServer(id:, name:, description:, metadata:, tags:)`; `deleteServer(id:, force: Bool)`; `action(_ serverID: String, _ action: ServerAction) async throws -> Server?` (`ServerAction` enum covering §8.6 compute rows: `.start, .stop, .reboot(soft: Bool), .pause, .unpause, .suspend, .resume, .lock, .unlock, .shelve, .unshelve, .rescue, .unrescue, .resize(flavorID: String), .confirmResize, .revertResize, .rebuild(imageID: String, adminPassword: String?), .snapshot(name: String), .consoleOutput(lines: Int), .consoleURL(type: String), .addSecurityGroup(id: String), .removeSecurityGroup(id: String), .evacuate, .liveMigrate, .migrate`);
-  - flavors list/get/create/delete; keypairs list/get/create(import or generate)/delete; server groups CRUD; availability zones list; hypervisors list/get (admin); compute services list + `setService(host:, disabled:, reason:)`; quotas get/update; `attachVolume(serverID:, volumeID:, device:, deleteOnTermination:)` / `detachVolume(...)` (uses feature `deleteOnTermination`; returns 202-async handling per `asyncVolumeAttach` feature — poll attachment until visible); `attachInterface(serverID:, netID:/subnetID:/portID:/fixedIP:)` / `detachInterface(...)`.
+  - `listServers(vt, filters: [String:String] = [:], limit: Int? = nil, marker: String? = nil) async throws -> [Server]`; `getServer(vt, id:)`; `createServer(vt, _ spec: CreateServerSpec) async throws -> Server`; `updateServer(vt, id:, name:, description:, metadata:, tags:)`; `deleteServer(vt, id:, force: Bool)`; `action(vt, _ serverID: String, _ action: ServerAction) async throws -> Server?` (`ServerAction` enum covering §8.6 compute rows: `.start, .stop, .reboot(soft: Bool), .pause, .unpause, .suspend, .resume, .lock, .unlock, .shelve, .unshelve, .rescue, .unrescue, .resize(flavorID: String), .confirmResize, .revertResize, .rebuild(imageID: String, adminPassword: String?), .snapshot(name: String), .consoleOutput(lines: Int), .consoleURL(type: String), .addSecurityGroup(id: String), .removeSecurityGroup(id: String), .evacuate, .liveMigrate, .migrate`);
+  - flavors `list(vt)`/`get(vt, id:)`/`create(vt, spec)`/`delete(vt, id:)`; keypairs `list(vt)`/`get(vt, name)`/`create(vt, import or generate)`/`delete(vt, name)`; server groups CRUD (all `vt`-first); availability zones `list(vt)`; hypervisors `list(vt)`/`get(vt, id:)` (admin); compute services `list(vt)` + `setService(vt, host:, disabled:, reason:)`; quotas `get(vt)`/`update(vt, ...)`; `attachVolume(vt, serverID:, volumeID:, device:, deleteOnTermination:)` / `detachVolume(vt, ...)` (uses feature `deleteOnTermination`; returns 202-async handling per `asyncVolumeAttach` feature — poll attachment until visible); `attachInterface(vt, serverID:, netID:/subnetID:/portID:/fixedIP:)` / `detachInterface(vt, ...)`.
   - Models: `Server { id, name, status, flavor: FlavorRef, addresses: [String: [Address]], created: Date, metadata: [String:String], tags: [String], hostId, keyName, configDrive, availabilityZone, user_id, project_id }`, `CreateServerSpec` (name, flavor, image, networks, keyName, availabilityZone, configDrive, metadata, personality, userData, schedulerHints, minCount, maxCount, serverGroup) with the feature-gated fields (hostname 2.90, pinned AZ 2.96) throwing a clear error if used below their microversion.
   - **`user_data` rule:** accepted in spec, base64, never stored in decoded form in models/logs — the service sends it as-is.
 
@@ -470,7 +469,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 - [ ] **Step 2: Run to verify failure** — `scripts/swift test --filter ComputeServiceTests`.
 
-- [ ] **Step 3: Implement** — endpoint resolved via `EndpointResolver` (service type `compute`), the passed `vt` token presented as `X-Auth-Token` on each request, microversion header injected per negotiated value (call `VersionNegotiator` lazily once per `ComputeRegion`), cache lists with TTL 60s (Global Constraints) under `CacheKey(principalFingerprint: vt.token.id, region:resource:"server":suffix:"f:")+sorted-filter-string`, invalidate on mutation per §10.4 (list cache for `server` and for linked resources via the catalog in Task 12) keyed by the same token id.
+- [ ] **Step 3: Implement** — endpoint resolved via `EndpointResolver` (service type `compute`), the passed `vt` token presented as `X-Auth-Token` on each request, microversion header injected per negotiated value (call `VersionNegotiator` lazily once per `ComputeRegion`), cache lists with TTL 60s (Global Constraints) under `CacheKey(tokenID: vt.token.id, region:resource:"server":suffix:"f:")+sorted-filter-string`, invalidate on mutation per §10.4 (list cache for `server` and for linked resources via the catalog in Task 12) keyed by the same token id.
 
 - [ ] **Step 4: Run to verify pass** — `scripts/swift test --filter ComputeServiceTests`.
 
@@ -733,7 +732,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 - [ ] **Step 4: Run to verify pass.**
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(server): openstack:// resources and three prompts"`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(server): openstack:// resources and four prompts (incl. login)"`.
 
 ---
 
@@ -847,7 +846,7 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
 
 ---
 
-## Task 20: CLI — check, access-rules, tools
+## Task 20: CLI — check, access-rules, tools, register-catalog
 
 **Files:**
 - Create: `Sources/OpenStackMCP/Commands/Check.swift`, `Sources/OpenStackMCP/Commands/AccessRules.swift`, `Sources/OpenStackMCP/Commands/Tools.swift`, `Sources/OpenStackMCP/Commands/RegisterCatalog.swift`
@@ -874,13 +873,13 @@ git commit -m "feat(client): clouds.yaml/secure.yaml loading and first-colon bea
   - `RegisterCatalogTests.swift`: against the fake Keystone (admin token), run `register-catalog` once �� creates service `type=mcp`+`name=openstack-mcp` and 3 endpoints (public/internal/admin); run it AGAIN → idempotent (no duplicate service/endpoint; assert counts unchanged and same ids returned).
   - `SubcommandTests.swift` (pin: direct function calls into a `func run(_ args: [String]) async -> Int` exposed by the command types for testability): `check` against the fake with `OS_AUTH_TOKEN` set to a minted admin token → exit 0, stdout contains project name, derived scopes `[openstack:read openstack:write]`, regions, `2.104`; with a bogus token → exit 1. `tools --json` → valid JSON with 15 tool names; `tools --read-only --json` → 9.
 
-- [ ] **Step 2: Run to verify failure** — `scripts/swift test --filter "AccessRulesTests|SubcommandTests"`.
+- [ ] **Step 2: Run to verify failure** — `scripts/swift test --filter "AccessRulesTests|RegisterCatalogTests|SubcommandTests"`.
 
 - [ ] **Step 3: Implement.**
 
 - [ ] **Step 4: Run to verify pass.**
 
-- [ ] **Step 5: Commit** — `git commit -m "feat(cli): check, access-rules generator, tools dump"`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(cli): check, access-rules generator, tools dump, register-catalog"`.
 
 ---
 
@@ -957,5 +956,5 @@ Tasks 2–6: 3 needs 2's types; 4 (cache) is independent of 3–5 and could run 
 
 - **Spec coverage (post-auth-rework):** §1–5 → Tasks 1, 11, 12, 17. §6.0 (token-per-request, no held credentials, no non-Keystone tokens) → 5, 14, 17, 18, 22. §6.1 (profiles P1/P2, client-side mint + URL-mode login, stdio) → 5, 16, 17, 18. §6.1.2 (scopes openstack:read/write) → 5, 14, 18, 22. §6.2 (credential handling, secret zeroize) → 5 (LoginMinter), 18 (TokenStore). §6.3 → 20. §6.4 → 13. §6.5 (Keystone catalog registration) → 20 (register-catalog), 21 (register-catalog.sh). §7.1 → 17, 18. §7.2 → 18. §7.3 → 18, 19, 21. §8.1–8.4 → 14, 15. §8.5 → 12 (+8–10). §8.6 → 8, 10, 12. §8.7–8.9 → 15. §9 → 16. §10.1 → 6. §10.2 → 3, 8–10. §10.3 → 3. §10.4 → 4, 6, 8–10. §11 → 18, 19, 20, 21. §12 → 19, 22. §13 → 21. §14 → distributed per task; soak → 18; conformance → 22. §15 → 1, 21. §16 → whole plan. No uncovered phase-1 requirement found.
 - **Type consistency (post-auth-rework):** `TokenValidator`/`ValidatedToken` (Task 5) used in Tasks 14, 17, 18, 22; `LoginMinter`/`MintMethod` (Task 5) used in Tasks 16, 18, 20; `TokenScope`/scope derivation (Task 5) used in Task 14 (`visibleTools`) and 18 (`AppTokenValidator`); `RequestIdentity{vt, whoami, clientCapabilities}` (Task 14) built by Task 18's `serverFactory` and consumed by `ToolRegistry.server(for:)`; `TokenValidating` seam (Task 17) → `AppTokenValidator` (Task 18); `TokenStore` (Task 18) zeroized on session end; `ProtectedResourceMetadata` (Task 18) served by Task 17's PRM routes; `Whoami` (Task 5) read by `os_whoami` (Task 14). No dangling `MCPPrincipal`/`clientFactory`/`fingerprint`/`ApplicationCredential.parseBearer`-as-per-request-auth remains.
-- **Proportion:** 22 tasks, each carrying its own test cycle; the plan is ~1.3× the spec length, code blocks limited to test assertions and pinned data (schema paths, metric names, env var names). (Adversarial review pass 1 applied: task renumbering 4↔6, TTL table pinned to §10.4 verbatim, protocol seams renamed, container platform flag added, conformance script de-curl'd. Auth rework applied: token-per-request identity, P1/P2 profiles, scope-aware tool availability, catalog registration, URL-mode login, PRM, de-identified sessions.)
+- **Proportion:** 22 tasks, each carrying its own test cycle; the plan is ~1.3× the spec length, code blocks limited to test assertions and pinned data (schema paths, metric names, env var names). (Adversarial review pass 1 applied: task renumbering 4↔6, TTL table pinned to §10.4 verbatim, protocol seams renamed, container platform flag added, conformance script de-curl'd. Auth rework applied: token-per-request identity, P1/P2 profiles, scope-aware tool availability, catalog registration, URL-mode login, PRM, de-identified sessions. **Final pass applied:** Goal/Architecture headers de-app-cred'd; Task 8 op list restored to `vt`-first signatures (real bug — had reverted to no-`vt`); `CacheKey` field renamed `principalFingerprint`→`tokenID` throughout (Tasks 4, 5, 6, 8) so the token-id cache keying is uniform; file-structure Prompts list + `Session/Principal.swift` REMOVED line tidied; Task 2/16/20 commit messages and header fixed (three→four prompts, register-catalog); Task 20 Step 2 filter adds `RegisterCatalogTests`; spec-coverage note added that `register-catalog` is a shipped command per §6.5 though the §11.3 subcommand list names only the five core ones.)
 - **Known deviations from spec (documented, owner-approved context):** (a) runtime base UBI10 instead of Rocky 9 (owner chose `swift:6.4-rhel-ubi10`; Task 21 runtime follows suit); (b) Swift 6.4 instead of the spec's 6.2 (owner's toolchain); (c) `openstack-mcp-fake` realized as a small second executable target if SPM forbids @main in a library (Task 1 note); (d) container build adds `--platform linux/amd64` for Apple Silicon host parity (Global Constraints); (e) Task 22 conformance smoke uses the binary's own HTTP stack instead of `curl` (absent from ubi10-minimal runtime); (f) cache TTLs follow spec §10.4 verbatim (Global Constraints) — the spec's §4 "starting values" paragraph is a different, Substation-derived table and is NOT the source of truth for this plan; (g) MCP 2025-11-25 does not mandate Origin checks on an HTTP+Bearer server, so Task 22 drops the old cross-origin assertion (bearer token is the boundary).
