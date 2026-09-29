@@ -42,16 +42,18 @@ public struct NetworkRegion: Sendable {
     private let logger: Logger
     private let defaultRegion: String?
     private let basePath: String
+    private let serviceType: String
 
     private static let extensionsResource = "__extensions__"
 
-    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, defaultRegion: String?, basePath: String) {
+    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, defaultRegion: String?, basePath: String, serviceType: String = "network") {
         self.cloud = cloud
         self.transport = transport
         self.cache = cache
         self.logger = logger
         self.defaultRegion = defaultRegion
         self.basePath = basePath
+        self.serviceType = serviceType
     }
 
     // MARK: - Extension discovery
@@ -109,7 +111,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Network] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "network", suffix: suffix)
 
@@ -154,7 +156,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getNetwork(_ vt: ValidatedToken, id: String) async throws -> Network {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -177,7 +179,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createNetwork(_ vt: ValidatedToken, _ spec: CreateNetworkSpec) async throws -> Network {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         if spec.provider != nil {
             let ext = try await discoverExtensions(vt, region: region)
             try requireExtension("provider", ext)
@@ -207,7 +209,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func updateNetwork(_ vt: ValidatedToken, id: String, _ spec: UpdateNetworkSpec) async throws -> Network {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "PUT",
             service: "network",
@@ -232,7 +234,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteNetwork(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -262,7 +264,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Subnet] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "subnet", suffix: suffix)
 
@@ -305,7 +307,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSubnet(_ vt: ValidatedToken, id: String) async throws -> Subnet {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -328,7 +330,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createSubnet(_ vt: ValidatedToken, _ spec: CreateSubnetSpec) async throws -> Subnet {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "network",
@@ -354,7 +356,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func updateSubnet(_ vt: ValidatedToken, id: String, name: String? = nil, enableDHCP: Bool? = nil) async throws -> Subnet {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let name { parts.append("\"name\":\"\(name)\"") }
         if let enableDHCP { parts.append("\"enable_dhcp\":\(enableDHCP ? "true" : "false")") }
@@ -384,7 +386,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteSubnet(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -413,7 +415,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Port] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "port", suffix: suffix)
 
@@ -456,7 +458,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getPort(_ vt: ValidatedToken, id: String) async throws -> Port {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -480,7 +482,7 @@ public struct NetworkRegion: Sendable {
 
     /// Create a port. An empty `fixedIPs` list asks Neutron to auto-assign.
     public func createPort(_ vt: ValidatedToken, _ spec: CreatePortSpec) async throws -> Port {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "network",
@@ -505,7 +507,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func updatePort(_ vt: ValidatedToken, id: String, name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil) async throws -> Port {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let spec = UpdatePortSpec(name: name, adminStateUp: adminStateUp, description: description)
         let result = try await transport.request(
             method: "PUT",
@@ -531,7 +533,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deletePort(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -560,7 +562,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Router] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "router", suffix: suffix)
 
@@ -603,7 +605,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getRouter(_ vt: ValidatedToken, id: String) async throws -> Router {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -626,7 +628,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createRouter(_ vt: ValidatedToken, _ spec: CreateRouterSpec) async throws -> Router {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "network",
@@ -652,7 +654,7 @@ public struct NetworkRegion: Sendable {
 
     /// Update a router, optionally setting or removing its external gateway.
     public func updateRouter(_ vt: ValidatedToken, id: String, name: String? = nil, externalGatewayInfo: Router.ExternalGatewayInfo? = nil) async throws -> Router {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let name { parts.append("\"name\":\"\(name)\"") }
         if let externalGatewayInfo {
@@ -684,7 +686,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteRouter(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -713,7 +715,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [FloatingIP] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "floatingip", suffix: suffix)
 
@@ -756,7 +758,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getFloatingIP(_ vt: ValidatedToken, id: String) async throws -> FloatingIP {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -779,7 +781,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createFloatingIP(_ vt: ValidatedToken, _ spec: CreateFloatingIPSpec) async throws -> FloatingIP {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "network",
@@ -805,7 +807,7 @@ public struct NetworkRegion: Sendable {
 
     /// Associate (portID set) or disassociate (portID nil) a floating IP.
     public func updateFloatingIP(_ vt: ValidatedToken, id: String, portID: String? = nil, fixedIPAddress: String? = nil) async throws -> FloatingIP {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let portID { parts.append("\"port_id\":\"\(portID)\"") }
         if let fixedIPAddress { parts.append("\"fixed_ip_address\":\"\(fixedIPAddress)\"") }
@@ -835,7 +837,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteFloatingIP(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -863,7 +865,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [SecurityGroup] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "securitygroup", suffix: "")
 
         if let cached = try await cache.get(key, ttl: .seconds(300), as: [SecurityGroup].self) {
@@ -902,7 +904,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSecurityGroup(_ vt: ValidatedToken, id: String) async throws -> SecurityGroup {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -925,7 +927,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createSecurityGroup(_ vt: ValidatedToken, _ spec: CreateSecurityGroupSpec) async throws -> SecurityGroup {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "network",
@@ -950,7 +952,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteSecurityGroup(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -979,7 +981,7 @@ public struct NetworkRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [SecurityGroupRule] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = securityGroupID.map { "sg:\($0)" } ?? ""
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "securitygrouprule", suffix: suffix)
 
@@ -1022,7 +1024,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSecurityGroupRule(_ vt: ValidatedToken, id: String) async throws -> SecurityGroupRule {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "network",
@@ -1055,7 +1057,7 @@ public struct NetworkRegion: Sendable {
         portRangeMax: Int? = nil,
         remoteIPPrefix: String? = nil
     ) async throws -> SecurityGroupRule {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let spec = CreateSecurityGroupRuleSpec(
             securityGroupID: securityGroupID,
             direction: direction,
@@ -1089,7 +1091,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteSecurityGroupRule(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "network",
@@ -1113,7 +1115,7 @@ public struct NetworkRegion: Sendable {
     // MARK: - Address groups (extension-gated)
 
     public func listAddressGroups(_ vt: ValidatedToken) async throws -> [AddressGroup] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
@@ -1139,7 +1141,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getAddressGroup(_ vt: ValidatedToken, id: String) async throws -> AddressGroup {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
@@ -1165,7 +1167,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func createAddressGroup(_ vt: ValidatedToken, _ spec: CreateAddressGroupSpec) async throws -> AddressGroup {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
@@ -1192,7 +1194,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func deleteAddressGroup(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
@@ -1218,7 +1220,7 @@ public struct NetworkRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuota(_ vt: ValidatedToken) async throws -> NetworkQuota {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let projectID = vt.token.project.id
         let result = try await transport.request(
             method: "GET",
@@ -1242,7 +1244,7 @@ public struct NetworkRegion: Sendable {
     }
 
     public func updateQuota(_ vt: ValidatedToken, _ quota: NetworkQuota) async throws -> NetworkQuota {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
         let result = try await transport.request(
             method: "PUT",
@@ -1269,7 +1271,9 @@ public struct NetworkRegion: Sendable {
 
     // MARK: - Private helpers
 
-    private func resolveRegion(_ vt: ValidatedToken) -> String {
-        defaultRegion ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+    private func resolveRegion(_ vt: ValidatedToken) throws -> String {
+        let region = defaultRegion ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        return region
     }
 }
