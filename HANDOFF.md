@@ -1,29 +1,34 @@
-# Handoff: OpenStack MCP Phase 1 — Task 11 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 12 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 10 (commit `9f17db8`). All tasks through 10 merged.
-- **Latest commit**: `9f17db8` — feat(client): cinder block storage + glance image services
-- **Tests**: 139 tests in 15 suites, all green
+- **Main**: up through Task 11 (commit `274da22`). All tasks through 11 merged.
+- **Latest commit**: `3df4ae5` — feat(client): OpenStackClient facade over services
+- **Tests**: 154 tests in 17 suites, all green
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 11: OpenStackClient facade**
+**Start Task 12: Resource catalog — all phase 1 entries**
 
-A thin facade that composes the per-service clients behind a single entry point:
-`OpenStackClient(cloud:transport:cache:logger:)` with accessors like
-`client.compute(region:)`, `client.network(region:)`,
-`client.blockStorage(region:)`, `client.image(region:)`.
+The resource catalog is the declarative backbone of the MCP server. It describes
+every resource (33 names per spec §8.5) with verbs, actions, links, terminal
+states, and JSON schemas. This is the seam that keeps the MCP layer declarative
+while the `ServiceDispatch` closures wire to `OpenStackClient` (Task 11).
 
-No new fakes or models — pure composition of existing services.
+Key types to create: `ResourceDescriptor`, `ActionSpec`, `ParamSpec`, `LinkSpec`,
+`ResourceRef`, `JSONSchema` (small subset with `validate()`), `ResourceCatalog`
+(`static func phase1()`), `ServiceDispatch`, `Verb` enum, `Service` enum.
 
-## Remaining Tasks After 10
+Completeness tests assert: every `.create` has `createSchema`, every `.update`
+has `updateSchema`, 33 resource names match §8.5, actions match §8.6 (destructive
+flags), terminal states match §8.9, links match §8.7.
+
+## Remaining Tasks After 11
 
 | Task | Description |
 |------|-------------|
-| 11 | OpenStackClient facade — `cloud.compute(region:)` etc. |
 | 12 | Resource catalog — all phase 1 entries |
 | 13 | Policy + name resolution + validation + output shaping |
 | 14 | Tool registry + describe tools + verb tools (in-process MCP tests) |
@@ -36,7 +41,7 @@ No new fakes or models — pure composition of existing services.
 | 21 | Deployment assets + README |
 | 22 | Integration test (opt-in) + conformance pass + final hardening sweep |
 
-## Services Completed (Tasks 1-10)
+## Services Completed (Tasks 1-11)
 
 | Service | File | Region Type | Key Details |
 |---------|------|-------------|-------------|
@@ -45,6 +50,7 @@ No new fakes or models — pure composition of existing services.
 | Network (Neutron) | `NetworkService.swift` | `NetworkRegion` | Extension gating, auto-assign IPs, IP conflict 409 |
 | Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions (extend/retype/bootable/upload/reset-status) |
 | Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload, tags, protect, deactivate |
+| **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator, `compute/network/blockStorage/image(region:)`, `regions(vt)`, `whoami(vt)`** |
 
 ## Fakes
 
@@ -60,15 +66,15 @@ No new fakes or models — pure composition of existing services.
 
 - `proj-one`: `net-ext`/`net-int`, `subnet-ext` (10.0.0.0/24)/`subnet-int` (192.168.1.0/24),
   `port-001` (10.0.0.5), `fip-001` (203.0.113.10 DOWN), `sg-default`, `router-1`,
-  `seed-vol` (available, 10GB, lvmdriver-1), `img-1` (ubuntu-24.04, active, public, qcow2)
-- `proj-two`: minimal (for isolation tests)
+  3 servers (srv-0001..0003, ACTIVE), `seed-vol` (available, 10GB, lvmdriver-1), `img-1` (ubuntu-24.04, active, public, qcow2)
+- `proj-two`: minimal — `net-two`, 1 server (srv-0004, ACTIVE)
 - Volume types: `vt-1` (lvmdriver-1), `vt-2` (lvmdriver-2)
 - Quotas: volume=10, gigabytes=1000, snapshots=10; network=10, subnet=10, port=50
-- Service catalog: `RegionOne` has all 5 services; `RegionTwo` lacks `cinder`
+- Service catalog: `RegionOne` has all 5 services; `RegionTwo` lacks `cinder` (volumev3)
 - Cinder service type: `volumev3` (fall back to `volume`)
 - Glance service type: `image`
 
-## Key Implementation Patterns (learned from Tasks 1-10)
+## Key Implementation Patterns (learned from Tasks 1-11)
 
 ### Transport
 - `Transport` is an **actor**, base URL = `cloud.authURL` (the host root)
@@ -104,13 +110,29 @@ public struct XRegion: Sendable {
     let cache: Cache
     let logger: Logger
     let basePath: String
+    let serviceType: String
+    let defaultRegion: String?
 
     // Every operation takes `_ vt: ValidatedToken` as first arg
     public func listXs(_ vt: ValidatedToken, filters:..., limit:..., marker:...) async throws -> [X]
     public func createX(_ vt: ValidatedToken, _ spec: CreateXSpec) async throws -> X
     // ...
+    // resolveRegion(vt) is the single chokepoint: resolves region name AND
+    // calls guardEndpoint(serviceType:region:vt:) to enforce no-endpoint (RF3)
 }
 ```
+
+### Facade Pattern (Task 11)
+- `actor OpenStackClient` holds: `cloud`, `transport`, `cache`, `validator` (TokenValidator), `logger`
+- **Stateless w.r.t. identity**: every op takes `ValidatedToken`
+- `compute(region:)`, `network(region:)`, `blockStorage(region:)`, `image(region:)` → region structs
+- `regions(vt)` → distinct regions from token catalog (ordered)
+- `whoami(vt)` → `Whoami` with project/domain/roles/scopes/regions/services map
+- `defaultRegion(vt)` → cloud.regionName ?? first catalog region ?? "RegionOne"
+- `EndpointGuard.swift`: `guardEndpoint(serviceType:region:vt:)` throws no-endpoint if catalog lacks the service endpoint
+- Each Region's `resolveRegion(vt)` is `throws` and calls `guardEndpoint` after resolving the region string
+- `serviceType` per region: compute→"compute", network→"network", blockStorage→"volumev3", image→"image"
+- **Fixed bug**: BlockStorageRegion/ImageRegion ignored the `region` param — now plumbed as `defaultRegion`
 
 ### Model Pattern
 - `Sendable, Codable, Identifiable` for resource models
@@ -172,6 +194,8 @@ public struct XRegion: Sendable {
 - `OpenStackError.normalize` checks `NeutronError` key **first** (before generic firstKey branch)
 - `ipInCidr` uses numerical prefix match (string `hasPrefix` fails for CIDR comparison)
 - `FakeState.extensions` is a public mutable `Set<String>`; `removeExtension(_:)` for tests
+- `#expect(false, ...)` triggers a compiler warning — use `Issue.record("...")` instead in do/catch test patterns
+- `getVolume` and similar single-ID methods require the `id:` argument label
 
 ### Package.swift
 - `OpenStackClientTests` depends on: `OpenStackClient`, `FakeOpenStack`, `HummingbirdTesting`, `Hummingbird`
