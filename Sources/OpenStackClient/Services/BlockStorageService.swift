@@ -9,16 +9,20 @@ public struct BlockStorageRegion: Sendable {
     let cache: Cache
     let logger: Logger
     let basePath: String
+    let serviceType: String
+    let defaultRegion: String?
 
     static let floor = "3.44"
     static let clientMax = "3.70"
 
-    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String) {
+    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "volumev3", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
         self.cache = cache
         self.logger = logger
         self.basePath = basePath
+        self.serviceType = serviceType
+        self.defaultRegion = defaultRegion
     }
 
     /// Every request carries the API-version header. The fake rejects requests
@@ -35,7 +39,7 @@ public struct BlockStorageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Volume] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "volume", suffix: suffix)
 
@@ -69,7 +73,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getVolume(_ vt: ValidatedToken, id: String) async throws -> Volume {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -85,7 +89,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createVolume(_ vt: ValidatedToken, _ spec: CreateVolumeSpec) async throws -> Volume {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "volumev3",
@@ -103,7 +107,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteVolume(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "volumev3",
@@ -120,7 +124,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func extendVolume(_ vt: ValidatedToken, id: String, size: Int) async throws -> Volume {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"os-extend\":{\"new_size\":\(size)}}"
         let result = try await transport.request(
             method: "POST",
@@ -139,7 +143,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func retypeVolume(_ vt: ValidatedToken, id: String, volumeType: String) async throws -> Volume {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"os-retype\":{\"new_type\":\"\(volumeType)\"}}"
         let result = try await transport.request(
             method: "POST",
@@ -158,7 +162,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func setBootable(_ vt: ValidatedToken, id: String, bootable: Bool) async throws -> Volume {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"os-set_bootable\":{\"bootable\":\(bootable ? "true" : "false")}}"
         let result = try await transport.request(
             method: "POST",
@@ -177,7 +181,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func uploadToImage(_ vt: ValidatedToken, id: String) async throws -> String {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"os-volume_upload_to_image\":{}}"
         let result = try await transport.request(
             method: "POST",
@@ -199,7 +203,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func resetStatus(_ vt: ValidatedToken, id: String, status: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"reset-status\":{\"status\":\"\(status)\"}}"
         let result = try await transport.request(
             method: "POST",
@@ -218,7 +222,7 @@ public struct BlockStorageRegion: Sendable {
     // MARK: - Volume Types
 
     public func listVolumeTypes(_ vt: ValidatedToken) async throws -> [VolumeType] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -234,7 +238,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getVolumeType(_ vt: ValidatedToken, id: String) async throws -> VolumeType {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -250,7 +254,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createVolumeType(_ vt: ValidatedToken, _ spec: CreateVolumeTypeSpec) async throws -> VolumeType {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "volumev3",
@@ -267,7 +271,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteVolumeType(_ vt: ValidatedToken, id: String) async throws {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "volumev3",
@@ -290,7 +294,7 @@ public struct BlockStorageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Snapshot] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
@@ -312,7 +316,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getSnapshot(_ vt: ValidatedToken, id: String) async throws -> Snapshot {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -328,7 +332,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createSnapshot(_ vt: ValidatedToken, _ spec: CreateSnapshotSpec) async throws -> Snapshot {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "volumev3",
@@ -345,7 +349,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteSnapshot(_ vt: ValidatedToken, id: String) async throws {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "volumev3",
@@ -368,7 +372,7 @@ public struct BlockStorageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Backup] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
@@ -390,7 +394,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getBackup(_ vt: ValidatedToken, id: String) async throws -> Backup {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -406,7 +410,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createBackup(_ vt: ValidatedToken, _ spec: CreateBackupSpec) async throws -> Backup {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "volumev3",
@@ -423,7 +427,7 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteBackup(_ vt: ValidatedToken, id: String) async throws {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "volumev3",
@@ -440,7 +444,7 @@ public struct BlockStorageRegion: Sendable {
 
     /// Restore a backup into a new volume. Returns the restored volume.
     public func restoreBackup(_ vt: ValidatedToken, id: String) async throws -> Volume {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"restore\":{}}"
         let result = try await transport.request(
             method: "POST",
@@ -461,7 +465,7 @@ public struct BlockStorageRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuota(_ vt: ValidatedToken) async throws -> VolumeQuota {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "volumev3",
@@ -478,8 +482,10 @@ public struct BlockStorageRegion: Sendable {
 
     // MARK: - Helpers
 
-    private func resolveRegion(_ vt: ValidatedToken) -> String {
-        cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+    private func resolveRegion(_ vt: ValidatedToken) throws -> String {
+        let region = defaultRegion ?? cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        return region
     }
 }
 
@@ -498,6 +504,6 @@ public struct BlockStorageService: Sendable {
     }
 
     public func region(_ region: String? = nil) -> BlockStorageRegion {
-        BlockStorageRegion(cloud: cloud, transport: transport, cache: cache, logger: logger, basePath: "cinder/v3")
+        BlockStorageRegion(cloud: cloud, transport: transport, cache: cache, logger: logger, basePath: "cinder/v3", defaultRegion: region ?? cloud.regionName)
     }
 }

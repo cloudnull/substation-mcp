@@ -44,13 +44,16 @@ public struct ComputeRegion: Sendable {
     // Lazily negotiated state (stored in the cache)
     private static let mvCacheResource = "__microversion__"
 
-    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, defaultRegion: String?, basePath: String) {
+    private let serviceType: String
+
+    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, defaultRegion: String?, basePath: String, serviceType: String = "compute") {
         self.cloud = cloud
         self.transport = transport
         self.cache = cache
         self.logger = logger
         self.defaultRegion = defaultRegion
         self.basePath = basePath
+        self.serviceType = serviceType
     }
 
     // MARK: - Server operations
@@ -61,7 +64,7 @@ public struct ComputeRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Server] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","))"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "server", suffix: suffix)
 
@@ -117,7 +120,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getServer(_ vt: ValidatedToken, id: String) async throws -> Server {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -159,7 +162,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func createServer(_ vt: ValidatedToken, _ spec: CreateServerSpec) async throws -> Server {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         // Microversion gating for feature-gated fields
         let mv = try await negotiateMicroversion(vt, region: region)
         if spec.hostname != nil, mv < Microversion(major: 2, minor: 90) {
@@ -203,7 +206,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func deleteServer(_ vt: ValidatedToken, id: String, force: Bool = false) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var query: [URLQueryItem] = []
         if force {
             query.append(URLQueryItem(name: "force", value: "true"))
@@ -225,7 +228,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func action(_ vt: ValidatedToken, _ serverID: String, _ action: ServerAction) async throws -> Server? {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = action.body().data(using: .utf8)!
 
         let result = try await transport.request(
@@ -253,7 +256,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Flavors
 
     public func listFlavors(_ vt: ValidatedToken) async throws -> [Flavor] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "flavor", suffix: "")
 
         if let cached = try await cache.get(key, ttl: .seconds(300), as: [Flavor].self) {
@@ -277,7 +280,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getFlavor(_ vt: ValidatedToken, id: String) async throws -> Flavor {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -296,7 +299,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Keypairs
 
     public func listKeypairs(_ vt: ValidatedToken) async throws -> [KeyPair] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -313,7 +316,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func createKeyPair(_ vt: ValidatedToken, name: String, publicKey: String?) async throws -> KeyPair {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let keypairJSON = publicKey != nil
             ? "{\"keypair\":{\"name\":\"\(name)\",\"public_key\":\"\(publicKey!)\"}}"
             : "{\"keypair\":{\"name\":\"\(name)\"}}"
@@ -336,7 +339,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func deleteKeyPair(_ vt: ValidatedToken, name: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "compute",
@@ -350,7 +353,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Server groups
 
     public func listServerGroups(_ vt: ValidatedToken) async throws -> [ServerGroup] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -369,7 +372,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Availability zones
 
     public func listAvailabilityZones(_ vt: ValidatedToken) async throws -> [AvailabilityZone] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -388,7 +391,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Hypervisors (admin)
 
     public func listHypervisors(_ vt: ValidatedToken) async throws -> [Hypervisor] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -405,7 +408,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getHypervisor(_ vt: ValidatedToken, host: String) async throws -> Hypervisor {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -424,7 +427,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Compute services (admin)
 
     public func listComputeServices(_ vt: ValidatedToken) async throws -> [ComputeServiceInfo] {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "compute",
@@ -443,7 +446,7 @@ public struct ComputeRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuotaSet(_ vt: ValidatedToken) async throws -> QuotaSet {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let projectID = vt.token.project.id
         let result = try await transport.request(
             method: "GET",
@@ -461,7 +464,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func updateQuotaSet(_ vt: ValidatedToken, quotas: QuotaSet) async throws -> QuotaSet {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
 
         // Build quota update body
@@ -504,7 +507,7 @@ public struct ComputeRegion: Sendable {
         device: String? = nil,
         deleteOnTermination: Bool? = nil
     ) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = ["\"volumeId\":\"\(volumeID)\""]
         if let device { parts.append("\"device\":\"\(device)\"") }
         if let deleteOnTermination { parts.append("\"delete_on_termination\":\(deleteOnTermination ? "true" : "false")") }
@@ -522,7 +525,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func detachVolume(_ vt: ValidatedToken, serverID: String, attachmentID: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "compute",
@@ -543,7 +546,7 @@ public struct ComputeRegion: Sendable {
         portID: String? = nil,
         fixedIP: String? = nil
     ) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let networkID { parts.append("\"net_id\":\"\(networkID)\"") }
         if let subnetID { parts.append("\"subnet_id\":\"\(subnetID)\"") }
@@ -563,7 +566,7 @@ public struct ComputeRegion: Sendable {
     }
 
     public func detachInterface(_ vt: ValidatedToken, serverID: String, portID: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"os-interface-detach\":{\"port\":\"\(portID)\"}}"
         let result = try await transport.request(
             method: "POST",
@@ -586,7 +589,7 @@ public struct ComputeRegion: Sendable {
         metadata: [String: String]? = nil,
         tags: [String]? = nil
     ) async throws -> Server {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let name { parts.append("\"name\":\"\(name)\"") }
         if let description { parts.append("\"description\":\"\(description)\"") }
@@ -615,8 +618,10 @@ public struct ComputeRegion: Sendable {
 
     // MARK: - Private helpers
 
-    private func resolveRegion(_ vt: ValidatedToken) -> String {
-        defaultRegion ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+    private func resolveRegion(_ vt: ValidatedToken) throws -> String {
+        let region = defaultRegion ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        return region
     }
 
     private func negotiateMicroversion(_ vt: ValidatedToken, region: String) async throws -> Microversion {

@@ -8,13 +8,17 @@ public struct ImageRegion: Sendable {
     let cache: Cache
     let logger: Logger
     let basePath: String
+    let serviceType: String
+    let defaultRegion: String?
 
-    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String) {
+    init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "image", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
         self.cache = cache
         self.logger = logger
         self.basePath = basePath
+        self.serviceType = serviceType
+        self.defaultRegion = defaultRegion
     }
 
     // MARK: - Images
@@ -25,7 +29,7 @@ public struct ImageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Image] {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "image", suffix: suffix)
 
@@ -56,7 +60,7 @@ public struct ImageRegion: Sendable {
     }
 
     public func getImage(_ vt: ValidatedToken, id: String) async throws -> Image {
-        _ = resolveRegion(vt)
+        _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
             service: "image",
@@ -71,7 +75,7 @@ public struct ImageRegion: Sendable {
     }
 
     public func createImage(_ vt: ValidatedToken, _ spec: CreateImageSpec) async throws -> Image {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
             service: "image",
@@ -96,7 +100,7 @@ public struct ImageRegion: Sendable {
         properties: [String: String]? = nil,
         status: String? = nil
     ) async throws -> Image {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var parts: [String] = []
         if let name { parts.append("\"name\":\"\(name)\"") }
         if let visibility { parts.append("\"visibility\":\"\(visibility)\"") }
@@ -124,7 +128,7 @@ public struct ImageRegion: Sendable {
     }
 
     public func deleteImage(_ vt: ValidatedToken, id: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "image",
@@ -142,7 +146,7 @@ public struct ImageRegion: Sendable {
     // MARK: - Tags
 
     public func addTags(_ vt: ValidatedToken, id: String, tags: [String]) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let joined = tags.map { "\"\($0)\"" }.joined(separator: ",")
         let body = "{\"tags\":[\(joined)]}"
         let result = try await transport.request(
@@ -159,7 +163,7 @@ public struct ImageRegion: Sendable {
     }
 
     public func removeTag(_ vt: ValidatedToken, id: String, tag: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "DELETE",
             service: "image",
@@ -201,7 +205,7 @@ public struct ImageRegion: Sendable {
     /// Import an image via the web-download mechanism. The fake fetches from
     /// the given URI (which can point at its own static file route).
     public func importImage(_ vt: ValidatedToken, id: String, mechanism: String, uri: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"import\":\(mechanism == "web-download" ? "{\"method\":\"web-download\",\"uri\":\"\(uri)\"}" : "{}}")}"
         let result = try await transport.request(
             method: "POST",
@@ -218,7 +222,7 @@ public struct ImageRegion: Sendable {
 
     /// Upload a small base64-encoded payload directly via PUT with X-Image-Meta headers.
     public func uploadImage(_ vt: ValidatedToken, id: String, data: String, diskFormat: String) async throws {
-        let region = resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let payload = Data(data.utf8)
         let result = try await transport.request(
             method: "PUT",
@@ -239,8 +243,10 @@ public struct ImageRegion: Sendable {
 
     // MARK: - Helpers
 
-    private func resolveRegion(_ vt: ValidatedToken) -> String {
-        cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+    private func resolveRegion(_ vt: ValidatedToken) throws -> String {
+        let region = defaultRegion ?? cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        return region
     }
 }
 
@@ -259,6 +265,6 @@ public struct ImageService: Sendable {
     }
 
     public func region(_ region: String? = nil) -> ImageRegion {
-        ImageRegion(cloud: cloud, transport: transport, cache: cache, logger: logger, basePath: "glance/v2")
+        ImageRegion(cloud: cloud, transport: transport, cache: cache, logger: logger, basePath: "glance/v2", defaultRegion: region ?? cloud.regionName)
     }
 }
