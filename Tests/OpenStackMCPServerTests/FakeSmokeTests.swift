@@ -9,7 +9,7 @@ struct FakeSmokeTests {
     @Test("mint and validate token via fake Keystone", .timeLimit(.minutes(1)))
     func mintAndValidate() async throws {
         let handle = try await FakeApp.start()
-        defer { await handle.stop() }
+        defer { handle.stop() }
 
         let mintBody = """
         {"auth":{"identity":{"methods":["application_credential"],"applicationCredential":{"id":"fake-cred-admin","secret":"secret-admin"}}}}
@@ -58,7 +58,7 @@ struct FakeSmokeTests {
     @Test("reject bad credentials", .timeLimit(.minutes(1)))
     func rejectBadCredentials() async throws {
         let handle = try await FakeApp.start()
-        defer { await handle.stop() }
+        defer { handle.stop() }
 
         let mintBody = """
         {"auth":{"identity":{"methods":["application_credential"],"applicationCredential":{"id":"fake-cred-admin","secret":"wrong-secret"}}}}
@@ -77,7 +77,7 @@ struct FakeSmokeTests {
     @Test("list servers via fake Nova", .timeLimit(.minutes(1)))
     func listServers() async throws {
         let handle = try await FakeApp.start()
-        defer { await handle.stop() }
+        defer { handle.stop() }
 
         let tokenID = try await Self.mintToken(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
 
@@ -101,7 +101,7 @@ struct FakeSmokeTests {
     @Test("tenant isolation: proj-one cannot see proj-two servers", .timeLimit(.minutes(1)))
     func tenantIsolation() async throws {
         let handle = try await FakeApp.start()
-        defer { await handle.stop() }
+        defer { handle.stop() }
 
         let adminToken = try await Self.mintToken(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
         let serverID = try await Self.createServer(handle: handle, tokenID: adminToken, name: "isolated-server")
@@ -126,7 +126,7 @@ struct FakeSmokeTests {
     @Test("server lifecycle: create, action, delete", .timeLimit(.minutes(1)))
     func serverLifecycle() async throws {
         let handle = try await FakeApp.start()
-        defer { await handle.stop() }
+        defer { handle.stop() }
 
         let tokenID = try await Self.mintToken(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
 

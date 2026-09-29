@@ -195,7 +195,7 @@ public actor LoginMinter {
 
 extension Token {
     /// Decode a Token from a Keystone token response body.
-    static func decode(from data: Data) throws -> Token {
+    public static func decode(from data: Data) throws -> Token {
         struct RawDomain: Codable {
             let id: String
             let name: String?
