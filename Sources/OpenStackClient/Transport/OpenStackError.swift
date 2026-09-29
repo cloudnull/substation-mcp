@@ -39,20 +39,20 @@ public struct OpenStackError: Error, Sendable, Equatable {
         var message: String
 
         if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
-            // Nova: {"itemNotFound": {"message": "..."}} or {"badRequest": {"message": "..."}}
-            if let firstKey = json.keys.first,
-               let inner = json[firstKey] as? [String: Any],
-               let msg = inner["message"] as? String {
-                code = firstKey
-                message = msg
+            if let neutronErr = json["NeutronError"] as? [String: Any] {
+                // Neutron: {"NeutronError": {"type": ..., "message": ...}}
+                code = neutronErr["type"] as? String
+                message = neutronErr["message"] as? String ?? "Unknown error"
             } else if let err = json["error"] as? [String: Any] {
                 // Keystone: {"error": {"code": ..., "message": ..., "title": ...}}
                 code = err["code"] as? String
                 message = err["message"] as? String ?? err["title"] as? String ?? "Unknown error"
-            } else if let neutronErr = json["NeutronError"] as? [String: Any] {
-                // Neutron: {"NeutronError": {"type": ..., "message": ...}}
-                code = neutronErr["type"] as? String
-                message = neutronErr["message"] as? String ?? "Unknown error"
+            } else if let firstKey = json.keys.first,
+                     let inner = json[firstKey] as? [String: Any],
+                     let msg = inner["message"] as? String {
+                // Nova: {"itemNotFound": {"message": "..."}} or {"badRequest": {"message": "..."}}
+                code = firstKey
+                message = msg
             } else {
                 message = String(data: body, encoding: .utf8) ?? "Unknown error"
             }
