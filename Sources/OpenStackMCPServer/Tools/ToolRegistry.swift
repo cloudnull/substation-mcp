@@ -12,10 +12,15 @@ public typealias NetPort = OSPort
 public struct RequestIdentity: Sendable {
     public let vt: ValidatedToken
     public let whoami: Whoami
+    /// The cloud name this session is bound to. Used to scope resource URIs
+    /// (`openstack://{cloud}/{region}/{resource}/{id}`) so a client can only
+    /// read the cloud it is authenticated against.
+    public let cloudName: String
 
-    public init(vt: ValidatedToken, whoami: Whoami) {
+    public init(vt: ValidatedToken, whoami: Whoami, cloudName: String) {
         self.vt = vt
         self.whoami = whoami
+        self.cloudName = cloudName
     }
 }
 
@@ -48,6 +53,12 @@ public struct ToolRegistry: Sendable {
         identity.vt.scopes.contains(.write)
     }
 
+    /// The session's default region (from whoami), or `RegionOne` when unknown.
+    /// Used to render the live-resource URI template in `resources/list`.
+    var defaultRegion: String {
+        identity.whoami.regions.first ?? "RegionOne"
+    }
+
     /// The tool names visible to the current identity.
     public var visibleToolNames: [String] {
         guard hasWrite else {
@@ -75,12 +86,35 @@ public struct ToolRegistry: Sendable {
         )
 
         let registry = self
+        let resources = MCPResources(registry: registry)
+        let prompts = MCPPrompts(registry: registry)
+
         await server.withMethodHandler(ListTools.self) { _ in
             ListTools.Result(tools: registry.visibleTools())
         }
 
         await server.withMethodHandler(CallTool.self) { params in
             try await registry.dispatch(params, server: server)
+        }
+
+        await server.withMethodHandler(ListResources.self) { _ in
+            ListResources.Result(resources: resources.list())
+        }
+
+        await server.withMethodHandler(ReadResource.self) { params in
+            ReadResource.Result(contents: await resources.read(params.uri))
+        }
+
+        await server.withMethodHandler(ListPrompts.self) { _ in
+            ListPrompts.Result(prompts: prompts.list())
+        }
+
+        await server.withMethodHandler(GetPrompt.self) { params in
+            let result = prompts.get(params.name, arguments: params.arguments)
+            return GetPrompt.Result(
+                description: result.description,
+                messages: result.messages
+            )
         }
 
         return server
@@ -438,7 +472,7 @@ public struct ToolRegistry: Sendable {
         return .null
     }
 
-    private func toValue(_ value: JSONValue) -> Value {
+    func toValue(_ value: JSONValue) -> Value {
         switch value {
         case .string(let s): return .string(s)
         case .integer(let i): return .int(i)

@@ -71,7 +71,7 @@ func makeRegistry(handle: FakeHandle, credID: String, secret: String) async thro
             "image": ["glance"],
         ]
     )
-    let identity = RequestIdentity(vt: vt, whoami: whoami)
+    let identity = RequestIdentity(vt: vt, whoami: whoami, cloudName: "fake")
 
     let cloud = CloudEntry(
         name: "fake",
