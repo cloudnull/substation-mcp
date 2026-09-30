@@ -1,27 +1,26 @@
-# Handoff: OpenStack MCP Phase 1 — Task 15 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 16 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 14 (commit `e96cad4`). All tasks through 14 merged.
-- **Latest commit**: `e96cad4` — Task 14: ToolRegistry with 15 scope-aware MCP tools, in-process tests
-- **Tests**: 233 tests in 22 suites, all green (84 MCP server in 6 suites, 149 client in 16 suites)
+- **Main**: up through Task 15 (commit `36fe072`). All tasks through 15 merged.
+- **Latest commit**: `36fe072` — Task 15: os_wait, os_attach/os_detach links, os_topology with diagnosis
+- **Tests**: 372 tests in 25 suites, all green (123 MCP server in 9 suites, 149 client in 16 suites)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 15: Links, topology, diagnosis, waiter with progress**
+**Start Task 16: MCP resources and prompts**
 
-Implement `os_attach`/`os_detach` link operations (volume attach/detach, interface attach/detach, security group, floating IP, router interface/gateway).
-Implement `os_topology` with depth-limited graph traversal and optional diagnosis findings.
-Implement `os_wait` with polling loop and progress notifications.
+- `os_` resources: expose live OpenStack resources as MCP resources (e.g. per-cloud, per-region, per-resource snapshots) so an MCP client can read state without a tool call.
+- `os_` prompts: named prompt templates (e.g. "diagnose connectivity for server X", "summarize cloud for project Y") that expand into tool-call sequences.
+- Wire into `MCP.Server`'s `ListResources`/`ReadResource`/`ListPrompts`/`GetPrompt` handlers alongside the existing `ListTools`/`CallTool` handlers.
+- Scope-aware: resources/prompts must respect the same `Policy` (read-only tokens see read-only surfaces).
 
-## Remaining Tasks After 13
+## Remaining Tasks After 15
 
 | Task | Description |
 |------|-------------|
-| 14 | Tool registry + describe tools + verb tools (in-process MCP tests) |
-| 15 | Links, topology, diagnosis, waiter with progress |
 | 16 | MCP resources and prompts |
 | 17 | HummingbirdMCP adapter — route, token-per-request auth, SSE, PRM, login route |
 | 18 | OpenStack validator + login page + token store + serve/stdio wiring |
@@ -42,6 +41,73 @@ Implement `os_wait` with polling loop and progress notifications.
 | **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator** |
 | **Catalog** | **`Catalog/*.swift`** (9 files) | — | **35 resources, 25 server actions, 7 links, JSONSchema validate(), 37 tests** |
 
+## Task 15 Implementation Notes (new)
+
+### Waiter (`Sources/OpenStackMCPServer/Waiter.swift`)
+- `Waiter.wait(vt, resource:id:region:until:timeout:waitingForDelete:progressToken:server:)` — polls with 1s→10s doubling backoff.
+- `validStates(descriptor)` = terminal states + `ERROR` + `killed`; `until` entries must be in that set (else 400 `invalidState` listing valid states).
+- **`supportsWaiting(descriptor)` guard runs before any fetch** — flavor/keypair/server_group/identity → 501 `notPollable` "not supported". Without this, a bad id on a non-pollable resource 404s and `fetchStatus` reports `exists: false` → "no longer exists" (misleading).
+- Fault states (`ERROR`/`killed`) short-circuit with `fault: true`. 404 during poll → `itemNotFound` error (or success if `waitingForDelete`).
+- Progress: `sendProgress(server:token:status:elapsed:)` → `Message<ProgressNotification>` (method `notifications/progress`) via `server.notify`; message = `"status: <X>, elapsed: <n>s"`.
+- Pollable set: server (compute), network/subnet/port/router/floating_ip (network), volume (blockStorage), image (image). Subnet polls as hardcoded `ACTIVE` (Neutron subnets have no status field).
+
+### Links (`Sources/OpenStackMCPServer/Links/Links.swift`)
+- `LinkExecutor.attach/detach(vt, link:sourceType:source:targetType:target:params:region:wait:)`.
+- 7 links: `volume`, `interface`, `security_group`, `floating_ip`, `router_interface`, `router_gateway`, `image` (rejected both directions with explanatory pointer).
+- `wait: true` → after the mutation, `Waiter.wait` to the post-state (volume→in-use / available; fip→ACTIVE / DOWN; interface→ACTIVE) and embeds the wait outcome under `wait`.
+- `security_group` attach/detach resolves the port (server→first port with `device_id` filter, or port directly), checks `portSecurityEnabled`, reads `port.securityGroups`, calls `updatePort(securityGroups:)`, and **verifies the response echoes the group** (500 `portUpdateIgnored` otherwise) — the fake had a real bug where the PUT parsed `security_groups` but discarded them.
+- `router_interface` uses the raw `client.routerInterface(vt:method:routerID:subnetID:region:)` escape hatch (PUT/DELETE `routers/:id/add_router_interface|remove_router_interface`); rejects subnets without a gateway IP.
+- `router_gateway` requires the target network to be `router:external` (400 otherwise).
+- `volume` attach requires `params.device`; precondition: server not BUILD/REBUILD, volume available (or multiattach).
+
+### Topology (`Sources/OpenStackMCPServer/Links/Topology.swift`)
+- `TopologyBuilder.build(vt, anchorResource:anchorID:depth:diagnosis:diagnose:region:)` — depth clamped 1–3.
+- Anchors: `server`, `network`, `router`, `floating_ip`, `subnet`, `port`. Each builds nodes (`{resource,id,name,status,...}`) and edges (`{kind, source:{resource,id}, target:{resource,id}}`).
+- `routersOnSubnet` approximates router interfaces: a router "has an interface" on a subnet when it has an external gateway on a *different* network than the subnet's network. (The fake tracks the exact mapping in `state.routerInterfaces` but topology derives it from the public API.)
+- Diagnosis findings: SHUTOFF/ERROR server; subnet with no router interface; router without external gateway; floating IP on an unrouted subnet; **port-rule ingress diagnosis** (`diagnosePortRule(port:rules:proto:dport:portID:)`) — when `diagnose: {protocol, port}` is given, flags a port-security-enabled port whose security groups have no matching ingress rule (proto + port range + ethertype).
+- Server anchor also shows attached volumes (depth ≥ 1).
+
+### ToolRegistry wiring
+- `dispatch(params:server:)` — the `server:` param is needed for `os_wait` progress notifications.
+- `handleWait` reads `_meta.progressToken` from the MCP request metadata; `handleTopology` parses the `diagnose` object (`protocol` string, `port` int).
+- `os_topology` schema gained the `diagnose` property (the only Task-15 schema change).
+- `NameResolver.createPublic` gained a `security_group_rule` case (field names: `security_group_id`, `direction`, `ethertype`, `protocol`, `port_range_min`, `port_range_max`, `remote_ip_prefix`).
+- `public typealias NetPort = OSPort` in `Tools/ToolRegistry.swift` — used in Links/Topology. **Do not redeclare it elsewhere** (duplicate = compile error).
+
+### Fake changes (Task 15)
+- `NovaFake` action route: `noStateActions` no longer includes `os-start`/`os-stop` (they now transition state); `serverActionWithSettle` handles `os-stop`/`os-start` keys (the client sends `{"os-stop":null}`, not `{"stop":null}`).
+- Two-phase settle: with `transitionDelay` set, start/reboot apply the intermediate status (REBOOT/REBUILD) immediately and settle to ACTIVE after the delay in a background task — this lets the progress test observe an intermediate status. `suppressTransitionDelay` forces instant settle.
+- `setTransitionDelay(_:)` public helper (actor-isolated var can't be set from a nonisolated test context).
+- `NeutronFake` PUT `/ports/:id`: parses `security_groups` as **string arrays and/or id-object arrays** (the client sends plain strings; the old compactMap dropped them) and **persists via `state.setPortSecurityGroups`** (the old code built a local copy and discarded it).
+- `NeutronFake` PUT `/floatingips/:id` + `updateFloatingIP`: `port_id: null` now disassociates (the client now sends explicit nulls — see below).
+- `CinderFake.volumeJSON` now emits `attachments: [{id, server_id, volume_id, device}]` — required by `os_detach volume` (the client reads `volume.attachments`).
+- `SharedState` seeds (proj-one): `vol-001` (in-use, attached to srv-0001 via `att-001`), `net-001` + `subnet-001` (172.16.1.0/24), `port-002` (on net-int, device srv-0001, sg-default). `subnetIDCounter=1`, `portIDCounter=2`, `routerIDCounter=1` (createRouter → router-2).
+- `FakeAllocationPool` got a `public init(start:end:)`.
+- New `FakeState` members: `routerInterfaces` (+ add/remove/list), `volumeAttachments` (+ attach/detach), `attachInterface`/`detachInterface`, `setPortSecurityGroups`, `portsWithFixedIP`, `usedIPs`.
+- Seed `routerInterfaces = ["router-1": ["subnet-int"]]`.
+
+### Client changes (Task 15)
+- **`Port` → `OSPort`** in `NetworkModels.swift` + all `NetworkService` signatures. Bare `Port` resolves to `NIOPosix.VsockAddress.Port` (NIOCore is publicly imported by Hummingbird). The actor `OpenStackClient` also shadows the module name, so `OpenStackClient.Port` can never work.
+- `UpdatePortSpec` + `updatePort` gained `securityGroups: [String]?`.
+- `OpenStackClient.routerInterface(_ vt:method:routerID:subnetID:region:)` raw escape hatch.
+- `updateFloatingIP` sends explicit `"port_id":null` / `"fixed_ip_address":null` (previously omitted the keys → the fake couldn't distinguish "not provided" from "clear it").
+
+### Test-harness changes
+- `MCPTestBundle` (InProcessMCPTests.swift) now also exposes `client: OpenStackClient`, `identity: RequestIdentity`, and `mcpServer: MCP.Server` — used by the waiter progress test (direct `Waiter.wait` + `client.onNotification(ProgressNotification.self)`) and the direct-wait tests.
+- New suites: `WaiterTests` (6), `LinkToolsTests` (20), `TopologyTests` (11).
+- Client-test seed counts updated: networks 3, subnets 3, ports 2, volumes 2; `detachInterface` test now detaches `port-002` (the seeded srv-0001 port) instead of `port-001` (unattached).
+
+### Gotchas learned in Task 15
+- **Fake action-route matching**: `actions.first(where: { body.contains("\"" + $0 + "\"") })` — order matters. `stop` is a substring of `os-stop`, so `os-stop` must not be in `noStateActions` or the real action falls through to `default` → 400 "unknown action: os-stop".
+- **`JSONValue`** has `stringValue`/`intValue`/`boolValue`/`objectValue`/`arrayValue` (no `integerValue`/`floatValue`).
+- **MCP SDK `Value`** cases: `.null`, `.bool`, `.int`, `.double`, `.string`, `.array`, `.object` (NOT `.integer`/`.float`).
+- **Testing `.timeLimit`** is minutes-only (`.seconds` unavailable).
+- **`#expect(false, ...)`** warns — use `Issue.record`.
+- **Avoid giant inline closures** in tests (type-check timeout).
+- **`@Test`/`@Suite`** run in the same process — fake state is per-`FakeApp.start()`, so tests are isolated.
+- **Progress test timing**: `transitionDelay(.milliseconds(4000))` so the waiter's 1s first backoff still sees the intermediate REBOOT before the 4s settle; the progress test takes ~7s.
+- **Schema field names**: subnet create → `network_id`/`gateway_ip`; security_group_rule create → `security_group_id` (NOT `network`/`gateway`/`security_group`). Phase-1 subnet create does not expose `gateway_ip` — seed a no-gateway subnet via `state.createSubnet(gateway: nil, ...)` and use the **returned id** (the counter id, e.g. `subnet-2`), not the name.
+
 ## Fakes
 
 | Fake | File | Base Path | Error Shape |
@@ -54,9 +120,11 @@ Implement `os_wait` with polling loop and progress notifications.
 
 ## Seeded Fixture Facts
 
-- `proj-one`: `net-ext`/`net-int`, `subnet-ext` (10.0.0.0/24)/`subnet-int` (192.168.1.0/24),
-  `port-001` (10.0.0.5), `fip-001` (203.0.113.10 DOWN), `sg-default`, `router-1`,
-  3 servers (srv-0001..0003, ACTIVE), `seed-vol` (available, 10GB, lvmdriver-1), `img-1` (ubuntu-24.04, active, public, qcow2)
+- `proj-one`: `net-ext`/`net-int`/`net-001`, `subnet-ext` (10.0.0.0/24)/`subnet-int` (192.168.1.0/24)/`subnet-001` (172.16.1.0/24),
+  `port-001` (10.0.0.5, unattached), `port-002` (192.168.1.77, device srv-0001, sg-default),
+  `fip-001` (203.0.113.10 DOWN), `sg-default`, `router-1` (gateway net-ext, interface subnet-int),
+  3 servers (srv-0001..0003, ACTIVE), `seed-vol` (available, 10GB, lvmdriver-1),
+  `vol-001` (in-use, attached to srv-0001 as att-001 /dev/vdb), `img-1` (ubuntu-24.04, active, public, qcow2)
 - `proj-two`: minimal — `net-two`, 1 server (srv-0004, ACTIVE)
 - Volume types: `vt-1` (lvmdriver-1), `vt-2` (lvmdriver-2)
 - Quotas: volume=10, gigabytes=1000, snapshots=10; network=10, subnet=10, port=50
@@ -147,13 +215,13 @@ public struct XRegion: Sendable {
 - 30 tests: PolicyTests (8), NameResolverTests (6), SchemaValidationTests (16)
 
 ### ToolRegistry (Task 14)
-- `RequestIdentity` struct: Sendable` — holds `vt: ValidatedToken` + `whoami: Whoami`, built at session init
+- `RequestIdentity` struct: Sendable — holds `vt: ValidatedToken` + `whoami: Whoami`, built at session init
 - `ToolRegistry: Sendable` — holds `client`, `catalog` (policy-filtered), `policy`, `identity`, `logger`
 - `ToolRegistry.makeServer()` → `MCP.Server` with `ListTools` and `CallTool` handlers
 - 15 tools: os_list, os_get, os_describe, os_topology, os_find, os_whoami, os_quota, os_clouds, os_wait, os_create, os_update, os_delete, os_action, os_attach, os_detach
 - Scope-aware: `visibleToolNames` → 9 read-only or 15 (with write). `dispatch()` returns 403 error for mutating tools without write scope
-- `dispatch(_ params: CallTool.Parameters)` routes to per-tool handlers (`handleList`, `handleGet`, `handleDescribe`, etc.)
-- `handleLink` and `handleTopology`/`handleWait` are stubs (implemented in Task 15)
+- `dispatch(params:server:)` routes to per-tool handlers (`handleList`, `handleGet`, `handleDescribe`, etc.)
+- `handleLink`, `handleTopology`, `handleWait` implemented in Task 15 (see above)
 - `NameResolver` public methods: `listPublic`, `createPublic`, `updatePublic`, `deletePublic`, `actionPublic`
 - JSONValue ↔ MCP Value conversion via `convertValue`/`toValue`
 - `resultText(_ obj: [String: JSONValue])` → `(String, Value)` — JSON-encodes for text, converts for structuredContent
@@ -186,12 +254,13 @@ public struct XRegion: Sendable {
 - `Response(status:headers:body:)` takes `HTTPFields`, not `[String: String]`
 - Routes: register more specific paths BEFORE less specific ones (e.g. `/images/:id/tags` before `/images/:id`)
 - Seed data in `FakeState.seed()`; counters start at appropriate values to avoid collisions with seeded IDs
+- **JSON array elements**: parse string-array elements explicitly (`hasPrefix("\"")`) before trying id-object extraction — `compactMap` silently drops elements that match neither form.
 
 ### Test Pattern
 ```swift
 @Suite("X Tests") struct XTests {
     let logger = Logger(label: "test")
-    
+
     private func makeSetup() async throws -> (FakeHandle, ValidatedToken, Service, CloudEntry, Cache, Transport) {
         let handle = try await FakeApp.start()
         let state = handle.state
@@ -201,7 +270,7 @@ public struct XRegion: Sendable {
         // Build CloudEntry, Cache, Transport, Service
         return (handle, vt, service, cloud, cache, transport)
     }
-    
+
     @Test("...", .timeLimit(.minutes(2)))
     func test() async throws {
         let (handle, vt, service, _, _, transport) = try await makeSetup()
@@ -228,6 +297,7 @@ public struct XRegion: Sendable {
 - `FakeState.extensions` is a public mutable `Set<String>`; `removeExtension(_:)` for tests
 - `#expect(false, ...)` triggers a compiler warning — use `Issue.record("...")` instead in do/catch test patterns
 - `getVolume` and similar single-ID methods require the `id:` argument label
+- **`Substring` has no `droppingLast()`** — use `String(part.dropFirst()).dropLast()`
 
 ### Package.swift
 - `OpenStackClientTests` depends on: `OpenStackClient`, `FakeOpenStack`, `HummingbirdTesting`, `Hummingbird`
