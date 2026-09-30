@@ -29,11 +29,15 @@ func decodeToken(id: String, keystoneURL: URL) async throws -> ValidatedToken {
 final class MCPTestBundle: @unchecked Sendable {
     let mcpClient: MCP.Client
     let mcpServer: MCP.Server
+    let client: OpenStackClient
+    let identity: RequestIdentity
     private let shutdownClosure: @Sendable () -> Void
 
-    init(mcpClient: MCP.Client, mcpServer: MCP.Server, shutdownClosure: @escaping @Sendable () -> Void) {
+    init(mcpClient: MCP.Client, mcpServer: MCP.Server, client: OpenStackClient, identity: RequestIdentity, shutdownClosure: @escaping @Sendable () -> Void) {
         self.mcpClient = mcpClient
         self.mcpServer = mcpServer
+        self.client = client
+        self.identity = identity
         self.shutdownClosure = shutdownClosure
     }
 
@@ -108,6 +112,8 @@ func makeRegistry(handle: FakeHandle, credID: String, secret: String) async thro
     return MCPTestBundle(
         mcpClient: mcpClient,
         mcpServer: server,
+        client: client,
+        identity: identity,
         shutdownClosure: { transport.syncShutdown() }
     )
 }

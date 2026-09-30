@@ -3,6 +3,11 @@ import MCP
 import OpenStackClient
 import Logging
 
+/// Neutron port. Spelled `NetPort` because bare `Port` resolves to NIO's
+/// `VsockAddress.Port` in every file that imports `OpenStackClient` (NIOCore is
+/// publicly imported by Hummingbird, so both are in scope).
+public typealias NetPort = OSPort
+
 /// The identity context for a single MCP session.
 public struct RequestIdentity: Sendable {
     public let vt: ValidatedToken
@@ -75,7 +80,7 @@ public struct ToolRegistry: Sendable {
         }
 
         await server.withMethodHandler(CallTool.self) { params in
-            try await registry.dispatch(params)
+            try await registry.dispatch(params, server: server)
         }
 
         return server
@@ -140,6 +145,13 @@ public struct ToolRegistry: Sendable {
                         "region": .object(["type": .string("string")]),
                         "depth": .object(["type": .string("integer")]),
                         "diagnosis": .object(["type": .string("boolean")]),
+                        "diagnose": .object([
+                            "type": .string("object"),
+                            "properties": .object([
+                                "protocol": .object(["type": .string("string")]),
+                                "port": .object(["type": .string("integer")]),
+                            ]),
+                        ]),
                     ]),
                     "required": .array([.string("resource"), .string("id_or_name")]),
                 ]),
@@ -320,7 +332,7 @@ public struct ToolRegistry: Sendable {
 
     // MARK: - Dispatch
 
-    func dispatch(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    func dispatch(_ params: CallTool.Parameters, server: MCP.Server) async throws -> CallTool.Result {
         let mutatingTools: Set<String> = ["os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach"]
         if mutatingTools.contains(params.name) && !hasWrite {
             return CallTool.Result(
@@ -342,13 +354,13 @@ public struct ToolRegistry: Sendable {
             case "os_quota": return try await handleQuota(params)
             case "os_find": return try await handleFind(params)
             case "os_topology": return try await handleTopology(params)
-            case "os_wait": return try await handleWait(params)
+            case "os_wait": return try await handleWait(params, server: server)
             case "os_create": return try await handleCreate(params)
             case "os_update": return try await handleUpdate(params)
             case "os_delete": return try await handleDelete(params)
             case "os_action": return try await handleAction(params)
-            case "os_attach": return try await handleLink(params, attach: true)
-            case "os_detach": return try await handleLink(params, attach: false)
+            case "os_attach": return try await handleLink(params, attach: true, server: server)
+            case "os_detach": return try await handleLink(params, attach: false, server: server)
             default:
                 return CallTool.Result(
                     content: [.text(text: "Unknown tool: \(params.name). Valid: \(visibleToolNames.joined(separator: ", "))")],
@@ -640,26 +652,76 @@ public struct ToolRegistry: Sendable {
         let resourceName = try argString(params, "resource")
         let idOrName = try argString(params, "id_or_name")
         let region = try await resolveRegion(params)
-        let result: [String: JSONValue] = [
-            "anchor": .object(["resource": .string(resourceName), "id_or_name": .string(idOrName)]),
+        let depth = argInt(params, "depth") ?? 1
+        let diagnosis = argBool(params, "diagnosis")
+        var diagnoseProtocol: String?
+        var diagnosePort: Int?
+        if let d = argObject(params, "diagnose") {
+            diagnoseProtocol = d["protocol"]?.stringValue
+            diagnosePort = d["port"]?.intValue
+        }
+        let vt = identity.vt
+
+        let supportedAnchors = ["server", "network", "router", "floating_ip", "subnet", "port"]
+        guard supportedAnchors.contains(resourceName) else {
+            throw OpenStackError(service: "mcp", status: 400, code: "unsupportedAnchor",
+                message: "Unsupported topology anchor: \(resourceName). Supported: \(supportedAnchors.joined(separator: ", "))")
+        }
+
+        // Validate the anchor exists as an id; topology also accepts a name
+        // for anchors that support it (the builder resolves names where it can).
+        if resourceName == "server" {
+            _ = try await client.compute(region: region).getServer(vt, id: idOrName)
+        }
+        let anchorID = idOrName
+
+        let builder = TopologyBuilder(client: client, catalog: catalog, logger: logger)
+        let graph = try await builder.build(
+            vt,
+            anchorResource: resourceName,
+            anchorID: anchorID,
+            depth: depth,
+            diagnosis: diagnosis,
+            diagnose: (diagnoseProtocol, diagnosePort),
+            region: region
+        )
+
+        var result: [String: JSONValue] = [
+            "anchor": .object(["resource": .string(resourceName), "id": .string(anchorID)]),
             "region": .string(region),
-            "nodes": .array([]), "edges": .array([]), "findings": .array([]),
-            "note": .string("Topology traversal implemented in Task 15"),
+            "depth": .integer(depth),
+            "nodes": .array(graph.nodes.map { .object($0) }),
+            "edges": .array(graph.edges.map { .object($0) }),
         ]
+        if let findings = graph.findings {
+            result["findings"] = .array(findings.map { .string($0) })
+        }
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
 
-    private func handleWait(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    func handleWait(_ params: CallTool.Parameters, server: MCP.Server) async throws -> CallTool.Result {
         let resourceName = try argString(params, "resource")
         let id = try argString(params, "id")
         let region = try await resolveRegion(params)
-        let result: [String: JSONValue] = [
-            "resource": .string(resourceName), "id": .string(id), "region": .string(region),
-            "status": .string("pending"),
-            "note": .string("Waiter with progress implemented in Task 15"),
-        ]
-        let (text, val) = resultText(result)
+        let until = argStringArray(params, "until")
+        let timeoutSeconds = argInt(params, "timeout_seconds") ?? 120
+        let vt = identity.vt
+        let progressToken = params._meta?.progressToken
+
+        let waiter = Waiter(client: client, catalog: catalog, logger: logger)
+        let outcome = try await waiter.wait(
+            vt,
+            resource: resourceName,
+            id: id,
+            region: region,
+            until: until,
+            timeout: TimeInterval(timeoutSeconds),
+            progressToken: progressToken,
+            server: server
+        )
+
+        let (text, val) = resultText(outcome)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
 
@@ -791,13 +853,35 @@ public struct ToolRegistry: Sendable {
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
 
-    private func handleLink(_ params: CallTool.Parameters, attach: Bool) async throws -> CallTool.Result {
+    func handleLink(_ params: CallTool.Parameters, attach: Bool, server: MCP.Server) async throws -> CallTool.Result {
         let link = try argString(params, "link")
-        let result: [String: JSONValue] = [
-            "link": .string(link),
-            "operation": .string(attach ? "attach" : "detach"),
-            "note": .string("Link operations implemented in Task 15"),
-        ]
+        let sourceType = try argString(params, "source_type")
+        let source = try argString(params, "source")
+        let targetType = try argString(params, "target_type")
+        let target = try argString(params, "target")
+        let region = try await resolveRegion(params)
+        let wait = argBool(params, "wait")
+        let vt = identity.vt
+
+        var linkParams: [String: JSONValue] = [:]
+        if let p = argObject(params, "params") {
+            for (k, v) in p { linkParams[k] = toJSONValue(v) ?? .null }
+        }
+
+        // Validate the link against the catalog
+        guard catalog.allLinks[link] != nil else {
+            throw OpenStackError(service: "mcp", status: 400, code: "unknownLink",
+                message: "Unknown link: \(link). Valid: \(catalog.allLinks.keys.sorted().joined(separator: ", "))")
+        }
+
+        let executor = LinkExecutor(client: client, catalog: catalog, waiter: Waiter(client: client, catalog: catalog, logger: logger), logger: logger)
+        let result: [String: JSONValue]
+        if attach {
+            result = try await executor.attach(vt, link: link, sourceType: sourceType, source: source, targetType: targetType, target: target, params: linkParams, region: region, wait: wait)
+        } else {
+            result = try await executor.detach(vt, link: link, sourceType: sourceType, source: source, targetType: targetType, target: target, region: region, wait: wait)
+        }
+
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }

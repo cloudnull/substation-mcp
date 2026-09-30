@@ -307,8 +307,27 @@ public struct NeutronFake {
             let portBody = Self.objectForKey("port", in: body) ?? body
             let name = Self.extractString("name", from: portBody)
             let adminStateUp = Self.extractBool("admin_state_up", from: portBody)
-            guard let port = await state.updatePort(id: id, projectID: token.projectID, name: name, adminStateUp: adminStateUp) else {
+            var securityGroups: [String]? = nil
+            if let arr = Self.arrayForValue("security_groups", in: portBody) {
+                // Neutron accepts string arrays and/or id-object arrays; the
+                // compactMap below keeps whichever form each element uses.
+                securityGroups = arr.compactMap { part -> String? in
+                    if part.hasPrefix("\"") {
+                        let inner = String(part.dropFirst()).dropLast()
+                        return String(inner)
+                    }
+                    if let obj = Self.objectForKey("id", in: part) {
+                        return Self.extractString("id", from: obj)
+                    }
+                    return Self.extractString("id", from: part)
+                }
+            }
+            guard var port = await state.updatePort(id: id, projectID: token.projectID, name: name, adminStateUp: adminStateUp) else {
                 return Self.notFound(message: "Port \(id) could not be found.")
+            }
+            if let groups = securityGroups {
+                port.securityGroups = groups
+                _ = await state.setPortSecurityGroups(portID: id, groups: groups, projectID: token.projectID)
             }
             return Self.jsonResponse(status: .ok, body: """
             {"port":\(Self.portJSON(port))}
@@ -389,6 +408,42 @@ public struct NeutronFake {
             return Self.jsonResponse(status: .ok, body: """
             {"router":\(Self.routerJSON(router))}
             """)
+        }
+
+        router.put("\(base)/routers/:id/add_router_interface") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let subnetID = Self.extractString("subnet_id", from: body) ?? ""
+            guard let router = await state.getRouter(id: id, projectID: token.projectID) else {
+                return Self.notFound(message: "Router \(id) could not be found.")
+            }
+            _ = router
+            guard await state.getSubnet(id: subnetID, projectID: token.projectID) != nil else {
+                return Self.neutronError(status: .notFound, type: "SubnetNotFound", message: "Subnet \(subnetID) could not be found.")
+            }
+            await state.addRouterInterface(routerID: id, subnetID: subnetID)
+            return Response(status: .noContent)
+        }
+
+        router.delete("\(base)/routers/:id/remove_router_interface") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard let router = await state.getRouter(id: id, projectID: token.projectID) else {
+                return Self.notFound(message: "Router \(id) could not be found.")
+            }
+            _ = router
+            let subnets = await state.routerInterfaceSubnets(routerID: id)
+            for subnetID in subnets {
+                await state.removeRouterInterface(routerID: id, subnetID: subnetID)
+            }
+            return Response(status: .noContent)
         }
 
         router.delete("\(base)/routers/:id") { req, ctx in

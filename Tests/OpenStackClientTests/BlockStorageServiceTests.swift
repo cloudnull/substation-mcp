@@ -58,10 +58,13 @@ struct BlockStorageServiceTests {
 
         let region = blockStorage.region("RegionOne")
         let volumes = try await region.listVolumes(vt)
-        #expect(volumes.count == 1)
-        #expect(volumes.first?.name == "seed-vol")
-        #expect(volumes.first?.status == "available")
-        #expect(volumes.first?.size == 10)
+        // 2 seeded proj-one volumes: seed-vol and the client-test vol-001.
+        #expect(volumes.count == 2)
+        let seed = volumes.first { $0.id == "seed-vol" }
+        #expect(seed?.name == "seed-vol")
+        #expect(seed?.status == "available")
+        #expect(seed?.size == 10)
+        #expect(volumes.contains { $0.id == "vol-001" && $0.status == "in-use" })
     }
 
     @Test("create volume from image", .timeLimit(.minutes(2)))

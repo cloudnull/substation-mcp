@@ -415,6 +415,10 @@ public struct CinderFake {
         parts.append("\"source_vol_id\":\(src)")
         let img = vol.imageID.map { "\"\($0)\"" } ?? "null"
         parts.append("\"image_id\":\(img)")
+        let attachments = vol.attachments.map { a in
+            "{\"id\":\"\(a.id)\",\"server_id\":\"\(a.serverID ?? "")\",\"volume_id\":\"\(a.volumeID)\",\"device\":\"\(a.device)\"}"
+        }.joined(separator: ",")
+        parts.append("\"attachments\":[\(attachments)]")
         parts.append("\"created_at\":\"\(vol.created)\"")
         return "{" + parts.joined(separator: ",") + "}"
     }

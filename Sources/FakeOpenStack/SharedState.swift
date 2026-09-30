@@ -119,6 +119,11 @@ public actor FakeState {
     public struct FakeAllocationPool: Sendable {
         public var start: String
         public var end: String
+
+        public init(start: String, end: String) {
+            self.start = start
+            self.end = end
+        }
     }
 
     public struct FakeRouter: Sendable, Identifiable {
@@ -361,8 +366,204 @@ public actor FakeState {
     public private(set) var images: [FakeImage] = []
     public var extensions: Set<String> = ["provider", "qos", "security-group", "address-group"]
 
+    /// Delay applied before a server action settles to its final status
+    /// (used by waiter tests to observe intermediate progress). Nil = instant.
+    public var transitionDelay: Duration? = nil
+
+    /// Router interface attachments: router id -> subnet ids.
+    public private(set) var routerInterfaces: [String: [String]] = [:]
+    /// Volume attachments: attachment id -> (serverID, volumeID, device, status).
+    public private(set) var volumeAttachments: [String: (serverID: String, volumeID: String, device: String, status: String)] = [:]
+    /// Test-only knob: set true to make the next server status change settle instantly.
+    public var suppressTransitionDelay: Bool = false
+
+    /// Set the transition delay from a nonisolated context.
+    public func setTransitionDelay(_ delay: Duration?) {
+        transitionDelay = delay
+    }
+
     public func removeExtension(_ alias: String) {
         extensions.remove(alias)
+    }
+
+    // MARK: - Test/seed mutators (Task 15)
+
+    /// Add a router interface attachment (router <-> subnet).
+    @discardableResult
+    public func addRouterInterface(routerID: String, subnetID: String) -> Bool {
+        guard routers.contains(where: { $0.id == routerID }) else { return false }
+        if !routerInterfaces[routerID, default: []].contains(subnetID) {
+            routerInterfaces[routerID, default: []].append(subnetID)
+        }
+        return true
+    }
+
+    /// All subnet ids a router has interfaces on.
+    public func routerInterfaceSubnets(routerID: String) -> [String] {
+        routerInterfaces[routerID] ?? []
+    }
+
+    /// Remove a router interface attachment.
+    @discardableResult
+    public func removeRouterInterface(routerID: String, subnetID: String) -> Bool {
+        guard var list = routerInterfaces[routerID] else { return false }
+        guard let idx = list.firstIndex(of: subnetID) else { return false }
+        list.remove(at: idx)
+        routerInterfaces[routerID] = list
+        return true
+    }
+
+    /// Attach a volume to a server (mimics Nova os-volume_attachments).
+    @discardableResult
+    public func attachVolume(serverID: String, volumeID: String, device: String, projectID: String) -> String? {
+        guard let vIdx = volumes.firstIndex(where: { $0.id == volumeID && $0.projectID == projectID }),
+              servers.contains(where: { $0.id == serverID && $0.projectID == projectID }) else {
+            return nil
+        }
+        let attID = "att-\(volumeAttachments.count + 100)"
+        volumeAttachments[attID] = (serverID: serverID, volumeID: volumeID, device: device, status: "attached")
+        var vol = volumes[vIdx]
+        vol.status = "in-use"
+        var att = FakeVolumeAttachment(id: attID, serverID: serverID, volumeID: volumeID, device: device)
+        vol.attachments.append(att)
+        volumes[vIdx] = vol
+        return attID
+    }
+
+    /// Detach a volume from a server (mimics Nova os-volume_attachments/:attID delete).
+    @discardableResult
+    public func detachVolume(attachmentID: String, serverID: String, projectID: String) -> Bool {
+        guard let att = volumeAttachments[attachmentID], att.serverID == serverID else { return false }
+        volumeAttachments.removeValue(forKey: attachmentID)
+        guard let vIdx = volumes.firstIndex(where: { $0.id == att.volumeID && $0.projectID == projectID }) else { return true }
+        var vol = volumes[vIdx]
+        vol.attachments.removeAll { $0.id == attachmentID }
+        vol.status = vol.attachments.isEmpty ? "available" : "in-use"
+        volumes[vIdx] = vol
+        return true
+    }
+
+    /// Attach an interface to a server (mimics Nova os-interface-attach).
+    /// Returns the port id.
+    @discardableResult
+    public func attachInterface(serverID: String, networkID: String?, subnetID: String?, portID: String?, projectID: String) -> String? {
+        guard servers.contains(where: { $0.id == serverID && $0.projectID == projectID }) else { return nil }
+        if let portID {
+            // Attach an existing port: mark device
+            if let pIdx = ports.firstIndex(where: { $0.id == portID && $0.projectID == projectID }) {
+                var p = ports[pIdx]
+                p.deviceID = serverID
+                p.deviceOwner = "compute:nova"
+                p.status = "ACTIVE"
+                ports[pIdx] = p
+                return portID
+            }
+            return nil
+        }
+        // Create a new port on the network
+        guard let networkID, let nIdx = networks.firstIndex(where: { $0.id == networkID && $0.projectID == projectID }) else {
+            return nil
+        }
+        let net = networks[nIdx]
+        let subnet = subnetID.flatMap { s in subnets.first(where: { $0.id == s && $0.projectID == projectID }) }
+            ?? subnets.first(where: { $0.networkID == networkID && $0.projectID == projectID })
+        portIDCounter += 1
+        let id = "port-\(String(format: "%03d", portIDCounter))"
+        var fixed: [FakeFixedIP] = []
+        if let subnet, let pool = subnet.allocationPools.first,
+           let start = pool.start.split(separator: ".").last, let startInt = Int(start) {
+            let base = pool.start
+            var candidate: String
+            repeat {
+                let n = startInt + portIDCounter
+                candidate = base.split(separator: ".").prefix(3).joined(separator: ".") + ".\(n)"
+            } while usedIPs(projectID: projectID).contains(candidate)
+            fixed = [FakeFixedIP(ip: candidate, subnetID: subnet.id)]
+        }
+        let port = FakePort(
+            id: id,
+            projectID: projectID,
+            name: "port-srv-\(serverID)",
+            status: "ACTIVE",
+            networkID: net.id,
+            adminStateUp: true,
+            fixedIPs: fixed,
+            securityGroups: [],
+            deviceID: serverID,
+            deviceOwner: "compute:nova",
+            extraDHCPOpts: [],
+            portSecurityEnabled: true
+        )
+        ports.append(port)
+        return id
+    }
+
+    /// Detach an interface from a server (mimics Nova os-interface-detach).
+    @discardableResult
+    public func detachInterface(serverID: String, portID: String, projectID: String) -> Bool {
+        guard let pIdx = ports.firstIndex(where: { $0.id == portID && $0.projectID == projectID && $0.deviceID == serverID }) else {
+            return false
+        }
+        var p = ports[pIdx]
+        p.deviceID = nil
+        p.deviceOwner = nil
+        p.status = "DOWN"
+        ports[pIdx] = p
+        return true
+    }
+
+    /// Replace a port's security groups (mimics Neutron port update for SG links).
+    @discardableResult
+    public func setPortSecurityGroups(portID: String, groups: [String], projectID: String) -> FakePort? {
+        guard let pIdx = ports.firstIndex(where: { $0.id == portID && $0.projectID == projectID }) else { return nil }
+        ports[pIdx].securityGroups = groups
+        return ports[pIdx]
+    }
+
+    /// Apply a server action with an optional settle delay (used by waiter tests).
+    /// When `transitionDelay` is set and the action settles to ACTIVE, the
+    /// intermediate status is applied immediately and the final status runs
+    /// after the delay in a background task.
+    public func serverActionWithSettle(id: String, projectID: String, action: String) -> (success: Bool, error: String?) {
+        guard let idx = servers.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else {
+            return (false, "server not found")
+        }
+        let delay = transitionDelay
+        switch action {
+        case "start", "os-start", "unpause", "resume", "unlock", "unshelve", "unrescue", "reboot":
+            if let delay, !suppressTransitionDelay {
+                // Two-phase: intermediate now, ACTIVE after the delay
+                servers[idx].status = action == "reboot" ? "REBOOT" : "REBUILD"
+                servers[idx].updated = Date()
+                Task {
+                    try? await Task.sleep(for: delay)
+                    await self.finishSettle(idx: idx, status: "ACTIVE")
+                }
+            } else {
+                servers[idx].status = "ACTIVE"
+                servers[idx].updated = Date()
+            }
+        case "stop", "os-stop": servers[idx].status = "SHUTOFF"; servers[idx].updated = Date()
+        case "pause": servers[idx].status = "PAUSED"; servers[idx].updated = Date()
+        case "suspend": servers[idx].status = "SUSPENDED"; servers[idx].updated = Date()
+        case "lock": servers[idx].status = "LOCKED"; servers[idx].updated = Date()
+        case "shelve": servers[idx].status = "SHELVED"; servers[idx].updated = Date()
+        case "rescue": servers[idx].status = "RESCUE"; servers[idx].updated = Date()
+        default:
+            return (false, "unknown action: \(action)")
+        }
+        return (true, nil)
+    }
+
+    private func finishSettle(idx: Int, status: String) {
+        guard idx < servers.count else { return }
+        servers[idx].status = status
+        servers[idx].updated = Date()
+    }
+
+    /// List ports whose fixed IP addresses include the given IP (any project-scoped).
+    public func portsWithFixedIP(_ ip: String, projectID: String) -> [FakePort] {
+        ports.filter { $0.projectID == projectID && $0.fixedIPs.contains(where: { $0.ip == ip }) }
     }
 
     private var serverIDCounter = 0
@@ -416,6 +617,8 @@ public actor FakeState {
         routers = [
             FakeRouter(id: "router-1", name: "router-1", projectID: "proj-one", externalNetworkID: "net-ext", status: "ACTIVE")
         ]
+        // router-1 bridges subnet-int to net-ext
+        routerInterfaces = ["router-1": ["subnet-int"]]
 
         // Security groups
         securityGroups = [
@@ -525,6 +728,54 @@ public actor FakeState {
             size: 10,
             volumeType: "lvmdriver-1",
             created: "2026-01-01T00:00:00.000"
+        ))
+        // Dedicated seeds used by the compute client tests (attach/detach).
+        volumes.append(FakeVolume(
+            id: "vol-001",
+            projectID: "proj-one",
+            name: "vol-001",
+            status: "in-use",
+            size: 1,
+            volumeType: "lvmdriver-1",
+            created: "2026-01-01T00:00:00.000"
+        ))
+        volumeAttachments["att-001"] = (serverID: "srv-0001", volumeID: "vol-001", device: "/dev/vdb", status: "attached")
+
+        // Dedicated network + port seeds used by the compute client tests.
+        networks.append(FakeNetwork(
+            id: "net-001",
+            name: "net-001",
+            projectID: "proj-one",
+            region: "RegionOne",
+            routerExternal: false,
+            status: "ACTIVE",
+            subnets: ["subnet-001"]
+        ))
+        subnets.append(FakeSubnet(
+            id: "subnet-001",
+            name: "subnet-001",
+            networkID: "net-001",
+            projectID: "proj-one",
+            cidr: "172.16.1.0/24",
+            gatewayIP: "172.16.1.1",
+            enableDHCP: true,
+            allocationPools: [FakeAllocationPool(start: "172.16.1.2", end: "172.16.1.254")]
+        ))
+        subnetIDCounter = 1
+        portIDCounter = 2
+        ports.append(FakePort(
+            id: "port-002",
+            projectID: "proj-one",
+            name: "port-002",
+            status: "ACTIVE",
+            networkID: "net-int",
+            adminStateUp: true,
+            fixedIPs: [FakeFixedIP(ip: "192.168.1.77", subnetID: "subnet-int")],
+            securityGroups: ["sg-default"],
+            deviceID: "srv-0001",
+            deviceOwner: "compute:nova",
+            extraDHCPOpts: [],
+            portSecurityEnabled: true
         ))
 
         // Glance: a seeded active image

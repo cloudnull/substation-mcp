@@ -216,7 +216,12 @@ public struct CreateSubnetSpec: Sendable {
 // MARK: - Port
 
 /// A Neutron port.
-public struct Port: Sendable, Codable, Identifiable {
+/// A Neutron port.
+///
+/// Named `OSPort` (not `Port`) because `NIOPosix.VsockAddress.Port` leaks into
+/// every file that transitively imports NIO (via Hummingbird's `public import`
+/// of NIOCore), making an unqualified `Port` ambiguous throughout the package.
+public struct OSPort: Sendable, Codable, Identifiable {
     public let id: String
     public var name: String
     public var status: String
@@ -367,11 +372,13 @@ public struct UpdatePortSpec: Sendable {
     public var name: String?
     public var adminStateUp: Bool?
     public var description: String?
+    public var securityGroups: [String]?
 
-    public init(name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil) {
+    public init(name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil, securityGroups: [String]? = nil) {
         self.name = name
         self.adminStateUp = adminStateUp
         self.description = description
+        self.securityGroups = securityGroups
     }
 
     func body() -> String {
@@ -379,6 +386,10 @@ public struct UpdatePortSpec: Sendable {
         if let name { parts.append("\"name\":\"\(name)\"") }
         if let adminStateUp { parts.append("\"admin_state_up\":\(adminStateUp ? "true" : "false")") }
         if let description { parts.append("\"description\":\"\(description)\"") }
+        if let securityGroups {
+            let groups = securityGroups.map { "\"\($0)\"" }.joined(separator: ",")
+            parts.append("\"security_groups\":[\(groups)]")
+        }
         return "{\"port\":{\(parts.joined(separator: ","))}}"
     }
 }

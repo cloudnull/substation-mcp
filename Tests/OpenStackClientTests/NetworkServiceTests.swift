@@ -59,7 +59,8 @@ struct NetworkServiceTests {
         let region = network.region("RegionOne")
         let networks = try await region.listNetworks(vt)
 
-        #expect(networks.count == 2, "Expected 2 proj-one networks, got \(networks.count)")
+        // 3 seeded proj-one networks: ext-net, int-net, and the client-test net-001.
+        #expect(networks.count == 3, "Expected 3 proj-one networks, got \(networks.count)")
         let names = Set(networks.map { $0.name })
         #expect(names.contains("ext-net"))
         #expect(names.contains("int-net"))
@@ -137,7 +138,8 @@ struct NetworkServiceTests {
 
         let region = network.region("RegionOne")
         let subnets = try await region.listSubnets(vt)
-        #expect(subnets.count == 2, "Expected 2 proj-one subnets, got \(subnets.count)")
+        // 3 seeded proj-one subnets: subnet-ext, subnet-int, and the client-test subnet-001.
+        #expect(subnets.count == 3, "Expected 3 proj-one subnets, got \(subnets.count)")
         let names = Set(subnets.map { $0.name })
         #expect(names.contains("subnet-ext"))
         #expect(names.contains("subnet-int"))
@@ -219,8 +221,10 @@ struct NetworkServiceTests {
 
         let region = network.region("RegionOne")
         let ports = try await region.listPorts(vt)
-        #expect(ports.count == 1, "Expected 1 seeded port, got \(ports.count)")
-        #expect(ports.first?.name == "port-seed")
+        // 2 seeded proj-one ports: port-seed and the client-test port-002.
+        #expect(ports.count == 2, "Expected 2 seeded ports, got \(ports.count)")
+        #expect(ports.contains { $0.id == "port-001" && $0.name == "port-seed" })
+        #expect(ports.contains { $0.id == "port-002" })
     }
 
     @Test("create port with explicit fixed ip", .timeLimit(.minutes(2)))

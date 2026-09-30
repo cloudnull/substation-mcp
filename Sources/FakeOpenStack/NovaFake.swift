@@ -91,12 +91,12 @@ public struct NovaFake {
             }
 
             // Actions that don't need server state (return 202)
-            let noStateActions = ["rebuild","createImage","os-start","os-stop","os-migrate","evacuate","liveMigrate","confirmResize","revertResize","resize"]
+            let noStateActions = ["rebuild","createImage","os-migrate","evacuate","liveMigrate","confirmResize","revertResize","resize"]
             if noStateActions.contains(actionKey) {
                 return Response(status: .accepted)
             }
 
-            let (success, error) = await state.serverAction(id: id, projectID: token.projectID, action: actionKey)
+            let (success, error) = await state.serverActionWithSettle(id: id, projectID: token.projectID, action: actionKey)
             guard success else {
                 return Self.novaError(status: .badRequest, message: error ?? "Action failed")
             }
@@ -265,11 +265,16 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
             let serverID = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
+            let attBody = Self.objectForKey("os-attach-volume", in: body) ?? body
+            let volumeID = Self.extractString("volumeId", from: attBody) ?? Self.extractString("volume_id", from: attBody) ?? ""
+            let device = Self.extractString("device", from: attBody) ?? "/dev/vda"
+            guard let attID = await state.attachVolume(serverID: serverID, volumeID: volumeID, device: device, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "volume or server not found")
+            }
             return Self.jsonResponse(status: .accepted, body: """
-            {"volumeAttachment":{"id":"att-001","serverId":"\(serverID)","volumeId":"vol-001","status":"attaching","device":"/dev/vdb"}}
+            {"volumeAttachment":{"id":"\(attID)","serverId":"\(serverID)","volumeId":"\(volumeID)","status":"attaching","device":"\(device)"}}
             """)
         }
 
@@ -278,7 +283,11 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
+            let serverID = ctx.parameters.get("id") ?? ""
+            let attID = ctx.parameters.get("attID") ?? ""
+            guard await state.detachVolume(attachmentID: attID, serverID: serverID, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "attachment not found")
+            }
             return Self.jsonResponse(status: .accepted, body: "")
         }
 
@@ -289,9 +298,19 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
+            let serverID = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let attBody = Self.objectForKey("os-interface-attach", in: body) ?? body
+            let netID = Self.extractString("net_id", from: attBody)
+            let subnetID = Self.extractString("subnet_id", from: attBody)
+            let portID = Self.extractString("port", from: attBody)
+            guard let port = await state.attachInterface(serverID: serverID, networkID: netID, subnetID: subnetID, portID: portID, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "network, subnet, or port not found")
+            }
+            let portRec = await state.getPort(id: port, projectID: token.projectID)
+            let ips = portRec?.fixedIPs.map { "\"\($0.ip)\"" }.joined(separator: ",") ?? ""
             return Self.jsonResponse(status: .accepted, body: """
-            {"interfaceAttachment":{"port":"port-001","net_id":"net-001","fixed_ips":["10.0.0.5"]}}
+            {"interfaceAttachment":{"port":"\(port)","net_id":"\(portRec?.networkID ?? "")","fixed_ips":[\(ips)]}}
             """)
         }
 
@@ -300,7 +319,13 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
+            let serverID = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let detBody = Self.objectForKey("os-interface-detach", in: body) ?? body
+            let portID = Self.extractString("port", from: detBody) ?? ""
+            guard await state.detachInterface(serverID: serverID, portID: portID, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "port not found on server")
+            }
             return Self.jsonResponse(status: .accepted, body: "")
         }
 
@@ -332,6 +357,40 @@ public struct NovaFake {
             data.append(contentsOf: buffer.readableBytesView)
         }
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    static func objectForKey(_ key: String, in json: String) -> String? {
+        let pattern = "\"\(key)\":"
+        guard let start = json.range(of: pattern) else { return nil }
+        let afterColon = json[start.upperBound...]
+        guard let open = afterColon.firstIndex(of: "{") else { return nil }
+        var depth = 0
+        for (idx, ch) in afterColon.enumerated() {
+            _ = idx
+            if ch == "{" { depth += 1 }
+            if ch == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let end = afterColon.index(afterColon.startIndex, offsetBy: idx)
+                    return String(afterColon[open...end])
+                }
+            }
+        }
+        return nil
+    }
+
+    static func extractString(_ key: String, from json: String) -> String? {
+        let pattern = "\"\(key)\""
+        guard let keyRange = json.range(of: pattern) else { return nil }
+        let afterKey = json[keyRange.upperBound...]
+        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
+        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        if afterColon.hasPrefix("\"") {
+            let rest = afterColon.dropFirst()
+            guard let close = rest.firstIndex(of: "\"") else { return nil }
+            return String(rest[rest.startIndex..<close])
+        }
+        return nil
     }
 
     static func serversListJSON(servers: [FakeState.FakeServer], detail: Bool = false) -> String {

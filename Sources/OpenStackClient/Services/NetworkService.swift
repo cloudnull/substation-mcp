@@ -414,12 +414,12 @@ public struct NetworkRegion: Sendable {
         filters: [String: String] = [:],
         limit: Int? = nil,
         marker: String? = nil
-    ) async throws -> [Port] {
+    ) async throws -> [OSPort] {
         let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "port", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [Port].self) {
+        if let cached = try await cache.get(key, ttl: .seconds(60), as: [OSPort].self) {
             return cached
         }
 
@@ -451,13 +451,13 @@ public struct NetworkRegion: Sendable {
             )
         }
 
-        struct PortList: Decodable { let ports: [Port] }
+        struct PortList: Decodable { let ports: [OSPort] }
         let decoded = try JSONDecoder().decode(PortList.self, from: result.body)
         await cache.put(key, ttl: .seconds(60), value: decoded.ports)
         return decoded.ports
     }
 
-    public func getPort(_ vt: ValidatedToken, id: String) async throws -> Port {
+    public func getPort(_ vt: ValidatedToken, id: String) async throws -> OSPort {
         _ = try resolveRegion(vt)
         let result = try await transport.request(
             method: "GET",
@@ -475,13 +475,13 @@ public struct NetworkRegion: Sendable {
             )
         }
 
-        struct PortResp: Decodable { let port: Port }
+        struct PortResp: Decodable { let port: OSPort }
         let decoded = try JSONDecoder().decode(PortResp.self, from: result.body)
         return decoded.port
     }
 
     /// Create a port. An empty `fixedIPs` list asks Neutron to auto-assign.
-    public func createPort(_ vt: ValidatedToken, _ spec: CreatePortSpec) async throws -> Port {
+    public func createPort(_ vt: ValidatedToken, _ spec: CreatePortSpec) async throws -> OSPort {
         let region = try resolveRegion(vt)
         let result = try await transport.request(
             method: "POST",
@@ -501,14 +501,14 @@ public struct NetworkRegion: Sendable {
         }
         await cache.invalidate(resource: "port", tokenID: vt.token.id, region: region)
 
-        struct PortResp: Decodable { let port: Port }
+        struct PortResp: Decodable { let port: OSPort }
         let decoded = try JSONDecoder().decode(PortResp.self, from: result.body)
         return decoded.port
     }
 
-    public func updatePort(_ vt: ValidatedToken, id: String, name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil) async throws -> Port {
+    public func updatePort(_ vt: ValidatedToken, id: String, name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil, securityGroups: [String]? = nil) async throws -> OSPort {
         let region = try resolveRegion(vt)
-        let spec = UpdatePortSpec(name: name, adminStateUp: adminStateUp, description: description)
+        let spec = UpdatePortSpec(name: name, adminStateUp: adminStateUp, description: description, securityGroups: securityGroups)
         let result = try await transport.request(
             method: "PUT",
             service: "network",
@@ -527,7 +527,7 @@ public struct NetworkRegion: Sendable {
         }
         await cache.invalidate(resource: "port", tokenID: vt.token.id, region: region)
 
-        struct PortResp: Decodable { let port: Port }
+        struct PortResp: Decodable { let port: OSPort }
         let decoded = try JSONDecoder().decode(PortResp.self, from: result.body)
         return decoded.port
     }
@@ -809,8 +809,8 @@ public struct NetworkRegion: Sendable {
     public func updateFloatingIP(_ vt: ValidatedToken, id: String, portID: String? = nil, fixedIPAddress: String? = nil) async throws -> FloatingIP {
         let region = try resolveRegion(vt)
         var parts: [String] = []
-        if let portID { parts.append("\"port_id\":\"\(portID)\"") }
-        if let fixedIPAddress { parts.append("\"fixed_ip_address\":\"\(fixedIPAddress)\"") }
+        if let portID { parts.append("\"port_id\":\"\(portID)\"") } else { parts.append("\"port_id\":null") }
+        if let fixedIPAddress { parts.append("\"fixed_ip_address\":\"\(fixedIPAddress)\"") } else { parts.append("\"fixed_ip_address\":null") }
         let body = "{\"floatingip\":{\(parts.joined(separator: ","))}}"
 
         let result = try await transport.request(

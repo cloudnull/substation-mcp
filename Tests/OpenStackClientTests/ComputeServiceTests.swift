@@ -420,7 +420,8 @@ struct ComputeServiceTests {
         defer { handle.stop(); transport.syncShutdown() }
 
         let region = compute.region("RegionOne")
-        try await region.detachInterface(vt, serverID: "srv-0001", portID: "port-001")
+        // port-002 is seeded attached to srv-0001 (compute client test fixture).
+        try await region.detachInterface(vt, serverID: "srv-0001", portID: "port-002")
         // No error means success
     }
 

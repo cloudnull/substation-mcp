@@ -150,4 +150,32 @@ public actor OpenStackClient {
     public func defaultRegion(_ vt: ValidatedToken) -> String {
         cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
     }
+
+    /// Raw Neutron router-interface PUT/DELETE (add/remove_router_interface).
+    ///
+    /// The phase 1 `NetworkService` does not model router interfaces; this
+    /// narrow escape hatch keeps the link executor from widening the service
+    /// surface. The request is retried per the transport's rules (PUT is
+    /// not retried; DELETE is).
+    public func routerInterface(
+        _ vt: ValidatedToken,
+        method: String,
+        routerID: String,
+        subnetID: String,
+        region: String? = nil
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let body: Data?
+        if method == "PUT" {
+            body = "{\"subnet_id\":\"\(subnetID)\"}".data(using: .utf8)
+        } else {
+            body = nil
+        }
+        return try await transport.request(
+            method: method,
+            service: "network",
+            path: "neutron/v2.0/routers/\(routerID)\(method == "PUT" ? "/add_router_interface" : "/remove_router_interface")",
+            body: body,
+            tokenOverride: vt.token.id
+        )
+    }
 }

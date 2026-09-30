@@ -347,6 +347,22 @@ public actor NameResolver {
                 let spec = CreateSecurityGroupSpec(name: name, description: obj["description"]?.stringValue ?? "")
                 let sg = try await r.createSecurityGroup(vt, spec)
                 return try Self.encodeObject(sg)
+            case "security_group_rule":
+                let securityGroupID = obj["security_group_id"]?.stringValue
+                guard let securityGroupID else {
+                    throw OpenStackError(service: "network", status: 400, message: "Security group rule create requires security_group_id")
+                }
+                let rule = try await r.createSecurityGroupRule(
+                    vt,
+                    securityGroupID: securityGroupID,
+                    direction: obj["direction"]?.stringValue ?? "ingress",
+                    ethertype: obj["ethertype"]?.stringValue ?? "IPv4",
+                    ipProtocol: obj["protocol"]?.stringValue ?? obj["ip_protocol"]?.stringValue,
+                    portRangeMin: obj["port_range_min"]?.intValue,
+                    portRangeMax: obj["port_range_max"]?.intValue,
+                    remoteIPPrefix: obj["remote_ip_prefix"]?.stringValue
+                )
+                return try Self.encodeObject(rule)
             default:
                 throw OpenStackError(service: "network", status: 400, message: "Unknown network create: \(descriptor.name)")
             }
