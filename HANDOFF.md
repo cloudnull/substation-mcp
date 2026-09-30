@@ -1,27 +1,28 @@
-# Handoff: OpenStack MCP Phase 1 — Task 16 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 17 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 15 (commit `36fe072`). All tasks through 15 merged.
-- **Latest commit**: `36fe072` — Task 15: os_wait, os_attach/os_detach links, os_topology with diagnosis
-- **Tests**: 372 tests in 25 suites, all green (123 MCP server in 9 suites, 149 client in 16 suites)
+- **Main**: up through Task 16 (commit `ba3b893`). All tasks through 16 merged.
+- **Latest commit**: `ba3b893` — Task 16: MCP resources and prompts
+- **Tests**: 385 tests, all green (134 MCP server in 10 suites, 149 client in 16 suites)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 16: MCP resources and prompts**
+**Start Task 17: HummingbirdMCP adapter** — see plan line ~740. The `HummingbirdMCP` target already exists (empty) in `Package.swift`.
 
-- `os_` resources: expose live OpenStack resources as MCP resources (e.g. per-cloud, per-region, per-resource snapshots) so an MCP client can read state without a tool call.
-- `os_` prompts: named prompt templates (e.g. "diagnose connectivity for server X", "summarize cloud for project Y") that expand into tool-call sequences.
-- Wire into `MCP.Server`'s `ListResources`/`ReadResource`/`ListPrompts`/`GetPrompt` handlers alongside the existing `ListTools`/`CallTool` handlers.
-- Scope-aware: resources/prompts must respect the same `Policy` (read-only tokens see read-only surfaces).
+- Build the Hummingbird → MCP SDK seam: a route that speaks the MCP JSON-RPC protocol over HTTP (Streamable-HTTP transport: `POST` for request/response + SSE stream, `GET` for the SSE stream, `DELETE` for close).
+- **Token-per-request auth**: `Authorization: Bearer <token-id>` on every request → validate via the `TokenValidating` seam (Task 18 implements `AppTokenValidator`), one `MCP.Server` session per token.
+- **Protected Resource Metadata** (PRM) served at the two well-known paths.
+- **Login route** (`/v1/login`) wired to the elicitation flow (Task 18's `LoginPage` + `TokenStore`).
+- Keep the adapter OpenStack-agnostic: it takes a `serverFactory: (ValidatedIdentity) -> MCP.Server` and a `TokenValidating` and never imports `OpenStackClient`/`OpenStackMCPServer`.
+- `RequestIdentity` now carries `cloudName: String` (Task 16) — the adapter must set it from the token/config.
 
-## Remaining Tasks After 15
+## Remaining Tasks After 16
 
 | Task | Description |
 |------|-------------|
-| 16 | MCP resources and prompts |
 | 17 | HummingbirdMCP adapter — route, token-per-request auth, SSE, PRM, login route |
 | 18 | OpenStack validator + login page + token store + serve/stdio wiring |
 | 19 | Logging, redaction, audit, metrics completeness |
@@ -40,6 +41,29 @@
 | Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload |
 | **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator** |
 | **Catalog** | **`Catalog/*.swift`** (9 files) | — | **35 resources, 25 server actions, 7 links, JSONSchema validate(), 37 tests** |
+
+## Task 16 Implementation Notes (new)
+
+### Resources (`Sources/OpenStackMCPServer/Resources/MCPResources.swift`)
+- URIs: `openstack://catalog` (index of all resource names), `openstack://catalog/{resource}` (one descriptor: service, verbs, id/name field, terminal states, action names, link kinds), and the live template `openstack://{cloud}/{region}/{resource}/{id}`.
+- `resources/list` returns the two static catalog URIs (one per resource) + the URI **template** only (region baked from `whoami.regions.first ?? "RegionOne"`). Live instances are NOT enumerated.
+- `resources/read` parses the URI into parts. `catalog` branch is static JSON; everything else is the live path: validates the cloud matches the session (`identity.cloudName`), looks up the descriptor, and calls `NameResolver.resolve` (which is project-scoped by the token). Unknown id / unknown resource / cross-cloud → a `text/plain` error content (`resourceErrorText`), never a thrown error.
+- Reuses `ToolRegistry.toValue` (now internal) for JSON serialization.
+
+### Prompts (`Sources/OpenStackMCPServer/Prompts/MCPPrompts.swift`)
+- `login` (optional `cloud`): client-side mint instructions — store token at `~/.config/openstack/mcp-tokens/<cloud>.token` mode `0600`, re-run on 401; mentions the URL-mode elicitation fallback.
+- `provision_server(name, flavor, image, network, public, volume_gb)`: ordered plan — find (os_find/os_get) → create server (os_create) → wait ACTIVE (os_wait) → [public: floating IP create+attach] → [volume_gb: volume create+attach]. Steps renumbered based on which options are set.
+- `diagnose_connectivity(from, to, port, protocol)`: os_topology with `diagnosis: true` on both ends, then explain the first blocking finding (port-security ingress, no router interface, no gateway, ERROR/SHUTOFF).
+- `audit_security_groups` (no args): list security_group + security_group_rule, flag `0.0.0.0/0` on sensitive ports and unused groups.
+- Each returns a single `Prompt.Message.user(.text(text:))`. `Prompt.Message.Content.text` takes a single labeled associated value `text:` (unlike `Tool.Content.text` which is 3-ary).
+
+### Wiring
+- `ToolRegistry.makeServer()` registers `ListResources`/`ReadResource`/`ListPrompts`/`GetPrompt` via `withMethodHandler`, alongside `ListTools`/`CallTool`.
+- `RequestIdentity` gained `cloudName: String`; `ToolRegistry.defaultRegion` computed property.
+- The 15 tool registrations/schemas are unchanged.
+
+### Test notes
+- `ResourcesPromptsTests` (13 tests). For prompt text, match `.text(t)` (single associated value). For the provision-plan ordering check, compare `text.distance(from:to:)` offsets — `#expect(a != nil)` does NOT narrow optionals for a following line.
 
 ## Task 15 Implementation Notes (new)
 
