@@ -1,20 +1,20 @@
-# Handoff: OpenStack MCP Phase 1 — Task 14 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 15 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 13 (commit `539b695`). All tasks through 13 merged.
-- **Latest commit**: `539b695` — Task 13: Policy + name resolution + validation + output shaping
-- **Tests**: 221 tests in 21 suites, all green (72 MCP server in 5 suites, 149 client in 16 suites)
+- **Main**: up through Task 14 (commit `e96cad4`). All tasks through 14 merged.
+- **Latest commit**: `e96cad4` — Task 14: ToolRegistry with 15 scope-aware MCP tools, in-process tests
+- **Tests**: 233 tests in 22 suites, all green (84 MCP server in 6 suites, 149 client in 16 suites)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 14: Tool registry + describe tools + verb tools (in-process MCP tests)**
+**Start Task 15: Links, topology, diagnosis, waiter with progress**
 
-Wire the dispatch closures in `ServiceDispatch` to `OpenStackClient` region methods.
-Create the MCP tool registry with `os_list`, `os_get`, `os_describe`, and verb tools.
-In-process MCP tests using the `MCP` test harness.
+Implement `os_attach`/`os_detach` link operations (volume attach/detach, interface attach/detach, security group, floating IP, router interface/gateway).
+Implement `os_topology` with depth-limited graph traversal and optional diagnosis findings.
+Implement `os_wait` with polling loop and progress notifications.
 
 ## Remaining Tasks After 13
 
@@ -145,6 +145,26 @@ public struct XRegion: Sendable {
 - `ResultFormatting`: `project()` (field projection), `checkFilters()` (validate against descriptor), `errorParagraph()` (what/status/message/requestID/hint), `redact()` (regex-based secret/token redaction)
 - `ListResult` / `MutationResult` types for result shaping
 - 30 tests: PolicyTests (8), NameResolverTests (6), SchemaValidationTests (16)
+
+### ToolRegistry (Task 14)
+- `RequestIdentity` struct: Sendable` — holds `vt: ValidatedToken` + `whoami: Whoami`, built at session init
+- `ToolRegistry: Sendable` — holds `client`, `catalog` (policy-filtered), `policy`, `identity`, `logger`
+- `ToolRegistry.makeServer()` → `MCP.Server` with `ListTools` and `CallTool` handlers
+- 15 tools: os_list, os_get, os_describe, os_topology, os_find, os_whoami, os_quota, os_clouds, os_wait, os_create, os_update, os_delete, os_action, os_attach, os_detach
+- Scope-aware: `visibleToolNames` → 9 read-only or 15 (with write). `dispatch()` returns 403 error for mutating tools without write scope
+- `dispatch(_ params: CallTool.Parameters)` routes to per-tool handlers (`handleList`, `handleGet`, `handleDescribe`, etc.)
+- `handleLink` and `handleTopology`/`handleWait` are stubs (implemented in Task 15)
+- `NameResolver` public methods: `listPublic`, `createPublic`, `updatePublic`, `deletePublic`, `actionPublic`
+- JSONValue ↔ MCP Value conversion via `convertValue`/`toValue`
+- `resultText(_ obj: [String: JSONValue])` → `(String, Value)` — JSON-encodes for text, converts for structuredContent
+- MCP SDK `Value` cases: `.string`, `.int`, `.double`, `.bool`, `.null`, `.array`, `.object` (NOT `.integer`)
+- MCP SDK `Tool.Content.text` is a case: `.text(text:annotations:_meta:)` — the static `.text(_:)` is deprecated
+- `CallTool.Result.isError` is `Bool?` (nil = success, true = error) — test with `!= true` not `== false`
+- `MCP.Client.callTool(name:arguments:meta:)` → `(content: [Tool.Content], isError: Bool?)`
+- `MCP.Client.listTools()` → `(tools: [Tool], nextCursor: String?)`
+- **Start server before client**: `server.start(transport:)` then `client.connect(transport:)` to avoid deadlock
+- **Transport shutdown**: `Transport.syncShutdown()` must be called before test ends (HTTPClient crash otherwise)
+- 12 InProcessMCPTests using `InMemoryTransport.createConnectedPair()`
 
 ### Model Pattern
 - `Sendable, Codable, Identifiable` for resource models
