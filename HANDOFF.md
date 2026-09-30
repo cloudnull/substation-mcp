@@ -1,35 +1,25 @@
-# Handoff: OpenStack MCP Phase 1 — Task 13 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 14 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 12 (commit `3147630`). All tasks through 12 merged.
-- **Latest commit**: `8c4d054` — feat(server): phase-1 resource catalog with schemas, actions, links
-- **Tests**: 191 tests in 18 suites, all green
+- **Main**: up through Task 13 (commit `539b695`). All tasks through 13 merged.
+- **Latest commit**: `539b695` — Task 13: Policy + name resolution + validation + output shaping
+- **Tests**: 221 tests in 21 suites, all green (72 MCP server in 5 suites, 149 client in 16 suites)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 13: Policy + name resolution + validation + output shaping**
+**Start Task 14: Tool registry + describe tools + verb tools (in-process MCP tests)**
 
-Three components:
-1. **Policy** — `struct Policy` with `readOnly`, `denyResources`, `denyVerbs`,
-   `denyActions`, `maxListLimit`, `maxCallsPerMinute`. `effective(catalog:)`
-   applies denials. `toolsEnabled(readOnlyList:)` returns the 9 read-only tools.
-   Default policy denies the 6 identity-admin names.
-2. **NameResolver** — `actor NameResolver` that resolves `id_or_name` to a
-   concrete ID: exact ID first (get by id; 404 → not ID), exact name filter,
-   then case-insensitive scan. ≥2 matches → `AmbiguousNameError` listing candidates.
-3. **ResultFormatting** — `project()` (top-level field projection),
-   `errorParagraph()` (one paragraph: what, status, message, request ID, hint;
-   redacts token/secret substrings). `ListResult` and `MutationResult` types.
-   `checkFilters()` validates list filters against the descriptor.
+Wire the dispatch closures in `ServiceDispatch` to `OpenStackClient` region methods.
+Create the MCP tool registry with `os_list`, `os_get`, `os_describe`, and verb tools.
+In-process MCP tests using the `MCP` test harness.
 
-## Remaining Tasks After 12
+## Remaining Tasks After 13
 
 | Task | Description |
 |------|-------------|
-| 13 | Policy + name resolution + validation + output shaping |
 | 14 | Tool registry + describe tools + verb tools (in-process MCP tests) |
 | 15 | Links, topology, diagnosis, waiter with progress |
 | 16 | MCP resources and prompts |
@@ -145,6 +135,16 @@ public struct XRegion: Sendable {
 - `ResourceCatalog.phase1()` → 35 resources (10+10+9+5+1), `byName` lookup dict
 - Entry files: `IdentityEntries`, `ComputeEntries`, `NetworkEntries`, `BlockStorageEntries`, `ImageEntries` — each a `static let all: [ResourceDescriptor]`
 - 37 completeness tests in `CatalogCompletenessTests.swift`
+
+### Policy + Name Resolution + Output Shaping (Task 13)
+- `Policy` struct: `readOnly`, `denyResources` (default: 6 identity-admin names), `denyVerbs`, `denyActions`, `maxListLimit` (200), `maxCallsPerMinute` (120)
+- `Policy.effective(catalog:)` → filtered `ResourceCatalog` (removes denied resources, subtracts denied verbs, filters denied actions)
+- `Policy.toolsEnabled()` → 9 read-only tool names
+- `NameResolver` actor: `resolve(vt:descriptor:idOrName:region:)` → `(id, raw)`. Resolution: exact ID → exact name filter (limit 2) → case-insensitive scan. ≥2 → `AmbiguousNameError`. 0 → 404 `OpenStackError`.
+- `NameResolver` dispatches via `OpenStackClient` region methods (compute/network/blockStorage/image). Identity → 501.
+- `ResultFormatting`: `project()` (field projection), `checkFilters()` (validate against descriptor), `errorParagraph()` (what/status/message/requestID/hint), `redact()` (regex-based secret/token redaction)
+- `ListResult` / `MutationResult` types for result shaping
+- 30 tests: PolicyTests (8), NameResolverTests (6), SchemaValidationTests (16)
 
 ### Model Pattern
 - `Sendable, Codable, Identifiable` for resource models
