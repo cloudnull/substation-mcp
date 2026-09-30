@@ -1,29 +1,49 @@
-# Handoff: OpenStack MCP Phase 1 — Task 17 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 18 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 16 (commit `ba3b893`). All tasks through 16 merged.
-- **Latest commit**: `ba3b893` — Task 16: MCP resources and prompts
-- **Tests**: 385 tests, all green (134 MCP server in 10 suites, 149 client in 16 suites)
+- **Main**: up through Task 17 (commit `3cead52`). All tasks through 17 merged.
+- **Latest commit**: `3cead52` — Task 17: HummingbirdMCP adapter
+- **Tests**: 298 tests, all green (134 MCP server / 149 client / 15 HummingbirdMCP)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 17: HummingbirdMCP adapter** — see plan line ~740. The `HummingbirdMCP` target already exists (empty) in `Package.swift`.
+**Start Task 18: OpenStack validator + login page + token store + serve/stdio wiring** — see plan. This is the integration layer that turns the Task-17 adapter into a runnable server.
 
-- Build the Hummingbird → MCP SDK seam: a route that speaks the MCP JSON-RPC protocol over HTTP (Streamable-HTTP transport: `POST` for request/response + SSE stream, `GET` for the SSE stream, `DELETE` for close).
-- **Token-per-request auth**: `Authorization: Bearer <token-id>` on every request → validate via the `TokenValidating` seam (Task 18 implements `AppTokenValidator`), one `MCP.Server` session per token.
-- **Protected Resource Metadata** (PRM) served at the two well-known paths.
-- **Login route** (`/v1/login`) wired to the elicitation flow (Task 18's `LoginPage` + `TokenStore`).
-- Keep the adapter OpenStack-agnostic: it takes a `serverFactory: (ValidatedIdentity) -> MCP.Server` and a `TokenValidating` and never imports `OpenStackClient`/`OpenStackMCPServer`.
-- `RequestIdentity` now carries `cloudName: String` (Task 16) — the adapter must set it from the token/config.
+- Implement `AppTokenValidator: TokenValidating` (OpenStack-backed: validate a minted token id against Keystone / the token store) — plug into `MCPRoute(validator:)`.
+- Implement the URL-mode login page + token store (`LoginMinter`, `TokenStore`) and pass them to `MCPRoute.install(login:)` / `prm:`.
+- Build the real `serverFactory: (ValidatedIdentity) async -> Server` from `ToolRegistry.makeServer()` — set `RequestIdentity.cloudName` from the token/config (Task 16 added the field; this is the seam that fills it).
+- Wire a `WriteToolGate` with the real write tool names (os_create/os_update/os_delete/os_action/os_attach/os_detach) and `ScopeAuthorizer(servedProjects:)` with the cloud's served projects.
+- Stand up the `serve` (Hummingbird) and `stdio` entry points; PRM document builder.
+- The adapter (Task 17) is already OpenStack-free — Task 18 supplies the OpenStack-specific pieces around it. Do not move OpenStack imports into `HummingbirdMCP`.
 
-## Remaining Tasks After 16
+## Task 17 Implementation Notes (new)
+
+### `HummingbirdMCP` target (OpenStack-free: imports only `MCP`, `Hummingbird`, `HTTPTypes`, `Logging`)
+- `MCPRoute.install(on:prm:login:)` mounts `/v1` + legacy `/mcp` (POST/GET/DELETE), `/.well-known/oauth-protected-resource[/v1]` (GET, from the injected `prm` closure), and `/<endpoint>/login` (GET renders form, POST decodes `LoginRequest` → injected `login` minter → completion page).
+- `MCPConfig` (endpoint, legacyEndpoint, allowedOrigins, maxBodyBytes, maxSessions, maxStreamsPerSession, idleTTL, maxLifetime, cleanupInterval, publicURL).
+- **Token-per-request auth (spec §7.1.1/3):** Bearer parsed + validated on EVERY request via the `TokenValidating` seam (cache lives in the validator). Missing/invalid → `401 WWW-Authenticate: Bearer error="invalid_token", resource_metadata=...`. `resourceMetadataURL` is always present: `config.publicURL ?? ""` + `/.well-known/oauth-protected-resource`.
+- **Scope gate:** `WriteToolGate(toolNames:)` (default empty) + `ScopeAuthorizer(servedProjects:)`. Write-gated `tools/call` → `403 error="insufficient_scope", scope="openstack:write"`; audience mismatch → `403 invalid_target`. Task 18 supplies real tool names + served projects.
+- **Per-request identity:** `serverFactory: @Sendable (ValidatedIdentity) async -> Server` builds one `MCP.Server` per token; `MCP-Session-Id` per session; `SessionRegistry` actor holds server+transport+timing only (no principal). `DELETE` → `registry.terminate` (fires `terminated` callback for token zeroize) + `MCPSession.disconnect()`; subsequent requests 404.
+- `Authenticator.swift`: `ValidatedIdentity`, `AnyTokenPayload`, `TokenValidating`, `ScopeAuthorizer`, `WriteToolGate`. `SessionRegistry.swift`: `MCPSession` (+ `disconnect()`), `SessionRegistry` actor. `HummingbirdMCP.swift`: `MCPRoute`, `MCPConfig`, `LoginRequest/Response`, `ConfiguredOriginValidator`, response builders.
+
+### Gotchas learned in Task 17
+- **`Server` is an actor** → `withMethodHandler` is actor-isolated; any closure building a `Server` must be `async` and `await` the handler registration. Hence `serverFactory` is `async`.
+- **Name collision:** MCP SDK `HTTPRequest`/`HTTPResponse`/`HTTPValidationContext`/`HTTPRequestValidator` collide with `HTTPTypes` equivalents (the target imports both). Qualify the SDK ones as `MCP.HTTPRequest` etc. `MCPError`, `StatefulHTTPServerTransport`, validators, `SessionIDGenerator` are MCP-unique.
+- **Raw-string interpolation bug (cost a test cycle):** `#"Bearer ... scope="\(required)""#` does NOT expand `\(...)` — raw `#""#` strings treat interpolation literally, so the challenge leaked the text `\(required)`. Use a normal interpolated string (`"Bearer ... scope=\"\(required)\""`). `unauthorized`/`forbiddenAudience` build their interpolation in a non-raw part.
+- **DELETE must terminate the registry session, not just the transport's:** routing DELETE through the SDK transport's `handleDelete` terminates the *transport's* session and does NOT fire our `terminated` callback. Add an explicit `DELETE` branch in `handle` → `registry.terminate(id)` + `removed.disconnect()`; return a plain `200`.
+- **`MCPSession.disconnect()` = `server.stop()`** (idempotent — `Server.stop` and the transport's `terminate()` are both idempotent, so double-teardown on DELETE + idle eviction is safe).
+- **Hummingbird 2.26 API:** `Router<BasicRequestContext>`; `Application<RouterResponder<BasicRequestContext>>(router:)`; dynamic paths need `RouterPath("...")`; `Request.uri: URI` (has `.path`), NOT `.url`; `RequestBody` is an `AsyncSequence` of `ByteBuffer` (no public `.collect` — drain manually); 413 status is `.contentTooLarge`; `HTTPField.Name` is a **failable** `init?(_:)` (not `ExpressibleByStringLiteral`); static names `.contentType`/`.wwwAuthenticate` exist.
+- **SDK transport:** `StatefulHTTPServerTransport(sessionIDGenerator:validationPipeline:retryInterval:logger:)` + `handleRequest(MCP.HTTPRequest) async -> MCP.HTTPResponse`; `.stream`/`.data`/`.ok`/`.error(statusCode:error:sessionID:extraHeaders:)`; `FixedSessionIDGenerator` pins the UUID we hand back to the client.
+- **Test client:** `app.test(.router) { client in ... }`, `client.execute(uri:method:headers:body:)` with `headers: HTTPFields`, `body: ByteBuffer?`, `method: HTTPRequest.Method` (`.get`/`.post`/`.delete`).
+- 15 tests: `AuthTests` (missingAuth, bogusToken, perRequestIdentity, tokenCache, insufficientScope, scopeAwareToolList, sessionRequired, deleteTerminates) + `TransportTests` (413, PRM, Origin, legacy /mcp, SSE content-type, login).
+
+## Remaining Tasks After 17
 
 | Task | Description |
 |------|-------------|
-| 17 | HummingbirdMCP adapter — route, token-per-request auth, SSE, PRM, login route |
 | 18 | OpenStack validator + login page + token store + serve/stdio wiring |
 | 19 | Logging, redaction, audit, metrics completeness |
 | 20 | CLI — check, access-rules, tools, register-catalog |
