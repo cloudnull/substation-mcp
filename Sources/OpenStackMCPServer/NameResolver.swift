@@ -114,6 +114,18 @@ public actor NameResolver {
         }
     }
 
+    /// Public list method for the ToolRegistry to call directly.
+    public func listPublic(
+        _ vt: ValidatedToken,
+        descriptor: ResourceDescriptor,
+        filters: [String: String],
+        limit: Int?,
+        marker: String?,
+        region: String
+    ) async throws -> [String: JSONValue] {
+        try await list(vt: vt, descriptor: descriptor, filters: filters, limit: limit ?? 200, region: region)
+    }
+
     // MARK: - Dispatch helpers
 
     private func get(vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async throws -> [String: JSONValue] {
@@ -263,6 +275,330 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not resolvable in phase 1")
+        }
+    }
+
+    // MARK: - Public mutation methods (for ToolRegistry)
+
+    public func createPublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, body: JSONValue, region: String) async throws -> [String: JSONValue] {
+        guard let obj = body.objectValue else {
+            throw OpenStackError(service: "mcp", status: 400, message: "Create body must be an object")
+        }
+        switch descriptor.service {
+        case .compute:
+            let r = await client.compute(region: region)
+            switch descriptor.name {
+            case "server":
+                let name = obj["name"]?.stringValue
+                let flavorID = obj["flavor"]?.stringValue ?? obj["flavorID"]?.stringValue
+                let imageID = obj["image"]?.stringValue ?? obj["imageID"]?.stringValue
+                guard let name, let flavorID, let imageID else {
+                    throw OpenStackError(service: "compute", status: 400, message: "Server create requires name, flavor, image")
+                }
+                let spec = CreateServerSpec(name: name, flavorID: flavorID, imageID: imageID)
+                let s = try await r.createServer(vt, spec)
+                return try Self.encodeObject(s)
+            case "keypair":
+                let name = obj["name"]?.stringValue
+                let publicKey = obj["public_key"]?.stringValue
+                guard let name else { throw OpenStackError(service: "compute", status: 400, message: "Keypair create requires name") }
+                let kp = try await r.createKeyPair(vt, name: name, publicKey: publicKey)
+                return try Self.encodeObject(kp)
+            default:
+                throw OpenStackError(service: "compute", status: 400, message: "Unknown compute create: \(descriptor.name)")
+            }
+        case .network:
+            let r = await client.network(region: region)
+            switch descriptor.name {
+            case "network":
+                let name = obj["name"]?.stringValue ?? "mcp-net"
+                let spec = CreateNetworkSpec(name: name)
+                let n = try await r.createNetwork(vt, spec)
+                return try Self.encodeObject(n)
+            case "subnet":
+                let networkID = obj["network_id"]?.stringValue
+                let cidr = obj["cidr"]?.stringValue
+                guard let networkID, let cidr else {
+                    throw OpenStackError(service: "network", status: 400, message: "Subnet create requires network_id and cidr")
+                }
+                let spec = CreateSubnetSpec(networkID: networkID, cidr: cidr, name: obj["name"]?.stringValue)
+                let s = try await r.createSubnet(vt, spec)
+                return try Self.encodeObject(s)
+            case "port":
+                let networkID = obj["network_id"]?.stringValue
+                guard let networkID else { throw OpenStackError(service: "network", status: 400, message: "Port create requires network_id") }
+                let name = obj["name"]?.stringValue ?? ""
+                let spec = CreatePortSpec(networkID: networkID, name: name)
+                let p = try await r.createPort(vt, spec)
+                return try Self.encodeObject(p)
+            case "router":
+                let name = obj["name"]?.stringValue ?? "mcp-router"
+                let spec = CreateRouterSpec(name: name)
+                let rt = try await r.createRouter(vt, spec)
+                return try Self.encodeObject(rt)
+            case "floating_ip":
+                let networkID = obj["floating_network_id"]?.stringValue
+                guard let networkID else { throw OpenStackError(service: "network", status: 400, message: "Floating IP create requires floating_network_id") }
+                let spec = CreateFloatingIPSpec(floatingNetworkID: networkID)
+                let f = try await r.createFloatingIP(vt, spec)
+                return try Self.encodeObject(f)
+            case "security_group":
+                let name = obj["name"]?.stringValue ?? "mcp-sg"
+                let spec = CreateSecurityGroupSpec(name: name, description: obj["description"]?.stringValue ?? "")
+                let sg = try await r.createSecurityGroup(vt, spec)
+                return try Self.encodeObject(sg)
+            default:
+                throw OpenStackError(service: "network", status: 400, message: "Unknown network create: \(descriptor.name)")
+            }
+        case .blockStorage:
+            let r = await client.blockStorage(region: region)
+            switch descriptor.name {
+            case "volume":
+                let size = obj["size"]?.intValue ?? 1
+                let name = obj["name"]?.stringValue ?? "mcp-vol"
+                let volType = obj["volume_type"]?.stringValue ?? ""
+                let spec = CreateVolumeSpec(name: name, size: size, volumeType: volType)
+                let v = try await r.createVolume(vt, spec)
+                return try Self.encodeObject(v)
+            default:
+                throw OpenStackError(service: "volumev3", status: 400, message: "Unknown volume create: \(descriptor.name)")
+            }
+        case .image:
+            let r = await client.image(region: region)
+            switch descriptor.name {
+            case "image":
+                let name = obj["name"]?.stringValue ?? "mcp-image"
+                let spec = CreateImageSpec(name: name)
+                let img = try await r.createImage(vt, spec)
+                return try Self.encodeObject(img)
+            default:
+                throw OpenStackError(service: "image", status: 400, message: "Unknown image create: \(descriptor.name)")
+            }
+        case .identity:
+            throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not creatable in phase 1")
+        }
+    }
+
+    public func updatePublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, body: JSONValue, region: String) async throws -> [String: JSONValue] {
+        guard let obj = body.objectValue else {
+            throw OpenStackError(service: "mcp", status: 400, message: "Update body must be an object")
+        }
+        switch descriptor.service {
+        case .compute:
+            let r = await client.compute(region: region)
+            switch descriptor.name {
+            case "server":
+                let name = obj["name"]?.stringValue
+                let s = try await r.updateServer(vt, id: id, name: name)
+                return try Self.encodeObject(s)
+            default:
+                throw OpenStackError(service: "compute", status: 400, message: "Unknown compute update: \(descriptor.name)")
+            }
+        case .network:
+            let r = await client.network(region: region)
+            switch descriptor.name {
+            case "network":
+                let n = try await r.updateNetwork(vt, id: id, .init(name: obj["name"]?.stringValue))
+                return try Self.encodeObject(n)
+            case "port":
+                let p = try await r.updatePort(vt, id: id, name: obj["name"]?.stringValue)
+                return try Self.encodeObject(p)
+            case "router":
+                let rt = try await r.updateRouter(vt, id: id, name: obj["name"]?.stringValue)
+                return try Self.encodeObject(rt)
+            case "floating_ip":
+                let f = try await r.updateFloatingIP(vt, id: id, portID: obj["port_id"]?.stringValue)
+                return try Self.encodeObject(f)
+            default:
+                throw OpenStackError(service: "network", status: 400, message: "Unknown network update: \(descriptor.name)")
+            }
+        case .blockStorage:
+            throw OpenStackError(service: "volumev3", status: 400, message: "Volume update not supported (use os_action for extend/retype)")
+        case .image:
+            let r = await client.image(region: region)
+            switch descriptor.name {
+            case "image":
+                let img = try await r.updateImage(vt, id: id, name: obj["name"]?.stringValue)
+                return try Self.encodeObject(img)
+            default:
+                throw OpenStackError(service: "image", status: 400, message: "Unknown image update: \(descriptor.name)")
+            }
+        case .identity:
+            throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not updatable in phase 1")
+        }
+    }
+
+    public func deletePublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async throws -> [String: JSONValue] {
+        switch descriptor.service {
+        case .compute:
+            let r = await client.compute(region: region)
+            switch descriptor.name {
+            case "server":
+                try await r.deleteServer(vt, id: id)
+            case "keypair":
+                try await r.deleteKeyPair(vt, name: id)
+            default:
+                throw OpenStackError(service: "compute", status: 400, message: "Unknown compute delete: \(descriptor.name)")
+            }
+        case .network:
+            let r = await client.network(region: region)
+            switch descriptor.name {
+            case "network": try await r.deleteNetwork(vt, id: id)
+            case "subnet": try await r.deleteSubnet(vt, id: id)
+            case "port": try await r.deletePort(vt, id: id)
+            case "router": try await r.deleteRouter(vt, id: id)
+            case "floating_ip": try await r.deleteFloatingIP(vt, id: id)
+            case "security_group": try await r.deleteSecurityGroup(vt, id: id)
+            default: throw OpenStackError(service: "network", status: 400, message: "Unknown network delete: \(descriptor.name)")
+            }
+        case .blockStorage:
+            let r = await client.blockStorage(region: region)
+            switch descriptor.name {
+            case "volume": try await r.deleteVolume(vt, id: id)
+            case "volume_type": try await r.deleteVolumeType(vt, id: id)
+            case "volume_snapshot": try await r.deleteSnapshot(vt, id: id)
+            case "volume_backup": try await r.deleteBackup(vt, id: id)
+            default: throw OpenStackError(service: "volumev3", status: 400, message: "Unknown volume delete: \(descriptor.name)")
+            }
+        case .image:
+            let r = await client.image(region: region)
+            switch descriptor.name {
+            case "image": try await r.deleteImage(vt, id: id)
+            default: throw OpenStackError(service: "image", status: 400, message: "Unknown image delete: \(descriptor.name)")
+            }
+        case .identity:
+            throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not deletable in phase 1")
+        }
+        return ["deleted": .bool(true), "id": .string(id)]
+    }
+
+    public func actionPublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, action: String, params: [String: JSONValue], region: String) async throws -> [String: JSONValue] {
+        switch descriptor.service {
+        case .compute:
+            let r = await client.compute(region: region)
+            switch descriptor.name {
+            case "server":
+                let serverAction: ServerAction
+                switch action {
+                case "start": serverAction = .start
+                case "stop": serverAction = .stop
+                case "reboot": serverAction = .reboot(soft: !(params["hard"]?.boolValue ?? false))
+                case "pause": serverAction = .pause
+                case "unpause": serverAction = .unpause
+                case "suspend": serverAction = .suspend
+                case "resume": serverAction = .resume
+                case "lock": serverAction = .lock
+                case "unlock": serverAction = .unlock
+                case "shelve": serverAction = .shelve
+                case "unshelve": serverAction = .unshelve
+                case "rescue": serverAction = .rescue
+                case "unrescue": serverAction = .unrescue
+                case "resize":
+                    let flavorID = params["flavor_id"]?.stringValue ?? params["flavorRef"]?.stringValue
+                    guard let flavorID else { throw OpenStackError(service: "compute", status: 400, message: "Resize requires flavor_id") }
+                    serverAction = .resize(flavorID: flavorID)
+                case "confirm_resize": serverAction = .confirmResize
+                case "revert_resize": serverAction = .revertResize
+                case "rebuild":
+                    let imageID = params["imageRef"]?.stringValue
+                    guard let imageID else { throw OpenStackError(service: "compute", status: 400, message: "Rebuild requires imageRef") }
+                    serverAction = .rebuild(imageID: imageID, adminPassword: params["adminPass"]?.stringValue)
+                case "snapshot":
+                    let name = params["name"]?.stringValue ?? "\(id)-snap"
+                    serverAction = .snapshot(name: name)
+                case "console_output": serverAction = .consoleOutput(lines: params["lines"]?.intValue ?? 20)
+                case "console_url": serverAction = .consoleURL(type: params["type"]?.stringValue ?? "serial")
+                case "add_security_group":
+                    let sgID = params["security_group_id"]?.stringValue
+                    guard let sgID else { throw OpenStackError(service: "compute", status: 400, message: "add_security_group requires security_group_id") }
+                    serverAction = .addSecurityGroup(id: sgID)
+                case "remove_security_group":
+                    let sgID = params["security_group_id"]?.stringValue
+                    guard let sgID else { throw OpenStackError(service: "compute", status: 400, message: "remove_security_group requires security_group_id") }
+                    serverAction = .removeSecurityGroup(id: sgID)
+                case "evacuate": serverAction = .evacuate
+                case "live_migrate": serverAction = .liveMigrate
+                case "migrate": serverAction = .migrate
+                default:
+                    throw OpenStackError(service: "compute", status: 400, message: "Unknown server action: \(action)")
+                }
+                let result = try await r.action(vt, id, serverAction)
+                if let s = result {
+                    return try Self.encodeObject(s)
+                }
+                return ["action": .string(action), "id": .string(id), "status": .string("accepted")]
+            default:
+                throw OpenStackError(service: "compute", status: 400, message: "Unknown compute action resource: \(descriptor.name)")
+            }
+        case .blockStorage:
+            let r = await client.blockStorage(region: region)
+            switch descriptor.name {
+            case "volume":
+                switch action {
+                case "extend":
+                    let newSize = params["new_size"]?.intValue ?? params["size"]?.intValue
+                    guard let newSize else { throw OpenStackError(service: "volumev3", status: 400, message: "Extend requires new_size") }
+                    let vol = try await r.extendVolume(vt, id: id, size: newSize)
+                    return try Self.encodeObject(vol)
+                case "retype":
+                    let newType = params["new_volume_type"]?.stringValue
+                    guard let newType else { throw OpenStackError(service: "volumev3", status: 400, message: "Retype requires new_volume_type") }
+                    let vol = try await r.retypeVolume(vt, id: id, volumeType: newType)
+                    return try Self.encodeObject(vol)
+                case "set_bootable":
+                    let vol = try await r.setBootable(vt, id: id, bootable: params["bootable"]?.boolValue ?? true)
+                    return try Self.encodeObject(vol)
+                case "upload_to_image":
+                    let imageRef = try await r.uploadToImage(vt, id: id)
+                    return ["action": .string("upload_to_image"), "id": .string(id), "image_ref": .string(imageRef)]
+                case "reset_status":
+                    throw OpenStackError(service: "volumev3", status: 501, message: "reset_status not yet implemented in client")
+                default:
+                    throw OpenStackError(service: "volumev3", status: 400, message: "Unknown volume action: \(action)")
+                }
+            default:
+                throw OpenStackError(service: "volumev3", status: 400, message: "Unknown blockStorage action resource: \(descriptor.name)")
+            }
+        case .network:
+            let r = await client.network(region: region)
+            switch descriptor.name {
+            case "router":
+                switch action {
+                case "add_router_interface":
+                    throw OpenStackError(service: "network", status: 501, message: "add_router_interface not yet in client — use os_update on the router or the Neutron API directly")
+                case "remove_router_interface":
+                    throw OpenStackError(service: "network", status: 501, message: "remove_router_interface not yet in client — use os_update on the router or the Neutron API directly")
+                case "set_gateway":
+                    let networkID = params["network_id"]?.stringValue
+                    guard let networkID else { throw OpenStackError(service: "network", status: 400, message: "set_gateway requires network_id") }
+                    let gw = Router.ExternalGatewayInfo(networkID: networkID)
+                    let rt = try await r.updateRouter(vt, id: id, externalGatewayInfo: gw)
+                    return try Self.encodeObject(rt)
+                case "clear_gateway":
+                    let rt = try await r.updateRouter(vt, id: id, externalGatewayInfo: nil)
+                    return try Self.encodeObject(rt)
+                default:
+                    throw OpenStackError(service: "network", status: 400, message: "Unknown router action: \(action)")
+                }
+            default:
+                throw OpenStackError(service: "network", status: 400, message: "Unknown network action resource: \(descriptor.name)")
+            }
+        case .image:
+            let r = await client.image(region: region)
+            switch descriptor.name {
+            case "image":
+                switch action {
+                case "protect": let img = try await r.protect(vt, id: id); return try Self.encodeObject(img)
+                case "unprotect": let img = try await r.unprotect(vt, id: id); return try Self.encodeObject(img)
+                case "deactivate": let img = try await r.deactivate(vt, id: id); return try Self.encodeObject(img)
+                case "reactivate": let img = try await r.reactivate(vt, id: id); return try Self.encodeObject(img)
+                default: throw OpenStackError(service: "image", status: 400, message: "Unknown image action: \(action)")
+                }
+            default:
+                throw OpenStackError(service: "image", status: 400, message: "Unknown image action resource: \(descriptor.name)")
+            }
+        case .identity:
+            throw OpenStackError(service: "keystone", status: 501, message: "Identity actions not supported in phase 1")
         }
     }
 
