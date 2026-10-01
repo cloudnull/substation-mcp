@@ -12,7 +12,7 @@ struct FakeSmokeTests {
         defer { handle.stop() }
 
         let mintBody = """
-        {"auth":{"identity":{"methods":["application_credential"],"applicationCredential":{"id":"fake-cred-admin","secret":"secret-admin"}}}}
+        {"auth":{"identity":{"methods":["application_credential"],"application_credential":{"id":"fake-cred-admin","secret":"secret-admin"}}}}
         """
 
         var request = URLRequest(url: handle.keystoneURL.appendingPathComponent("auth/tokens"))
@@ -61,7 +61,7 @@ struct FakeSmokeTests {
         defer { handle.stop() }
 
         let mintBody = """
-        {"auth":{"identity":{"methods":["application_credential"],"applicationCredential":{"id":"fake-cred-admin","secret":"wrong-secret"}}}}
+        {"auth":{"identity":{"methods":["application_credential"],"application_credential":{"id":"fake-cred-admin","secret":"wrong-secret"}}}}
         """
 
         var request = URLRequest(url: handle.keystoneURL.appendingPathComponent("auth/tokens"))
@@ -165,7 +165,7 @@ struct FakeSmokeTests {
 
     static func mintToken(handle: FakeHandle, credID: String, secret: String) async throws -> String {
         let mintBody = """
-        {"auth":{"identity":{"methods":["application_credential"],"applicationCredential":{"id":"\(credID)","secret":"\(secret)"}}}}
+        {"auth":{"identity":{"methods":["application_credential"],"application_credential":{"id":"\(credID)","secret":"\(secret)"}}}}
         """
         var mintRequest = URLRequest(url: handle.keystoneURL.appendingPathComponent("auth/tokens"))
         mintRequest.httpMethod = "POST"

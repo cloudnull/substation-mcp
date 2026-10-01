@@ -105,6 +105,7 @@ public struct MCPRoute: Sendable {
     let terminated: @Sendable (String) -> Void
     let logger: Logger
     let registry: SessionRegistry
+    let failedAuthLimiter: FailedAuthLimiter
 
     public init(
         config: MCPConfig,
@@ -112,9 +113,12 @@ public struct MCPRoute: Sendable {
         serverFactory: @escaping @Sendable (ValidatedIdentity) async -> Server,
         gate: WriteToolGate = WriteToolGate(),
         terminated: @escaping @Sendable (String) -> Void,
-        logger: Logger = Logger(label: "hummingbird-mcp")
+        logger: Logger = Logger(label: "hummingbird-mcp"),
+        failedAuthPerMinute: Int = 10,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.config = config
+        self.failedAuthLimiter = FailedAuthLimiter(limitPerMinute: failedAuthPerMinute, clock: clock)
         self.validator = validator
         self.serverFactory = serverFactory
         self.gate = gate
@@ -239,17 +243,32 @@ public struct MCPRoute: Sendable {
                     )
                 }
                 let result = await minter(req)
-                let completion = """
-                <!DOCTYPE html><html><head><title>Login complete</title></head><body>
-                <h1>Login complete</h1>
-                <p>Your token was stored. You may close this tab.</p>
-                <p>Token ID: <code>\(result.tokenID)</code></p>
-                </body></html>
-                """
+                let html: String
+                if result.completion {
+                    html = """
+                    <!DOCTYPE html><html><head><title>Login complete</title></head><body>
+                    <h1>Login complete</h1>
+                    <p>Your token was stored. You may close this tab.</p>
+                    <p>Token ID: <code>\(result.tokenID)</code></p>
+                    </body></html>
+                    """
+                } else {
+                    // Mint failed: the completion page's "Token ID" element is
+                    // empty, so the response is an error page instead. The
+                    // failure reason is intentionally generic (the underlying
+                    // error may quote credential material).
+                    html = """
+                    <!DOCTYPE html><html><head><title>Login failed</title></head><body>
+                    <h1>Login failed</h1>
+                    <p>Credentials could not be validated. Please try again or
+                    contact your cloud administrator.</p>
+                    </body></html>
+                    """
+                }
                 return Response(
-                    status: .ok,
+                    status: result.completion ? .ok : .badRequest,
                     headers: [.contentType: "text/html; charset=utf-8"],
-                    body: .init(byteBuffer: ByteBuffer(data: completion.data(using: .utf8)!))
+                    body: .init(byteBuffer: ByteBuffer(data: html.data(using: .utf8)!))
                 )
             }
         } else {
@@ -302,7 +321,14 @@ public struct MCPRoute: Sendable {
         }
 
         // 3. Validate on EVERY request (spec §7.1.3). Cache lives in the validator.
+        //    Failed validations are counted per source address (spec §7.1:
+        //    `auth.failed_auth_per_minute`); once the window is exhausted,
+        //    further attempts 429 **before** they reach Keystone.
         guard let identity = try? await validator.validate(tokenID: bearer) else {
+            let sourceIP = clientIP(of: hummingRequest)
+            guard await failedAuthLimiter.record(source: sourceIP) else {
+                return .tooManyRequests()
+            }
             return .unauthorized(resourceMetadata: resourceMetadataURL)
         }
 
@@ -458,6 +484,19 @@ public struct MCPRoute: Sendable {
     }
 
     /// Case-insensitive header lookup.
+    /// The best-known client address for rate limiting: `X-Forwarded-For`'s
+    /// first hop when present (behind a proxy), otherwise the peer address.
+    private func clientIP(of request: Request) -> String {
+        let forwardedName = HTTPField.Name("X-Forwarded-For")
+        if let forwardedName, let forwarded = request.headers[forwardedName] {
+            let first = forwarded.split(separator: ",").first?.trimmingCharacters(in: .whitespaces)
+            if let first, !first.isEmpty {
+                return first
+            }
+        }
+        return "local"
+    }
+
     private func headerValue(_ fields: HTTPFields, _ name: String) -> String? {
         fields[headerName(name)]
     }
@@ -544,6 +583,46 @@ private struct FixedSessionIDGenerator: SessionIDGenerator {
 
 // MARK: - Configured origin validator
 
+/// Sliding-window (1-minute) counter of failed token validations per source
+/// address (spec §7.1: `auth.failed_auth_per_minute`). The first `limit`
+/// failures in a window are answered with 401; the next failure in the same
+/// window is rejected with 429 instead, so brute-force probing stops hitting
+/// Keystone after the budget is spent.
+public actor FailedAuthLimiter {
+    private let limitPerMinute: Int
+    private let clock: @Sendable () -> Date
+    private var counts: [String: (windowStart: Date, count: Int)] = [:]
+
+    public init(limitPerMinute: Int, clock: @escaping @Sendable () -> Date = { Date() }) {
+        self.limitPerMinute = limitPerMinute
+        self.clock = clock
+    }
+
+    /// Record a failed validation for `source`. Returns `false` when the
+    /// budget for this window is exhausted and the caller should 429.
+    public func record(source: String) -> Bool {
+        let now = clock()
+        var entry = counts[source]
+        if let e = entry, now.timeIntervalSince(e.windowStart) > 60 {
+            entry = nil
+        }
+        if entry == nil {
+            entry = (windowStart: now, count: 0)
+        }
+        if entry!.count >= limitPerMinute {
+            counts[source] = entry
+            return false
+        }
+        entry = (windowStart: entry!.windowStart, count: entry!.count + 1)
+        counts[source] = entry
+        // Opportunistic sweep of fully-expired windows (cheap at this scale).
+        for (key, e) in counts where now.timeIntervalSince(e.windowStart) > 60 {
+            counts[key] = nil
+        }
+        return true
+    }
+}
+
 /// An `HTTPRequestValidator` that 403s a request whose `Origin` header is not
 /// in `allowedOrigins`. Mirrors the SDK's `OriginValidator` but driven by the
 /// deployment's configured origins (spec §7.1.1). Requests without an `Origin`
@@ -568,6 +647,15 @@ private extension Response {
             status: status,
             headers: [.contentType: "application/json"],
             body: .init(byteBuffer: ByteBuffer(string: json))
+        )
+    }
+
+    /// 429 when the caller exceeds the failed-auth rate limit (spec §7.1).
+    static func tooManyRequests() -> Response {
+        Response(
+            status: .tooManyRequests,
+            headers: [.retryAfter: "60", .contentType: "application/json"],
+            body: .init(byteBuffer: ByteBuffer(string: #"{"error":"too many failed authentication attempts"}"#))
         )
     }
 

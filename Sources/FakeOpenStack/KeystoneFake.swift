@@ -16,9 +16,9 @@ public struct KeystoneFake {
             """)
         }
 
-        router.post(authTokens) { req, _ in
+        router.post(authTokens) { req, context in
             let body = try await Self.readBody(req)
-            guard let data = body.data(using: .utf8) else {
+            guard let data = body.data(using: .utf8), !data.isEmpty else {
                 return Self.jsonResponse(status: .badRequest, body: """
                 {"error":{"code":"badRequest","title":"Invalid request body"}}
                 """)
@@ -27,7 +27,18 @@ public struct KeystoneFake {
             struct AppCred: Decodable { let id: String; let secret: String }
             struct DomainRef: Decodable { let name: String? }
             struct User: Decodable { let name: String; let password: String?; let domain: DomainRef? }
-            struct Identity: Decodable { let methods: [String]; let applicationCredential: AppCred?; let user: User? }
+            // Real Keystone uses snake_case keys ("application_credential").
+            // Swift's synthesized Decodable expects camelCase, so map the keys.
+            struct Identity: Decodable {
+                let methods: [String]
+                let applicationCredential: AppCred?
+                let user: User?
+                enum CodingKeys: String, CodingKey {
+                    case methods
+                    case applicationCredential = "application_credential"
+                    case user
+                }
+            }
             struct Auth: Decodable { let identity: Identity }
             struct AuthBody: Decodable { let auth: Auth }
 

@@ -76,12 +76,17 @@ public actor Transport {
         path: String,
         query: [URLQueryItem] = [],
         body: Data? = nil,
+        /// The token to send as `X-Auth-Token`.
+        /// - `nil` (default): use the standing token source.
+        /// - `""`: send **no** `X-Auth-Token` header (anonymous request, e.g.
+        ///   token minting at `/v3/auth/tokens` with a credential body).
+        /// - non-empty: send that token (e.g. token validation).
         tokenOverride: String? = nil,
         extraHeaders: [(String, String)] = [],
         timeoutOverride: Duration? = nil
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let requestID = UUID().uuidString
-        let token: String
+        let token: String?
         if let tokenOverride {
             token = tokenOverride
         } else {
@@ -98,7 +103,9 @@ public actor Transport {
         }
 
         var req = try HTTPClient.Request(url: url.absoluteString, method: .init(rawValue: method))
-        req.headers.add(name: "X-Auth-Token", value: token)
+        if let token, !token.isEmpty {
+            req.headers.add(name: "X-Auth-Token", value: token)
+        }
         req.headers.add(name: "Accept", value: "application/json")
         req.headers.add(name: "Content-Type", value: "application/json")
         req.headers.add(name: "User-Agent", value: "openstack-mcp/\(openStackClientVersion)")

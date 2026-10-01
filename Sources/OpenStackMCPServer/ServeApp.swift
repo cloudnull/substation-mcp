@@ -1,0 +1,153 @@
+import Foundation
+import HTTPTypes
+import Hummingbird
+import HummingbirdMCP
+import Logging
+import OpenStackClient
+
+// MARK: - Serve app builder (spec §7.1, §7.3)
+
+/// The fully-wired serve app: Hummingbird app + MCP route + health/readyz/
+/// metrics routes, backed by an OpenStack client bound to one cloud.
+///
+/// This is the composition layer that turns the OpenStack-free Task-17 adapter
+/// into a runnable HTTP server.
+public struct ServeApp: Sendable {
+    public let app: Application<RouterResponder<BasicRequestContext>>
+    public let config: OpenStackMCPConfig
+    public let wiring: CloudWiring
+    public let tokenStore: TokenStore
+
+    /// Shut down the underlying HTTP client (and the Hummingbird app's
+    /// event-loop group when it owns one). Call at process exit or test
+    /// teardown to avoid the AsyncHTTPClient "not shut down before deinit"
+    /// fatal error.
+    public nonisolated func shutdown() {
+        wiring.shutdown()
+    }
+
+    public init(
+        config: OpenStackMCPConfig,
+        cloud: CloudEntry,
+        tokenStore: TokenStore,
+        logger: Logger
+    ) {
+        self.config = config
+        self.tokenStore = tokenStore
+        let wiring = CloudWiring(config: config, cloud: cloud, logger: logger)
+        self.wiring = wiring
+
+        // The OpenStack-specific seams.
+        let appValidator = AppTokenValidator(validator: wiring.validator)
+        let gate = WriteToolGate(toolNames: [
+            "os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach",
+        ])
+        let policy = Policy(
+            readOnly: config.policyReadOnly,
+            denyResources: Set(config.policyDenyResources),
+            maxListLimit: config.policyMaxListLimit,
+            maxCallsPerMinute: config.policyMaxCallsPerMinute
+        )
+        // The PRM `resource` is the canonical public base (spec §7.1: clients
+        // fetch `resource + /.well-known/oauth-protected-resource`). The
+        // adapter serves the PRM at the host's own well-known path, so when
+        // `server.public_url` is unset we default it to the local bind
+        // (host:port) so `resource` points at this server rather than at
+        // Keystone.
+        let publicURL = config.serverPublicURL
+            ?? "http://\(config.serverHost):\(config.serverPort)"
+        let keystoneURL = URL(string: config.authKeystoneURL ?? cloud.authURL?.absoluteString ?? "")
+        let prmDocument = ProtectedResourceMetadata.document(
+            publicURL: publicURL,
+            authProfile: config.authProfileEnum,
+            keystoneURL: keystoneURL
+        )
+
+        let minter = LoginMinter(transport: wiring.transport, logger: logger)
+        let loginPage = LoginPage(minter: minter, tokenStore: tokenStore, logger: logger)
+
+        let serverFactory = wiring.makeServerFactory(policy: policy, logger: logger)
+
+        let route = MCPRoute(
+            config: MCPConfig(
+                endpoint: config.serverEndpoint,
+                legacyEndpoint: "/mcp",
+                allowedOrigins: config.serverAllowedOrigins,
+                maxBodyBytes: config.serverMaxBodyBytes,
+                maxSessions: config.sessionMaxSessions,
+                maxStreamsPerSession: config.sessionMaxStreamsPerSession,
+                idleTTL: TimeInterval(config.sessionIdleTTL),
+                maxLifetime: TimeInterval(config.sessionMaxLifetime),
+                cleanupInterval: .seconds(60),
+                publicURL: publicURL
+            ),
+            validator: appValidator,
+            serverFactory: serverFactory,
+            gate: gate,
+            terminated: { sessionId in
+                Task { await tokenStore.zeroize(sessionId: sessionId) }
+            },
+            logger: logger
+        )
+
+        let router = Router<BasicRequestContext>()
+        route.install(
+            on: router,
+            prm: {
+                (try? prmDocument.json()) ?? Data()
+            },
+            login: config.authLoginPageEnabled ? loginPage.handler() : nil
+        )
+
+        // Non-MCP routes (spec §7.3).
+        router.get("/healthz") { _, _ in
+            Response(status: .ok, headers: [.contentType: "text/plain"],
+                     body: .init(byteBuffer: ByteBuffer(string: "ok")))
+        }
+        router.get("/readyz") { [cloud, transport = wiring.transport] _, _ in
+            await ReadyzChecker.check(cloud: cloud, transport: transport)
+        }
+        router.get("/metrics") { [metricsToken = config.serverMetricsToken] context, _ in
+            // Optional bearer-token gating (spec §7.3: `server.metrics_token`).
+            if let metricsToken {
+                let authName = HTTPField.Name("Authorization")
+                let auth = authName.flatMap { context.headers[$0] } ?? ""
+                guard auth == "Bearer \(metricsToken)" else {
+                    return Response(status: .unauthorized, headers: [.contentType: "text/plain"],
+                                    body: .init(byteBuffer: ByteBuffer(string: "unauthorized")))
+                }
+            }
+            // The Prometheus collector wiring lands with the metrics task
+            // (Task 19); the route is live now.
+            return Response(status: .ok, headers: [.contentType: "text/plain"],
+                            body: .init(byteBuffer: ByteBuffer(string: "# metrics (phase 1)\n")))
+        }
+
+        let appConfig = ApplicationConfiguration(
+            address: .hostname(config.serverHost, port: config.serverPort)
+        )
+        self.app = Application(router: router, configuration: appConfig)
+    }
+}
+
+// MARK: - readyz (spec §7.3)
+
+/// Readiness: Keystone reachable within 2 s. Never authenticates.
+enum ReadyzChecker {
+    static func check(cloud: CloudEntry, transport: Transport) async -> Response {
+        do {
+            let (status, _, _) = try await transport.request(
+                method: "GET", service: "keystone", path: "/v3", tokenOverride: ""
+            )
+            if (200..<400).contains(status) {
+                return Response(status: .ok, headers: [.contentType: "application/json"],
+                                body: .init(byteBuffer: ByteBuffer(string: #"{"ready":true}"#)))
+            }
+            return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
+                            body: .init(byteBuffer: ByteBuffer(string: #"{"ready":false,"reason":"keystone returned \#(status)"}"#)))
+        } catch {
+            return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
+                            body: .init(byteBuffer: ByteBuffer(string: #"{"ready":false,"reason":"keystone unreachable"}"#)))
+        }
+    }
+}

@@ -128,12 +128,23 @@ public actor LoginMinter {
             }
         }
 
+        // The token-mint endpoint needs a fresh, clean request:
+        //  - `tokenOverride: ""` suppresses the `X-Auth-Token` header (a
+        //    bogus token there makes Keystone reject the mint) instead of
+        //    falling back to the standing token source;
+        //  - an explicit `Content-Type` is sent via `extraHeaders` so the
+        //    body is always presented as JSON (the transport default is JSON
+        //    too, but being explicit keeps the mint unambiguous);
+        //  - POSTs are not retried by the transport, so a transient network
+        //    error is surfaced rather than re-sent (minting twice would
+        //    create two tokens).
         let (status, responseBody, _) = try await transport.request(
             method: "POST",
             service: "keystone",
             path: "/v3/auth/tokens",
             body: body,
-            tokenOverride: ""
+            tokenOverride: "",
+            extraHeaders: [("Content-Type", "application/json")]
         )
 
         guard status == 201 else {

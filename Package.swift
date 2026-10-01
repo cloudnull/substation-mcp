@@ -62,9 +62,11 @@ let package = Package(
             name: "OpenStackMCPServer",
             dependencies: [
                 .target(name: "OpenStackClient"),
+                .target(name: "HummingbirdMCP"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Hummingbird", package: "hummingbird"),
             ],
             swiftSettings: swiftSettings
         ),
@@ -87,6 +89,7 @@ let package = Package(
                 .target(name: "OpenStackMCPServer"),
                 .target(name: "HummingbirdMCP"),
                 .target(name: "OpenStackClient"),
+                .product(name: "Yams", package: "Yams"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Configuration", package: "swift-configuration"),
                 .product(name: "Prometheus", package: "swift-prometheus"),
@@ -131,6 +134,9 @@ let package = Package(
             name: "HummingbirdMCPTests",
             dependencies: [
                 .target(name: "HummingbirdMCP"),
+                .target(name: "OpenStackMCPServer"),
+                .target(name: "OpenStackClient"),
+                .target(name: "FakeOpenStack"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "MCP", package: "swift-sdk"),
             ],

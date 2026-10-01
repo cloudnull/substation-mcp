@@ -2,6 +2,14 @@ import Foundation
 import Logging
 import MCP
 
+/// The MCP SDK `Server` (an actor), re-exported under an unambiguous name.
+///
+/// Callers that import `OpenStackClient` (whose `OpenStackClient` type shadows
+/// the `MCP` module name) or `Hummingbird` cannot spell `MCP.Server` without an
+/// `import MCP`, and importing `MCP` collides `Transport` with the OpenStack
+/// client's. This alias lets them name the server type directly.
+public typealias MCPServer = MCP.Server
+
 /// The validated identity for a single MCP request.
 ///
 /// This is the adapter's notion of "who made this request". The OpenStack
