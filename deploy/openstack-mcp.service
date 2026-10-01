@@ -1,0 +1,40 @@
+[Unit]
+Description=OpenStack MCP Server (Hummingbird/Swift)
+Documentation=file:///etc/openstack-mcp/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Hardened unit: no root, minimal filesystem exposure.
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~ @privileged @resources
+
+# OSMCP_* env vars (e.g. OSMCP_SERVER__METRICS_TOKEN, OSMCP_LOG__LEVEL).
+# File is optional (- prefix); absence is not an error.
+EnvironmentFile=-/etc/openstack-mcp/env
+
+# The binary is installed to /usr/bin by the packaging step.
+ExecStart=/usr/bin/openstack-mcp serve --config /etc/openstack-mcp/config.yaml
+
+# Graceful shutdown: give in-flight SSE sessions time to finish.
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+# Resource caps (tune for your deployment).
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

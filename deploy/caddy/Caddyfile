@@ -1,0 +1,53 @@
+# Caddyfile for OpenStack MCP reverse proxy (spec §13).
+#
+# TLS terminates here. The MCP server runs on 127.0.0.1:8080.
+#
+# Key: flush_interval -1 disables response buffering for SSE (Server-Sent
+# Events) streams on the /v1 and /mcp paths. Without this, SSE events are
+# buffered and the MCP client sees no streaming progress.
+#
+# Place this at /etc/caddy/Caddyfile (or include it) and reload:
+#   caddy reload --config /etc/caddy/Caddyfile
+
+{
+    # Uncomment to use ACME for automatic TLS, or specify your own cert:
+    # email you@example.com
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# Replace mcp.example.com with your FQDN.
+mcp.example.com {
+    # --- SSE / MCP streaming paths (no buffering) ---
+    handle /v1* {
+        reverse_proxy 127.0.0.1:8080 {
+            flush_interval -1
+            header_up Host {host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Legacy /mcp alias
+    handle /mcp* {
+        reverse_proxy 127.0.0.1:8080 {
+            flush_interval -1
+            header_up Host {host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Login page + PRM + healthz + metrics: normal proxying.
+    handle {
+        reverse_proxy 127.0.0.1:8080 {
+            header_up Host {host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Access + error logs.
+    log {
+        output file /var/log/caddy/openstack-mcp.log
+    }
+}
