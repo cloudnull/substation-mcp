@@ -66,7 +66,11 @@ public struct ServeApp: Sendable {
         let minter = LoginMinter(transport: wiring.transport, logger: logger)
         let loginPage = LoginPage(minter: minter, tokenStore: tokenStore, logger: logger)
 
-        let serverFactory = wiring.makeServerFactory(policy: policy, logger: logger)
+        let serverFactory = wiring.makeServerFactory(
+            policy: policy,
+            logger: logger,
+            auditEnabled: config.logAudit
+        )
 
         let route = MCPRoute(
             config: MCPConfig(
@@ -87,7 +91,10 @@ public struct ServeApp: Sendable {
             terminated: { sessionId in
                 Task { await tokenStore.zeroize(sessionId: sessionId) }
             },
-            logger: logger
+            logger: logger,
+            onSessionStart: { OSMetrics.sessionStarted() },
+            onSessionEnd: { OSMetrics.sessionEnded() },
+            onAuthFailure: { reason in OSMetrics.authFailure(reason: reason) }
         )
 
         let router = Router<BasicRequestContext>()
@@ -117,10 +124,12 @@ public struct ServeApp: Sendable {
                                     body: .init(byteBuffer: ByteBuffer(string: "unauthorized")))
                 }
             }
-            // The Prometheus collector wiring lands with the metrics task
-            // (Task 19); the route is live now.
+            // Prometheus text exposition (spec §12). Bootstrapping is done at
+            // process start (see main.swift) so the collector has every
+            // registration; if it was never run (e.g. a unit test built the
+            // ServeApp directly) render() still returns the (empty) registry.
             return Response(status: .ok, headers: [.contentType: "text/plain"],
-                            body: .init(byteBuffer: ByteBuffer(string: "# metrics (phase 1)\n")))
+                            body: .init(byteBuffer: ByteBuffer(string: MetricsCollector.render())))
         }
 
         let appConfig = ApplicationConfiguration(

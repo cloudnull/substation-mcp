@@ -106,6 +106,10 @@ public struct MCPRoute: Sendable {
     let logger: Logger
     let registry: SessionRegistry
     let failedAuthLimiter: FailedAuthLimiter
+    /// Fired when a new MCP session is registered (spec §12: `osmcp_sessions_active`).
+    let onSessionStart: @Sendable () -> Void
+    /// Fired when an MCP session is terminated/evicted (spec §12: `osmcp_sessions_active`).
+    let onSessionEnd: @Sendable () -> Void
 
     public init(
         config: MCPConfig,
@@ -115,15 +119,24 @@ public struct MCPRoute: Sendable {
         terminated: @escaping @Sendable (String) -> Void,
         logger: Logger = Logger(label: "hummingbird-mcp"),
         failedAuthPerMinute: Int = 10,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        onSessionStart: @escaping @Sendable () -> Void = {},
+        onSessionEnd: @escaping @Sendable () -> Void = {},
+        onAuthFailure: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.config = config
-        self.failedAuthLimiter = FailedAuthLimiter(limitPerMinute: failedAuthPerMinute, clock: clock)
+        self.failedAuthLimiter = FailedAuthLimiter(
+            limitPerMinute: failedAuthPerMinute,
+            clock: clock,
+            onFailure: onAuthFailure
+        )
         self.validator = validator
         self.serverFactory = serverFactory
         self.gate = gate
         self.terminated = terminated
         self.logger = logger
+        self.onSessionStart = onSessionStart
+        self.onSessionEnd = onSessionEnd
         self.registry = SessionRegistry(
             idleTTL: config.idleTTL,
             cleanupInterval: config.cleanupInterval,
@@ -348,6 +361,7 @@ public struct MCPRoute: Sendable {
             if httpMethod == "DELETE" {
                 if let removed = await registry.terminate(sessionID) {
                     await removed.disconnect()
+                    onSessionEnd()
                 }
                 return Response(
                     status: .ok,
@@ -426,6 +440,7 @@ public struct MCPRoute: Sendable {
                 createdAt: Date()
             )
             _ = await registry.register(session)
+            onSessionStart()
 
             let mcpRequest = MCP.HTTPRequest(
                 method: method,
@@ -592,10 +607,21 @@ public actor FailedAuthLimiter {
     private let limitPerMinute: Int
     private let clock: @Sendable () -> Date
     private var counts: [String: (windowStart: Date, count: Int)] = [:]
+    /// Fired on every failed validation with the reason (`"rejected"` for the
+    /// first `limit` failures answered 401, `"rate_limited"` for the over-budget
+    /// failure answered 429). Lets the serve layer feed the
+    /// `osmcp_auth_failures_total{reason}` metric without the adapter depending
+    /// on a metrics implementation.
+    private let onFailure: @Sendable (String) -> Void
 
-    public init(limitPerMinute: Int, clock: @escaping @Sendable () -> Date = { Date() }) {
+    public init(
+        limitPerMinute: Int,
+        clock: @escaping @Sendable () -> Date = { Date() },
+        onFailure: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
         self.limitPerMinute = limitPerMinute
         self.clock = clock
+        self.onFailure = onFailure
     }
 
     /// Record a failed validation for `source`. Returns `false` when the
@@ -611,6 +637,7 @@ public actor FailedAuthLimiter {
         }
         if entry!.count >= limitPerMinute {
             counts[source] = entry
+            onFailure("rate_limited")
             return false
         }
         entry = (windowStart: entry!.windowStart, count: entry!.count + 1)
@@ -619,6 +646,7 @@ public actor FailedAuthLimiter {
         for (key, e) in counts where now.timeIntervalSince(e.windowStart) > 60 {
             counts[key] = nil
         }
+        onFailure("rejected")
         return true
     }
 }

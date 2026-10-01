@@ -57,6 +57,7 @@ public actor Cache {
         accessCounter += 1
         storage[key] = Entry(data: entry.data, expires: entry.expires, lastAccess: accessCounter)
         hits += 1
+        OSMetrics.cacheHit(resource: key.resource)
 
         return try? JSONDecoder().decode(T.self, from: entry.data)
     }

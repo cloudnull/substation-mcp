@@ -5,6 +5,7 @@ import Hummingbird
 import HummingbirdTesting
 import MCP
 import Logging
+import CoreMetrics
 import OpenStackClient
 import OpenStackMCPServer
 import FakeOpenStack
@@ -377,6 +378,52 @@ struct ServeSessionTests {
             let ok = try await sendRequest(client, uri: "/metrics", method: .get,
                                            headers: ["Authorization": "Bearer m-secret"])
             #expect(ok.status == .ok, "right token should 200, got \(ok.status)")
+        }
+    }
+
+    @Test("/metrics renders real Prometheus data after a session and tool call")
+    func metricsRenderPrometheusData() async throws {
+        // Bootstrap the prometheus collector once per process so the /metrics
+        // route (MetricsCollector.render) sees every metric registration. The
+        // test process has no other bootstrap, so this is safe and idempotent
+        // in effect.
+        _ = bootstrapMetrics()
+
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+
+        // Mint a token for a real session.
+        guard let ft = await handle.state.mintToken(credID: "fake-cred-ro", secret: "secret-ro", domain: nil, password: nil, userID: nil) else {
+            Issue.record("mint failed")
+            return
+        }
+        let tokenID = ft.id
+
+        try await app.app.test(.router) { client in
+            // Warm-up: the first request in a fresh app.test(.router) context
+            // is dropped (known quirk) — prime it with healthz.
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+
+            // Open a session (fires onSessionStart -> sessions gauge ++).
+            let session = SessionClient(client: client, tokenID: tokenID)
+            _ = try await session.initialize()
+            // Call a read-only tool (fires the tool-call counter + duration).
+            _ = try await session.callToolJSON("os_list", argumentsJSON: #"{"resource":"server"}"#)
+
+            // /metrics must now render real Prometheus text with our metric
+            // names and labels.
+            let response = try await sendRequest(client, uri: "/metrics", method: .get)
+            #expect(response.status == .ok)
+            let body = bodyString(response)
+            #expect(body.contains("osmcp_sessions_active"), "missing sessions gauge: \(body)")
+            #expect(body.contains("osmcp_tool_calls_total"), "missing tool counter: \(body)")
+            #expect(body.contains("osmcp_tool_duration_seconds"), "missing tool histogram: \(body)")
+            // The openstack request metric is emitted by the Transport for the
+            // keystone/tool requests.
+            #expect(body.contains("osmcp_openstack_requests_total"), "missing openstack counter: \(body)")
         }
     }
 }

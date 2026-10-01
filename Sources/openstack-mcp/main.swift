@@ -44,7 +44,11 @@ struct ServeCommand: AsyncParsableCommand {
             "publicURL": publicURL, "readOnly": readOnly ? "true" : "false",
             "logLevel": logLevel,
         ])
-        let logger = makeLogger(level: cfg.logLevel, format: cfg.logFormat)
+        // Bootstrap metrics before any are emitted (spec §12); must run once,
+        // before the first request, so the Prometheus collector sees every
+        // registration.
+        _ = bootstrapMetrics()
+        let logger = makeLogger(level: cfg.logLevel, format: cfg.logFormat, sink: .standardOutput)
         let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
 
         let tokenStore = TokenStore(logger: logger)
@@ -74,7 +78,9 @@ struct StdioCommand: AsyncParsableCommand {
 
     func run() async throws {
         let cfg = ConfigLoader.load(args: ["config": config, "logLevel": logLevel])
-        let logger = makeLogger(level: cfg.logLevel, format: "logfmt")
+        _ = bootstrapMetrics()
+        // stdio: log to stderr so JSON never pollutes the MCP JSON-RPC framing.
+        let logger = makeLogger(level: cfg.logLevel, format: "logfmt", sink: .standardError)
         let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
 
         // stdio: single token for the lifetime of the process.
@@ -140,18 +146,4 @@ func resolveCloud(cfg: OpenStackMCPConfig, name: String?, logger: Logger) throws
         throw CLIError(message: "Could not resolve cloud (tried: \(wanted ?? "<none>"). Known: \(names))")
     }
     return entry
-}
-
-func makeLogger(level: String, format: String) -> Logger {
-    let logLevel: Logger.Level
-    switch level.lowercased() {
-    case "debug": logLevel = .debug
-    case "warning": logLevel = .warning
-    case "error": logLevel = .error
-    case "info": logLevel = .info
-    default: logLevel = .info
-    }
-    var logger = Logger(label: "openstack-mcp")
-    logger.logLevel = logLevel
-    return logger
 }

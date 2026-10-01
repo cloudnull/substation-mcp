@@ -3,6 +3,7 @@ import AsyncHTTPClient
 import NIOSSL
 import Logging
 import NIOCore
+import CoreMetrics
 
 public actor Transport {
     private let client: HTTPClient
@@ -120,18 +121,22 @@ public actor Transport {
         let isRetryable = (method == "GET" || method == "HEAD" || method == "DELETE")
 
         var attempt = 0
+        let start = DispatchTime.now()
 
         while true {
             attempt += 1
             do {
                 let response = try await client.execute(request: req).get()
                 let bodyData = response.body.map { Data($0.readableBytesView) } ?? Data()
+                let status = Int(response.status.code)
+                let seconds = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+                OSMetrics.openstackRequest(service: service, method: method, status: status)
+                OSMetrics.openstackRequestDuration(service: service, seconds: seconds)
 
                 if response.status.code >= 200 && response.status.code < 300 {
-                    return (Int(response.status.code), bodyData, requestID)
+                    return (status, bodyData, requestID)
                 }
 
-                let status = Int(response.status.code)
                 let isRetriableStatus = status == 429
                     || status == 502
                     || status == 503

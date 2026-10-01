@@ -40,6 +40,7 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Prometheus", package: "swift-prometheus"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
@@ -53,6 +54,7 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
             ],
             swiftSettings: swiftSettings
         ),
@@ -145,9 +147,15 @@ let package = Package(
         .testTarget(
             name: "OpenStackMCPTests",
             dependencies: [
+                .target(name: "OpenStackClient"),
+                .target(name: "OpenStackMCPServer"),
                 .target(name: "FakeOpenStack"),
+                .target(name: "openstack-mcp"),
+                .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Configuration", package: "swift-configuration"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Prometheus", package: "swift-prometheus"),
             ],
             swiftSettings: swiftSettings
         ),

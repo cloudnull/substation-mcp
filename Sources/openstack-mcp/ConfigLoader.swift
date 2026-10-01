@@ -13,15 +13,11 @@ import Yams
 /// The YAML file is a nested map with the same key paths as the spec §11.2
 /// table (e.g. `server.port`, `auth.profile`). It is parsed with Yams and
 /// flattened to `__`-separated keys, then the same precedence rules apply.
-enum ConfigLoader {
+public enum ConfigLoader {
     /// `args` maps the CLI flag names we already parsed (e.g. "host", "port")
     /// to their values; missing/nil values are skipped.
-    static func load(args: [String: String?]) -> OpenStackMCPConfig {
-        // Precedence: CLI > env > YAML > defaults. We build a merged dict
-        // (lower priority first) and read from it.
-        var values: [String: String] = [:]
-
-        // 3. YAML file (lowest of the three).
+    public static func load(args: [String: String?]) -> OpenStackMCPConfig {
+        // Precedence: CLI > env > YAML > defaults.
         let configPath: String
         if let c = args["config"], let cc = c {
             configPath = cc
@@ -29,30 +25,46 @@ enum ConfigLoader {
             configPath = ProcessInfo.processInfo.environment["OSMCP__CONFIG"]
                 ?? "/etc/openstack-mcp/config.yaml"
         }
-        for (k, v) in yamlValues(at: configPath) {
-            values[k] = v
+        let yaml = yamlValues(at: configPath)
+        let env = ProcessInfo.processInfo.environment
+        var cli: [String: String] = [:]
+        for (flag, val) in args {
+            if let val { cli[flag] = val }
         }
+        return read(resolve(cli: cli, env: env, yaml: yaml))
+    }
 
-        // 2. Environment (OSMCP_ prefix, __ separator).
-        for (key, val) in ProcessInfo.processInfo.environment {
+    /// Pure precedence resolution, independent of the process environment and
+    /// the filesystem, so it can be unit-tested deterministically.
+    ///
+    /// - Parameters:
+    ///   - cli: command-line flag values (highest priority), keyed by the
+    ///     camelCase flag names.
+    ///   - env: the raw environment (values whose key starts with `OSMCP_`
+    ///     contribute; `__` is the separator), medium priority.
+    ///   - yaml: flattened `__`-separated values from the config file
+    ///     (lowest priority).
+    ///
+    /// Returns the resolved key/value map, highest priority first: a key
+    /// present in `cli` wins over `env`, which wins over `yaml`.
+    static func resolve(cli: [String: String], env: [String: String], yaml: [String: String]) -> [String: String] {
+        var values: [String: String] = [:]
+        // Lowest priority first; later writes win.
+        for (k, v) in yaml { values[k] = v }
+        for (key, val) in env {
             if key.hasPrefix("OSMCP_") {
                 let trimmed = String(key.dropFirst("OSMCP_".count))
                 let stripped = trimmed.hasPrefix("__") ? String(trimmed.dropFirst(2)) : trimmed
-                values[stripped] = val
+                values[stripped.lowercased()] = val
             }
         }
-
-        // 1. CLI flags (highest).
-        for (flag, val) in args {
-            if let val {
-                values[camelToDoubleUnderscore(flag)] = val
-            }
+        for (flag, val) in cli {
+            values[camelToDoubleUnderscore(flag)] = val
         }
-
-        return read(values)
+        return values
     }
 
-    private static func read(_ v: [String: String]) -> OpenStackMCPConfig {
+    static func read(_ v: [String: String]) -> OpenStackMCPConfig {
         func str(_ k: String) -> String? { v[k] }
         func int(_ k: String) -> Int? { Int(v[k] ?? "") }
         func bool(_ k: String) -> Bool? {
@@ -140,12 +152,60 @@ enum ConfigLoader {
         }
     }
 
-    /// Map a camelCase CLI flag name to the double-underscore key path.
-    private static func camelToDoubleUnderscore(_ s: String) -> String {
-        var out = ""
-        for ch in s {
-            if ch.isUppercase { out += "_" + ch.lowercased() } else { out += String(ch) }
+    /// Map a CLI flag name (camelCase) to the spec §11.2 `__`-separated key
+    /// path. The flag name is sectioned by the section prefix it starts with
+    /// (`server`, `auth`, `clouds`, `session`, `policy`, `client`, `log`); the
+    /// remainder is camelCase-split on the following uppercase letters. A flag
+    /// with no recognized section prefix is left as-is (camelCase split).
+    ///
+    ///   - `serverPort` → `server__port`
+    ///   - `publicURL`  → `server__public_url` (a port-less server flag)
+    ///   - `logLevel`   → `log__level`
+    ///   - `readOnly`   → `policy__read_only`
+    static func camelToDoubleUnderscore(_ s: String) -> String {
+        // Sections whose flags carry no explicit section prefix in the CLI name.
+        // These are disambiguated by a known flag-name table (see below).
+        let sections: [String] = ["server", "auth", "clouds", "session", "policy", "client", "log"]
+
+        // A map of bare CLI flag names (no section prefix) to their spec key
+        // path, for flags whose section is not their prefix.
+        let bare: [String: String] = [
+            "host": "server__host",
+            "port": "server__port",
+            "publicURL": "server__public_url",
+            "readOnly": "policy__read_only",
+            "logLevel": "log__level",
+            "logFormat": "log__format",
+            "config": "config",
+            "cloud": "clouds__default",
+        ]
+        if let mapped = bare[s] { return mapped }
+
+        // Otherwise the flag starts with a section name (e.g. `serverPort`,
+        // `authProfile`, `logLevel` when not in the bare table above).
+        for section in sections {
+            if s.hasPrefix(section), s.count > section.count {
+                let rest = String(s.dropFirst(section.count))
+                let split = camelSplit(rest)
+                return section + "__" + split
+            }
         }
-        return out.hasPrefix("_") ? String(out.dropFirst()) : out
+        // No section prefix and not in the bare table: just camel-split.
+        return camelSplit(s)
+    }
+
+    /// Split a camelCase string on uppercase boundaries into a lowercase
+    /// underscore-separated string: `publicURL` → `public_url`, `port` → `port`.
+    private static func camelSplit(_ s: String) -> String {
+        var out = ""
+        for (i, ch) in s.enumerated() {
+            if ch.isUppercase && i != 0 {
+                // Collapse an acronym run (URL) except the first capital.
+                let prev = s[s.index(s.startIndex, offsetBy: i - 1)]
+                if !(prev.isUppercase) { out += "_" }
+            }
+            out += ch.lowercased()
+        }
+        return out
     }
 }

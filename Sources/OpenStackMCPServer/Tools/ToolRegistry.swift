@@ -34,19 +34,24 @@ public struct ToolRegistry: Sendable {
     public let policy: Policy
     public let identity: RequestIdentity
     public let logger: Logger
+    /// Whether to emit one audit log line per mutating tool call (spec §12,
+    /// gated by `log.audit`, default true).
+    public let auditEnabled: Bool
 
     public init(
         client: OpenStackClient,
         catalog: ResourceCatalog,
         policy: Policy = Policy(),
         identity: RequestIdentity,
-        logger: Logger = Logger(label: "openstack-mcp")
+        logger: Logger = Logger(label: "openstack-mcp"),
+        auditEnabled: Bool = true
     ) {
         self.client = client
         self.catalog = policy.effective(catalog)
         self.policy = policy
         self.identity = identity
         self.logger = logger
+        self.auditEnabled = auditEnabled
     }
 
     public var hasWrite: Bool {
@@ -368,7 +373,10 @@ public struct ToolRegistry: Sendable {
 
     func dispatch(_ params: CallTool.Parameters, server: MCP.Server) async throws -> CallTool.Result {
         let mutatingTools: Set<String> = ["os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach"]
-        if mutatingTools.contains(params.name) && !hasWrite {
+        let isMutating = mutatingTools.contains(params.name)
+
+        if isMutating && !hasWrite {
+            OSMetrics.toolCall(tool: params.name, outcome: "forbidden")
             return CallTool.Result(
                 content: [.text(text: errorParagraph(
                     OpenStackError(service: "mcp", status: 403, code: "insufficient_scope", message: "Tool \(params.name) requires write scope"),
@@ -378,48 +386,80 @@ public struct ToolRegistry: Sendable {
             )
         }
 
+        // spec §12: measure every tool call; audit only the mutating ones.
+        let start = DispatchTime.now()
+        var lastOpenStackRequestID: String?
+
+        let outcome: (result: CallTool.Result, requestID: String?)
         do {
             switch params.name {
-            case "os_list": return try await handleList(params)
-            case "os_get": return try await handleGet(params)
-            case "os_describe": return try await handleDescribe(params)
-            case "os_whoami": return try await handleWhoami(params)
-            case "os_clouds": return try await handleClouds(params)
-            case "os_quota": return try await handleQuota(params)
-            case "os_find": return try await handleFind(params)
-            case "os_topology": return try await handleTopology(params)
-            case "os_wait": return try await handleWait(params, server: server)
-            case "os_create": return try await handleCreate(params)
-            case "os_update": return try await handleUpdate(params)
-            case "os_delete": return try await handleDelete(params)
-            case "os_action": return try await handleAction(params)
-            case "os_attach": return try await handleLink(params, attach: true, server: server)
-            case "os_detach": return try await handleLink(params, attach: false, server: server)
+            case "os_list": outcome = (try await handleList(params), nil)
+            case "os_get": outcome = (try await handleGet(params), nil)
+            case "os_describe": outcome = (try await handleDescribe(params), nil)
+            case "os_whoami": outcome = (try await handleWhoami(params), nil)
+            case "os_clouds": outcome = (try await handleClouds(params), nil)
+            case "os_quota": outcome = (try await handleQuota(params), nil)
+            case "os_find": outcome = (try await handleFind(params), nil)
+            case "os_topology": outcome = (try await handleTopology(params), nil)
+            case "os_wait": outcome = (try await handleWait(params, server: server), nil)
+            case "os_create": outcome = (try await handleCreate(params), nil)
+            case "os_update": outcome = (try await handleUpdate(params), nil)
+            case "os_delete": outcome = (try await handleDelete(params), nil)
+            case "os_action": outcome = (try await handleAction(params), nil)
+            case "os_attach": outcome = (try await handleLink(params, attach: true, server: server), nil)
+            case "os_detach": outcome = (try await handleLink(params, attach: false, server: server), nil)
             default:
-                return CallTool.Result(
+                outcome = (CallTool.Result(
                     content: [.text(text: "Unknown tool: \(params.name). Valid: \(visibleToolNames.joined(separator: ", "))")],
                     isError: true
-                )
+                ), nil)
             }
         } catch let error as OpenStackError {
-            return CallTool.Result(
+            outcome = (CallTool.Result(
                 content: [.text(text: errorParagraph(error, what: "Calling \(params.name)"), annotations: nil, _meta: nil)],
                 isError: true
-            )
+            ), error.requestID)
         } catch let error as AmbiguousNameError {
-            return CallTool.Result(
+            outcome = (CallTool.Result(
                 content: [.text(text: error.description, annotations: nil, _meta: nil)],
                 isError: true
-            )
+            ), nil)
         } catch {
-            return CallTool.Result(
+            outcome = (CallTool.Result(
                 content: [.text(text: errorParagraph(
                     OpenStackError(service: "mcp", status: 500, message: error.localizedDescription),
                     what: "Calling \(params.name)"
                 ), metadata: nil)],
                 isError: true
-            )
+            ), nil)
         }
+
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
+        let result = outcome.result
+        let ok = result.isError != true
+        OSMetrics.toolCall(tool: params.name, outcome: ok ? "ok" : "error")
+        OSMetrics.toolDuration(tool: params.name, seconds: seconds)
+
+        if isMutating && auditEnabled {
+            emitAudit(tool: params.name, outcome: ok ? "ok" : "error", requestID: outcome.requestID)
+        }
+        return result
+    }
+
+    /// Emit one audit record per mutating tool call (spec §12). The line carries
+    /// the token id (not the credential), the project id, the tool, the target
+    /// resource + id when present, the outcome, and the OpenStack request id.
+    private func emitAudit(tool: String, outcome: String, requestID: String?) {
+        var meta: [String: Logger.MetadataValue] = [
+            "category": .string("audit"),
+            "token": .string(identity.vt.token.id),
+            "project": .string(identity.whoami.project.id),
+            "tool": .string(tool),
+            "outcome": .string(outcome)
+        ]
+        if let cred = identity.whoami.credentialName { meta["app_credential"] = .string(cred) }
+        if let rid = requestID { meta["request_id"] = .string(rid) }
+        logger.info("audit: \(tool) \(outcome)", metadata: meta)
     }
 
     // MARK: - Helpers
