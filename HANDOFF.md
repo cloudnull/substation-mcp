@@ -1,16 +1,44 @@
-# Handoff: OpenStack MCP Phase 1 — Task 20 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 22 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 19. All tasks through 19 merged.
-- **Latest commit**: Task 19: logging, redaction, audit, metrics completeness (c6ccd74)
-- **Tests**: 336 tests, all green (134 MCP server / 149 client / 31 HummingbirdMCP; 22 in OpenStackMCPTests: Redaction/Config/Audit + 1 metrics-emission)
+- **Main**: up through Task 21. All tasks through 21 merged.
+- **Latest commit**: Task 21: deployment assets + README (1c07dd1)
+- **Tests**: 350 tests, all green (134 MCP server / 149 client / 31 HummingbirdMCP; 36 in OpenStackMCPTests)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 20: CLI subcommands (check / access-rules / tools / register-catalog)** — see plan. Then Task 21 (deployment/README), 22 (integration + conformance). Final whole-branch review before finishing.
+**Start Task 22: Integration test (opt-in) + conformance pass + final hardening sweep** — see plan (~line 911) and spec §14. This is the final task. After it, do a whole-branch review before finishing.
+
+## Task 21 Implementation Notes (new)
+
+### Deployment assets (`deploy/`)
+- **`Dockerfile`**: multi-stage — builder `swift:6.4-rhel-ubi10`, runtime `ubi10-minimal` + `ca-certificates`. Non-root user uid 10001. `EXPOSE 8080`. `ENTRYPOINT openstack-mcp serve --host 0.0.0.0 --port 8080`. Dynamic release build (static not achievable — ICU symbols).
+- **`openstack-mcp.service`**: hardened systemd unit — `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `EnvironmentFile=-/etc/openstack-mcp/env`.
+- **`register-catalog.sh`**: idempotent wrapper. Mints admin token from app-cred or password if `OS_AUTH_TOKEN` unset. Required env: `OS_CLOUD`, `REGION`, `PUBLIC_URL`.
+- **`caddy/Caddyfile`**: reverse proxy, `flush_interval -1` for SSE on `/v1` and `/mcp`.
+- **`nginx/openstack-mcp.conf`**: `proxy_buffering off; proxy_cache off;` on `/v1/` and `/mcp/`.
+
+### README (full rewrite)
+Tools table, architecture diagram, quickstart (check → register-catalog → serve → client setup), config reference (spec §11.2), all 7 subcommands, security model, observability, deployment (docker/systemd/proxy), development (fake, integration test, repo layout).
+
+### `scripts/build.sh` fix
+Attempts `--static-swift-stdlib` first, falls back to dynamic release (ICU symbols not in static link path on Swift 6.4/UBI10).
+
+### Gotchas
+- **Apple Container stdout forwarding**: child process stdout NOT forwarded to host file redirects — verify CLI output via unit tests.
+- **Static build failure**: `--static-swift-stdlib` fails with undefined ICU references (`swift_ucasemap_open`, `swift_ures_open`, etc.).
+
+## Task 20 Implementation Notes (new)
+
+### Testable cores in `OpenStackMCPServer` + thin CLI shims in `openstack-mcp`
+- `CheckReport.swift`: `CheckReport.build(config:)` — connectivity (per region), `region_required` warn, `catalog_mismatch` warn (only if `server.enableCatalogChecks`).
+- `AccessRule.swift`: `AccessRulesGenerator.rules(mode:project:region:services:resources:)` — read-only = 15 tools, operator = 14 non-write. `AccessRulePaths` = single source for tool → `service/resource` mapping.
+- `CatalogRegistrar.swift`: idempotent per region — find-or-create `type=mcp` service, then public/internal/admin endpoints.
+- `Tools/AllTools.swift`: `AllTools.tools(catalog:)` — 15 tool definitions, shared by `ToolRegistry.visibleTools()` and the `tools` dump.
+- `main.swift`: 7 subcommands (serve, stdio, healthz, check, access-rules, tools, register-catalog). Exit codes: auth=1, config=2.
 
 ## Task 19 Implementation Notes (new)
 
@@ -73,10 +101,10 @@
 
 | Task | Description |
 |------|-------------|
-| 19 | Logging, redaction, audit, metrics completeness |
-| 20 | CLI — check, access-rules, tools, register-catalog |
-| 21 | Deployment assets + README |
-| 22 | Integration test (opt-in) + conformance pass + final hardening sweep |
+| 19 | Logging, redaction, audit, metrics completeness | done @ c6ccd74 |
+| 20 | CLI — check, access-rules, tools, register-catalog | done @ 8fe26b1 |
+| 21 | Deployment assets + README | done @ 1c07dd1 |
+| 22 | Integration test (opt-in) + conformance pass + final hardening sweep | pending |
 
 ## Services Completed (Tasks 1-12)
 
