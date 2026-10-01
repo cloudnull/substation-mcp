@@ -1,23 +1,43 @@
-# Handoff: OpenStack MCP Phase 1 — Task 18 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 19 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 17 (commit `3cead52`). All tasks through 17 merged.
-- **Latest commit**: `3cead52` — Task 17: HummingbirdMCP adapter
-- **Tests**: 298 tests, all green (134 MCP server / 149 client / 15 HummingbirdMCP)
+- **Main**: up through Task 18. All tasks through 18 merged.
+- **Latest commit**: Task 18: OpenStack serve app (login page, token store, PRM, wiring, CLI)
+- **Tests**: 313 tests, all green (134 MCP server / 149 client / 30 HummingbirdMCP incl. 15 session + 1 soak)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 18: OpenStack validator + login page + token store + serve/stdio wiring** — see plan. This is the integration layer that turns the Task-17 adapter into a runnable server.
+**Start Task 19: Logging, redaction, audit, metrics completeness** — see plan.
 
-- Implement `AppTokenValidator: TokenValidating` (OpenStack-backed: validate a minted token id against Keystone / the token store) — plug into `MCPRoute(validator:)`.
-- Implement the URL-mode login page + token store (`LoginMinter`, `TokenStore`) and pass them to `MCPRoute.install(login:)` / `prm:`.
-- Build the real `serverFactory: (ValidatedIdentity) async -> Server` from `ToolRegistry.makeServer()` — set `RequestIdentity.cloudName` from the token/config (Task 16 added the field; this is the seam that fills it).
-- Wire a `WriteToolGate` with the real write tool names (os_create/os_update/os_delete/os_action/os_attach/os_detach) and `ScopeAuthorizer(servedProjects:)` with the cloud's served projects.
-- Stand up the `serve` (Hummingbird) and `stdio` entry points; PRM document builder.
-- The adapter (Task 17) is already OpenStack-free — Task 18 supplies the OpenStack-specific pieces around it. Do not move OpenStack imports into `HummingbirdMCP`.
+## Task 18 Implementation Notes (new)
+
+### Composition layer (`Sources/OpenStackMCPServer/`)
+- `ServeApp`: builds the full Hummingbird app — `MCPRoute` (from Task-17 `HummingbirdMCP`) + `healthz`/`readyz`, `/.well-known/oauth-protected-resource` (PRM), optional bearer-gated `/metrics` (Prometheus body deferred to Task 19), `/<endpoint>/login` (GET form + POST mint).
+- `CloudWiring`: shared `Transport`/`Cache`/`TokenValidator`/`OpenStackClient` assembly, used by serve, stdio, and tests. `shutdown()` calls `transport.syncShutdown()`.
+- `AppTokenValidator: TokenValidating`: validates a presented token id via `TokenValidator.validate` (real Keystone GET, cached).
+- `TokenStore` (actor): per-session token binding — `bind(sessionID:elicitationID:token:expiry:)`, `token(for:sessionID:)`, `zeroize(sessionID:)`. Expired tokens are evicted on read.
+- `ProtectedResourceMetadata`: PRM document (RFC 9728). `resource` = `config.serverPublicURL ?? "http://\(host):\(port)"` (the server's own URL, not Keystone).
+- `OpenStackMCPConfig` + `ConfigLoader`: YAML/env/CLI precedence.
+- `main.swift` CLI: `serve` / `stdio` / `healthz`.
+
+### Adapter changes (`Sources/HummingbirdMCP/`)
+- `FailedAuthLimiter`: **record-on-failure** sliding-window (1-min) per-source-IP counter. First `limit` failed validations → 401; the next failure in the same window → 429. (An earlier pre-validation 429 design rate-limited *successful* concurrent sessions from the same IP and broke the soak test.)
+- `clientIP`: first hop of `X-Forwarded-For` if present, else `"local"` (Hummingbird `Request` has no public peer address here).
+- Login POST: on mint success → 200 HTML with the token id; on failure → **400** HTML with a *generic* error (never echoes the credential). `LoginPage` logs only non-sensitive metadata (`keystone-<status>`, `missing-app-cred-fields`).
+
+### Transport / TokenValidator (`Sources/OpenStackClient/`)
+- **`tokenOverride` semantics:** `nil` → standing token source; `""` → send **no** `X-Auth-Token` header (minting); non-empty → send that token. Minting must use `tokenOverride: ""` + explicit `Content-Type: application/json` in `extraHeaders`.
+- `Transport.request` THROWS on non-2xx (it does not return the status for error codes) — `mint` handles the throw; a 2xx path returns `(status, body, requestID)`.
+
+### Gotchas learned in Task 18
+- **Fake Keystone snake_case decode:** real Keystone uses `application_credential` (snake_case) in the auth body, but Swift's *synthesized* `Decodable` expects the camelCase key `applicationCredential`. The fake's mint decode silently produced `applicationCredential = nil` → 401 `forbidden`. Fixed with an explicit `CodingKeys` mapping `case applicationCredential = "application_credential"`. **This is a durable gotcha:** any fake/test that decodes a real-service JSON body must map snake_case keys explicitly; a synthesized `Decodable` with a camelCase property name will *not* read a snake_case key (it decodes to `nil` when optional, or `keyNotFound` when not).
+- **`FakeSmokeTests` malformed mint bodies (pre-existing):** two `mintBody` literals were `"methods":[...],"applicationCredential":{...}` — the `]` after `methods` closed the `identity` object, so `applicationCredential` landed in `auth`, not `identity`. The old fake's `try? decode` swallowed it (401); a stricter unknown-methods check surfaced it. Fixed the bodies to use `application_credential` inside `identity`.
+- **Test-router quirk:** the first request in a fresh `app.test(.router)` context is dropped/mishandled (400 on initialize). Work around by sending a warm-up request (e.g. `GET /healthz`) in the same `test` closure before real requests.
+- **50-session soak (no cross-project leak):** 50 interleaved sessions init concurrently, then each calls `os_whoami`; assert each response's `project.id` matches its own seeded project. Phase 1 serial init + phase 2 concurrent whoami avoids init-order flakiness.
+- `os_whoami` tool output includes `project.id` (used by the soak leak check: `"id":"proj-one"`).
 
 ## Task 17 Implementation Notes (new)
 
@@ -44,7 +64,6 @@
 
 | Task | Description |
 |------|-------------|
-| 18 | OpenStack validator + login page + token store + serve/stdio wiring |
 | 19 | Logging, redaction, audit, metrics completeness |
 | 20 | CLI — check, access-rules, tools, register-catalog |
 | 21 | Deployment assets + README |
