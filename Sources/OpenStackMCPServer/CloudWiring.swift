@@ -79,6 +79,9 @@ public struct CloudWiring: Sendable {
     ) -> @Sendable (ValidatedIdentity) async -> MCPServer {
         let clientCopy = client
         let cloudName = cloud.name
+        // One shared limiter for the whole server, keyed by token id, so
+        // concurrent sessions presenting the same token share a budget.
+        let callLimiter = ToolCallLimiter(limitPerMinute: policy.maxCallsPerMinute, logger: logger)
         return { identity in
             let scopes = identity.scopes.compactMap { TokenScope(rawValue: $0) }
             do {
@@ -99,7 +102,8 @@ public struct CloudWiring: Sendable {
                     policy: policy,
                     identity: identity,
                     logger: logger,
-                    auditEnabled: auditEnabled
+                    auditEnabled: auditEnabled,
+                    callLimiter: callLimiter
                 )
                 return await registry.makeServer()
             } catch {
@@ -129,7 +133,8 @@ public struct CloudWiring: Sendable {
                     policy: policy,
                     identity: identity,
                     logger: logger,
-                    auditEnabled: auditEnabled
+                    auditEnabled: auditEnabled,
+                    callLimiter: callLimiter
                 )
                 return await registry.makeServer()
             }

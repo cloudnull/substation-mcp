@@ -22,6 +22,7 @@ struct OpenStackMCP: AsyncParsableCommand {
             AccessRulesCommand.self,
             ToolsCommand.self,
             RegisterCatalogCommand.self,
+            ConformanceCommand.self,
         ],
         defaultSubcommand: nil
     )
@@ -324,6 +325,191 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         } catch {
             throw CLIExit(code: 1, message: "register-catalog: \(error)")
         }
+    }
+}
+
+// MARK: - conformance (hidden; spec §14.5 conformance-HTTP-smoke)
+//
+// Drives the FULL MCP Streamable-HTTP handshake against a running server with
+// the binary itself as the HTTP client (no curl, which is absent from the
+// ubi10-minimal runtime). Hidden from --help (not added to the user-facing
+// subcommand documentation). Mints a token against Keystone, then:
+//   initialize -> tools/list -> tools/call os_whoami -> DELETE, asserting each
+//   response; also asserts the 401 challenge on an unauthenticated request and
+//   the PRM document shape. Exit 0 on all-pass, 1 on any failure.
+
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+struct ConformanceCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "conformance",
+        abstract: "Conformance HTTP smoke (internal).",
+        shouldDisplay: false
+    )
+
+    @Option(name: .long, help: "MCP endpoint base URL, e.g. http://127.0.0.1:8080/v1") var url: String
+    @Option(name: .long, help: "Keystone token id (Bearer) to use.") var token: String?
+    @Option(name: .long, help: "Keystone auth URL to mint a token if --token is unset.") var authURL: String?
+    @Option(name: .long, help: "App credential id (mint).") var appCredID: String?
+    @Option(name: .long, help: "App credential secret (mint).") var appCredSecret: String?
+    @Flag(name: .long, help: "Expect a read-only (9-tool) tools/list instead of 15.") var readOnly: Bool = false
+
+    struct Step: Sendable {
+        let name: String
+        let ok: Bool
+        let detail: String
+    }
+
+    func run() async throws {
+        let tokenID: String
+        if let t = token {
+            tokenID = t
+        } else {
+            tokenID = await mintToken()
+        }
+
+        let endpoint = url.hasSuffix("/") ? String(url.dropLast()) : url
+        let steps = await ConformanceRunner(
+            endpoint: endpoint,
+            tokenID: tokenID,
+            expectReadOnly: readOnly
+        ).run()
+
+        var allPass = true
+        for s in steps {
+            let mark = s.ok ? "PASS" : "FAIL"
+            if !s.ok { allPass = false }
+            print("[\(mark)] \(s.name)\(s.ok ? "" : " — \(s.detail)")")
+        }
+        print(allPass ? "CONFORMANCE: PASS" : "CONFORMANCE: FAIL")
+        Foundation.exit(allPass ? 0 : 1)
+    }
+
+    private func mintToken() async -> String {
+        guard let authURL, let id = appCredID, let secret = appCredSecret else {
+            FileHandle.standardError.write(Data("conformance: need --token, or --auth-url + --app-cred-id + --app-cred-secret\n".utf8))
+            Foundation.exit(2)
+        }
+        let body = """
+        {"auth":{"identity":{"methods":["application_credential"],"application_credential":{"id":"\(id)","secret":"\(secret)"}},"scope":{"type":"project","project":{"domain":{"name":"default"}}}}}
+        """
+        do {
+            var request = URLRequest(url: URL(string: authURL + "/auth/tokens")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(body.utf8)
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let tok = json?["token"] as? [String: Any]
+            if let id = tok?["id"] as? String { return id }
+        } catch {}
+        FileHandle.standardError.write(Data("conformance: token mint failed\n".utf8))
+        Foundation.exit(1)
+        return ""
+    }
+}
+
+/// The conformance handshake runner. Uses `URLSession` as a minimal HTTP
+/// client so the binary needs no other HTTP dependency.
+struct ConformanceRunner {
+    let endpoint: String
+    let tokenID: String
+    let expectReadOnly: Bool
+
+    func run() async -> [ConformanceCommand.Step] {
+        var steps: [ConformanceCommand.Step] = []
+        steps.append(await Self.step401Challenge(endpoint: endpoint))
+        steps.append(await Self.stepPRM(endpoint: endpoint))
+        let handshake = await Self.handshake(endpoint: endpoint, tokenID: tokenID, expectReadOnly: expectReadOnly)
+        steps.append(contentsOf: handshake)
+        return steps
+    }
+
+    /// A request with no Authorization header must get 401 + a Bearer challenge.
+    private static func step401Challenge(endpoint: String) async -> ConformanceCommand.Step {
+        let (status, headers, _) = await raw(endpoint: endpoint, method: "POST", token: nil, sessionID: nil, body: "")
+        let www = headers["www-authenticate"] ?? ""
+        let ok = status == 401 && www.contains("invalid_token")
+        return .init(name: "401 challenge on unauthenticated request", ok: ok, detail: "status=\(status) www=\(www)")
+    }
+
+    /// The PRM document must carry the RFC 9728 keys.
+    private static func stepPRM(endpoint: String) async -> ConformanceCommand.Step {
+        let base = endpoint.hasSuffix("/v1") ? String(endpoint.dropLast(3)) : endpoint
+        let (status, _, body) = await raw(endpoint: base + "/.well-known/oauth-protected-resource", method: "GET", token: nil, sessionID: nil, body: "")
+        let hasKeys = body.contains("authorization_servers") && body.contains("resource") && body.contains("scopes_supported")
+        let ok = status == 200 && hasKeys
+        return .init(name: "PRM document (resource/authorization_servers/scopes_supported)", ok: ok, detail: "status=\(status) keys=\(hasKeys)")
+    }
+
+    private static func handshake(endpoint: String, tokenID: String, expectReadOnly: Bool) async -> [ConformanceCommand.Step] {
+        var steps: [ConformanceCommand.Step] = []
+
+        // 1. initialize -> 200 + MCP-Session-Id.
+        let initBody = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"conformance","version":"1"}}}"#
+        let (initStatus, initHeaders, initResp) = await raw(endpoint: endpoint, method: "POST", token: tokenID, sessionID: nil, body: initBody)
+        let sessionID = initHeaders["mcp-session-id"]
+        let initOk = initStatus == 200 && sessionID != nil && initResp.contains("protocolVersion")
+        steps.append(.init(name: "initialize (200 + MCP-Session-Id)", ok: initOk, detail: "status=\(initStatus) session=\(sessionID ?? "nil")"))
+
+        guard let sid = sessionID else {
+            steps.append(.init(name: "tools/list", ok: false, detail: "no session id from initialize"))
+            return steps
+        }
+
+        // 2. tools/list -> 200, 9 (read-only) or 15 (write) tools.
+        let listBody = #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#
+        let (listStatus, _, listResp) = await raw(endpoint: endpoint, method: "POST", token: tokenID, sessionID: sid, body: listBody)
+        let expectedCount = expectReadOnly ? 9 : 15
+        let toolNames = ["os_list","os_get","os_describe","os_topology","os_find","os_whoami","os_quota","os_clouds","os_wait","os_create","os_update","os_delete","os_action","os_attach","os_detach"]
+        let present = toolNames.filter { listResp.contains("\"\($0)\"") }
+        let listOk = listStatus == 200 && present.count == expectedCount
+        steps.append(.init(name: "tools/list (\(expectedCount) tools)", ok: listOk, detail: "status=\(listStatus) found=\(present.count)/\(expectedCount)"))
+
+        // 3. tools/call os_whoami -> 200, isError not true.
+        let whoamiBody = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"os_whoami","arguments":{}}}"#
+        let (callStatus, _, callResp) = await raw(endpoint: endpoint, method: "POST", token: tokenID, sessionID: sid, body: whoamiBody)
+        let whoamiOk = callStatus == 200 && callResp.contains("os_whoami") && !callResp.contains(#"isError":true"#)
+        steps.append(.init(name: "tools/call os_whoami", ok: whoamiOk, detail: "status=\(callStatus)"))
+
+        // 4. DELETE -> 200, terminates the session.
+        let (delStatus, _, _) = await raw(endpoint: endpoint, method: "DELETE", token: tokenID, sessionID: sid, body: "")
+        let delOk = delStatus == 200
+        steps.append(.init(name: "DELETE (terminate session)", ok: delOk, detail: "status=\(delStatus)"))
+
+        return steps
+    }
+
+    /// A minimal HTTP request returning (status, lowercased headers, body).
+    private static func raw(endpoint: String, method: String, token: String?, sessionID: String?, body: String) async -> (Int, [String: String], String) {
+        guard let url = URL(string: endpoint) else {
+            return (0, [:], "bad url \(endpoint)")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id") }
+        if !body.isEmpty { request.httpBody = Data(body.utf8) }
+
+        let (status, headers, responseBody) = await withCheckedContinuation { (cont: CheckedContinuation<(Int, [String: String], String), Never>) in
+            let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+                let http = response as? HTTPURLResponse
+                var h: [String: String] = [:]
+                if let allHeaders = http?.allHeaderFields {
+                    for (k, v) in allHeaders {
+                        if let key = k as? String { h[key.lowercased()] = "\(v)" }
+                    }
+                }
+                let text = String(data: data ?? Data(), encoding: .utf8) ?? ""
+                cont.resume(returning: (http?.statusCode ?? 0, h, text))
+            }
+            task.resume()
+        }
+        return (status, headers, responseBody)
     }
 }
 

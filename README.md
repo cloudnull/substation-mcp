@@ -75,7 +75,7 @@ natively on macOS.
 ```sh
 scripts/swift --version   # verify the container toolchain
 scripts/swift build       # debug build
-scripts/swift test        # run the test suite (350 tests)
+scripts/swift test        # run the test suite (364 tests; integration target self-skips without OSMCP_IT_CLOUD)
 ```
 
 Release build:
@@ -399,6 +399,48 @@ OSMCP_IT_CLOUD=mycloud scripts/swift test --filter IntegrationTests
 Pass 1 is read-only (whoami, clouds, list, describe). Pass 2 (network-only
 mutations: create/delete network+subnet+port) requires `OSMCP_IT_MUTATE=1`.
 
+### Conformance (HTTP smoke)
+
+`scripts/conformance.sh` drives the full MCP Streamable-HTTP handshake against a
+**running** `openstack-mcp serve` using the binary itself as the HTTP client
+(`openstack-mcp conformance`, a hidden subcommand — no curl, which is absent from
+the ubi10-minimal runtime). It asserts, in order: 401 challenge on an
+unauthenticated request, the PRM document shape (`resource` /
+`authorization_servers` / `scopes_supported`), `initialize` → 200 +
+`MCP-Session-Id`, `tools/list` (15 tools, or 9 with `--read-only`),
+`tools/call os_whoami` (200, not an error), and `DELETE` (200).
+
+```sh
+# Start a server (against your cloud or a fake), then:
+scripts/conformance.sh --url http://127.0.0.1:8080/v1 --token <minted-keystone-token>
+# or let it mint a token itself:
+scripts/conformance.sh --url http://127.0.0.1:8080/v1 \
+    --auth-url http://127.0.0.1:9999/keystone/v3 \
+    --app-cred-id <id> --app-cred-secret <secret>
+# read-only (9-tool) surface:
+scripts/conformance.sh --url ... --token ... --read-only
+```
+
+The same handshake is also covered in-process by `HummingbirdMCPTests`
+(session init/list/call/DELETE/401/PRM), so CI exercises it without a live
+server.
+
+**MCP Inspector (manual).** For an interactive, human-driven conformance check,
+point the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) at
+the running server and exercise the same surface manually:
+
+```sh
+npx @modelcontextprotocol/inspector \
+  --transport http --url http://127.0.0.1:8080/v1 \
+  --header "Authorization: Bearer <minted-keystone-token>"
+```
+
+In the Inspector UI: (1) confirm `initialize` completes and a session id is
+issued; (2) open **Tools** and confirm the tool count (15 write / 9 read-only);
+(3) call `os_whoami` and confirm it returns a project and roles with no error;
+(4) call `os_list` for `server`/`network`/`volume`/`image` and confirm results;
+(5) close the session (DELETE) and confirm the server returns 200.
+
 ### Repository layout
 
 ```
@@ -412,8 +454,9 @@ Sources/
 Tests/
   OpenStackClientTests/
   OpenStackMCPServerTests/
-  HummingbirdMCPTests/
-  OpenStackMCPTests/      # config, redaction, audit, access-rules, register-catalog, subcommands, check
+  HummingbirdMCPTests/     # adapter: auth, sessions, transport, soak, hardening sweep
+  OpenStackMCPTests/       # config, redaction, audit, access-rules, register-catalog, subcommands, check
+IntegrationTests/          # opt-in, real-cloud (OSMCP_IT_CLOUD); self-skips in CI
 deploy/
   Dockerfile
   openstack-mcp.service

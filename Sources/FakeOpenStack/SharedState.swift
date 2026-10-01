@@ -53,6 +53,7 @@ public actor FakeState {
         public var keyName: String?
         public var securityGroups: [String: String]
         public var metadata: [String: String]
+        public var userData: String?
         public var created: Date
         public var updated: Date?
 
@@ -68,7 +69,8 @@ public actor FakeState {
             addresses: [String: [String: String]] = [:],
             keyName: String? = nil,
             securityGroups: [String: String] = [:],
-            metadata: [String: String] = [:]
+            metadata: [String: String] = [:],
+            userData: String? = nil
         ) {
             self.id = id
             self.name = name
@@ -82,6 +84,7 @@ public actor FakeState {
             self.keyName = keyName
             self.securityGroups = securityGroups
             self.metadata = metadata
+            self.userData = userData
             self.created = Date()
             self.updated = nil
         }
@@ -688,11 +691,15 @@ public actor FakeState {
         // Seed a few servers in proj-one
         for i in 1...3 {
             serverIDCounter += 1
+            // srv-0001 carries user_data so the hardening suite can assert the
+            // MCP server never echoes it back (spec §12).
+            let userData = i == 1 ? "c2VjcmV0LXVzZXItZGF0YQ==" : nil
             servers.append(FakeServer(
                 id: String(format: "srv-%04d", serverIDCounter),
                 name: "server-\(i)",
                 status: "ACTIVE",
-                projectID: "proj-one"
+                projectID: "proj-one",
+                userData: userData
             ))
         }
 
@@ -856,6 +863,28 @@ public actor FakeState {
             return nil
         }
         return token
+    }
+
+    /// Force a token to expire immediately (test hook). The next validation
+    /// treats it as expired, so a live MCP session presenting it 401s —
+    /// proving identity is per-token, not per-session (spec §12 hardening).
+    @discardableResult
+    public func expireToken(_ tokenID: String) -> Bool {
+        guard var token = tokens[tokenID] else { return false }
+        let expired = FakeToken(
+            id: token.id,
+            projectID: token.projectID,
+            projectName: token.projectName,
+            domainID: token.domainID,
+            domainName: token.domainName,
+            userID: token.userID,
+            userName: token.userName,
+            userDomain: token.userDomain,
+            roles: token.roles,
+            expiresAt: Date().addingTimeInterval(-1)
+        )
+        tokens[tokenID] = expired
+        return true
     }
 
     // MARK: - Keystone catalog (services + endpoints)

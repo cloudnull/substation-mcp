@@ -48,6 +48,7 @@ public actor SessionRegistry {
     private var sessions: [String: MCPSession]
     private let terminated: @Sendable (String) -> Void
     private let idleTTL: TimeInterval
+    private let maxLifetime: TimeInterval
     private let cleanupInterval: Duration
     private let logger: Logger
     private var cleanupTask: Task<Void, Never>?
@@ -55,6 +56,7 @@ public actor SessionRegistry {
     /// Create an empty registry and start the background cleanup task.
     public init(
         idleTTL: TimeInterval,
+        maxLifetime: TimeInterval = 86_400,
         cleanupInterval: Duration = .seconds(60),
         terminated: @escaping @Sendable (String) -> Void = { _ in },
         logger: Logger
@@ -62,6 +64,7 @@ public actor SessionRegistry {
         self.sessions = [:]
         self.terminated = terminated
         self.idleTTL = idleTTL
+        self.maxLifetime = maxLifetime
         self.cleanupInterval = cleanupInterval
         self.logger = logger
         // The actor `init` is nonisolated, so kick off the background cleanup by
@@ -117,14 +120,19 @@ public actor SessionRegistry {
     /// The number of live sessions (for tests and `osmcp_sessions_active`).
     public var count: Int { sessions.count }
 
-    /// Drop sessions idle longer than `idleTTL`. Returns the ids evicted.
+    /// Drop sessions that are idle longer than `idleTTL` OR older than
+    /// `maxLifetime` (spec §12: a session that survives its idle TTL but not its
+    /// max lifetime is still evicted). Returns the ids evicted.
     public func evictExpired(now: Date) -> [String] {
-        let cutoff = now.addingTimeInterval(-idleTTL)
-        let evicted = sessions.filter { $0.value.lastAccessedAt < cutoff }.map(\.key)
+        let idleCutoff = now.addingTimeInterval(-idleTTL)
+        let lifetimeCutoff = now.addingTimeInterval(-maxLifetime)
+        let evicted = sessions
+            .filter { $0.value.lastAccessedAt < idleCutoff || $0.value.createdAt < lifetimeCutoff }
+            .map(\.key)
         for id in evicted {
             sessions.removeValue(forKey: id)
             terminated(id)
-            logger.info("Session evicted (idle)", metadata: ["sessionID": "\(id)"])
+            logger.info("Session evicted", metadata: ["sessionID": "\(id)"])
         }
         return evicted
     }

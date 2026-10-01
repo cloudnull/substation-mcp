@@ -411,8 +411,9 @@ public struct NovaFake {
 
     static func serverJSON(server: FakeState.FakeServer) -> String {
         let image = server.imageID.map { "\"\($0)\"" } ?? "null"
+        let userData = server.userData.map { ",\"user_data\":\"\($0)\"" } ?? ""
         return """
-        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(server.securityGroups.map { "\"\($0)\"" }.joined(separator: ","))],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")}}
+        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(server.securityGroups.map { "\"\($0)\"" }.joined(separator: ","))],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")\(userData)}}
         """
     }
 

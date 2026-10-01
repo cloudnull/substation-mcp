@@ -159,5 +159,20 @@ let package = Package(
             ],
             swiftSettings: swiftSettings
         ),
+        // Opt-in integration tests against a REAL cloud (spec §14.6). The
+        // target always compiles but self-skips unless OSMCP_IT_CLOUD is set,
+        // so `swift test` in CI never touches a live cloud. The mutate pass is
+        // further gated by OSMCP_IT_MUTATE=1 so CI can never mutate.
+        .testTarget(
+            name: "OpenStackMCPIntegrationTests",
+            dependencies: [
+                .target(name: "OpenStackClient"),
+                .target(name: "OpenStackMCPServer"),
+                .product(name: "Yams", package: "Yams"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+            ],
+            path: "IntegrationTests"
+        ),
     ]
 )

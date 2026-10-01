@@ -37,6 +37,9 @@ public struct ToolRegistry: Sendable {
     /// Whether to emit one audit log line per mutating tool call (spec §12,
     /// gated by `log.audit`, default true).
     public let auditEnabled: Bool
+    /// Per-identity (per-token) sliding-window tool-call rate limiter
+    /// (spec §12: `policy.max_calls_per_minute`, default 120/min).
+    public let callLimiter: ToolCallLimiter
 
     public init(
         client: OpenStackClient,
@@ -44,7 +47,8 @@ public struct ToolRegistry: Sendable {
         policy: Policy = Policy(),
         identity: RequestIdentity,
         logger: Logger = Logger(label: "openstack-mcp"),
-        auditEnabled: Bool = true
+        auditEnabled: Bool = true,
+        callLimiter: ToolCallLimiter? = nil
     ) {
         self.client = client
         self.catalog = policy.effective(catalog)
@@ -52,6 +56,10 @@ public struct ToolRegistry: Sendable {
         self.identity = identity
         self.logger = logger
         self.auditEnabled = auditEnabled
+        // A limiter that never throttles (limit far above any real usage) is
+        // the default so existing constructions/tests are unaffected; the
+        // serve path passes a real one sized to `policy.maxCallsPerMinute`.
+        self.callLimiter = callLimiter ?? ToolCallLimiter(limitPerMinute: .max)
     }
 
     public var hasWrite: Bool {
@@ -137,6 +145,16 @@ public struct ToolRegistry: Sendable {
     func dispatch(_ params: CallTool.Parameters, server: MCP.Server) async throws -> CallTool.Result {
         let mutatingTools: Set<String> = ["os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach"]
         let isMutating = mutatingTools.contains(params.name)
+
+        // spec §12: per-identity tool-call rate limit. A throttled call is a
+        // self-correctable tool error (isError), not a hard HTTP 429.
+        guard await callLimiter.allow(tokenID: identity.vt.token.id) else {
+            OSMetrics.toolCall(tool: params.name, outcome: "rate_limited")
+            return CallTool.Result(
+                content: [.text(text: "Rate limit exceeded: too many tool calls this minute (\(policy.maxCallsPerMinute) allowed). Please wait a moment and retry.", annotations: nil, _meta: nil)],
+                isError: true
+            )
+        }
 
         if isMutating && !hasWrite {
             OSMetrics.toolCall(tool: params.name, outcome: "forbidden")
@@ -342,7 +360,13 @@ public struct ToolRegistry: Sendable {
         let resolver = NameResolver(catalog: catalog, client: client)
         let (id, raw) = try await resolver.resolve(vt, descriptor: d, idOrName: idOrName, region: region)
         let fields = argStringArray(params, "fields")
-        let projected = fields != nil ? project(raw, fields!) : raw
+        // spec §12: servers never expose `user_data` (it is accepted on create
+        // but must not be echoed back in a read). Strip it at the result
+        // formatter, regardless of projection.
+        var projected = fields != nil ? project(raw, fields!) : raw
+        if d.name == "server" {
+            projected["user_data"] = nil
+        }
 
         let result: [String: JSONValue] = [
             "resource": .string(d.name),

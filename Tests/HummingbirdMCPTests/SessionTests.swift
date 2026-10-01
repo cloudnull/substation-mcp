@@ -42,6 +42,41 @@ func makeServeApp(
     return ServeApp(config: cfg, cloud: cloud, tokenStore: tokenStore, logger: logger)
 }
 
+/// A full-serve `ServeApp` whose cloud `authURL` is the fake's **base** URL
+/// (not `<base>/keystone`). This is the only configuration in which the shared
+/// transport can reach BOTH the Keystone validation endpoint AND the service
+/// endpoints: the transport builds `authURL + path`, and the fake serves
+/// Keystone at `<base>/keystone/v3/...` but Nova/Neutron/Cinder/Glance at
+/// `<base>/nova/...`, `<base>/neutron/...`, etc. (the same way a real
+/// multi-service deployment hangs everything off one host).
+///
+/// Token validation (`GET /v3/auth/tokens`) is driven by the `TokenValidator`,
+/// whose transport uses this base URL — the fake routes `<base>/keystone/v3/...`
+/// for Keystone and `<base>/nova/...` for compute, so a base-URL transport
+/// reaches the right place for each. The PRM document's Keystone reference is
+/// independent (it comes from `config.authKeystoneURL`).
+///
+/// Use this helper for any hardening/integration test that makes a real
+/// OpenStack call (os_list / os_get / os_find / os_quota / os_describe) through
+/// the full HTTP path. Tests that only exercise the auth/session/PRM surface
+/// can keep using `makeServeApp`.
+func makeServeAppReachable(
+    handle: FakeHandle,
+    config: OpenStackMCPConfig,
+    tokenStore: TokenStore,
+    logger: Logger = Logger(label: "serve-reachable")
+) -> ServeApp {
+    let cloud = CloudEntry(
+        name: "fake",
+        authURL: handle.url,            // base URL: services live at <base>/nova, <base>/neutron, ...
+        regionName: nil
+    )
+    var cfg = config
+    // PRM + Keystone reference point at the fake's Keystone.
+    cfg.authKeystoneURL = handle.keystoneURL.absoluteString
+    return ServeApp(config: cfg, cloud: cloud, tokenStore: tokenStore, logger: logger)
+}
+
 /// Shared config for the full-serve tests.
 let defaultConfig = OpenStackMCPConfig(
     serverPublicURL: "http://127.0.0.1:8080",

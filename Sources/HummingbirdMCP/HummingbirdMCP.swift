@@ -139,6 +139,7 @@ public struct MCPRoute: Sendable {
         self.onSessionEnd = onSessionEnd
         self.registry = SessionRegistry(
             idleTTL: config.idleTTL,
+            maxLifetime: config.maxLifetime,
             cleanupInterval: config.cleanupInterval,
             terminated: terminated,
             logger: logger

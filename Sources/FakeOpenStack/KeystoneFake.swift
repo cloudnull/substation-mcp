@@ -8,15 +8,29 @@ import NIOCore
 public struct KeystoneFake {
     public static func registerRoutes(_ router: Router<BasicRequestContext>, state: FakeState, baseHost: @escaping @Sendable () -> String) {
         let prefix = RouterPath("/keystone/v3")
+        let rootPrefix = RouterPath("/v3")
         let authTokens = RouterPath("/keystone/v3/auth/tokens")
+        // Root-level auth-tokens alias: the MCP server's shared transport is
+        // rooted at the cloud's base URL so it can reach BOTH Keystone
+        // (validation: GET/POST /v3/auth/tokens) and the services
+        // (nova/neutron/cinder/glance hang off the same base host, e.g.
+        // <base>/nova). The fake therefore serves Keystone at the root as well
+        // as under /keystone/v3. Existing tests that mint/validate via
+        // <base>/keystone/v3 keep working against the prefixed routes.
+        let rootAuthTokens = RouterPath("/v3/auth/tokens")
 
         router.get(prefix) { _, _ in
             Self.jsonResponse(status: .ok, body: """
             {"version":{"id":"v3.14","status":"stable","max_microversion":"3.14"}}
             """)
         }
+        router.get(rootPrefix) { _, _ in
+            Self.jsonResponse(status: .ok, body: """
+            {"version":{"id":"v3.14","status":"stable","max_microversion":"3.14"}}
+            """)
+        }
 
-        router.post(authTokens) { req, context in
+        let mintHandler: @Sendable (Request, BasicRequestContext) async throws -> Response = { req, context in
             let body = try await Self.readBody(req)
             guard let data = body.data(using: .utf8), !data.isEmpty else {
                 return Self.jsonResponse(status: .badRequest, body: """
@@ -78,8 +92,10 @@ public struct KeystoneFake {
             res.headers[FakeHeaders.xSubjectToken] = token.id
             return res
         }
+        router.post(authTokens, use: mintHandler)
+        router.post(rootAuthTokens, use: mintHandler)
 
-        router.get(authTokens) { req, _ in
+        let validateHandler: @Sendable (Request, BasicRequestContext) async throws -> Response = { req, _ in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken] else {
                 return Self.jsonResponse(status: .unauthorized, body: """
                 {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
@@ -101,6 +117,8 @@ public struct KeystoneFake {
             {"token":{"id":"\(token.id)","expires_at":"\(expiresISO)","project":{"id":"\(token.projectID)","name":"\(token.projectName)"},"domain":{"id":"\(token.domainID)","name":"\(token.domainName)"},"user":{"id":"\(token.userID)","name":"\(token.userName)","domain":{"id":"\(token.userDomain)","name":"Default"}},"roles":[\(rolesJSON)],"catalog":\(catalogJSON)}}
             """)
         }
+        router.get(authTokens, use: validateHandler)
+        router.get(rootAuthTokens, use: validateHandler)
 
         // MARK: - Catalog: services + endpoints (register-catalog)
 
