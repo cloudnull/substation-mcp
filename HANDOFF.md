@@ -1,16 +1,42 @@
-# Handoff: OpenStack MCP Phase 1 — Task 22 onwards
+# Handoff: OpenStack MCP Phase 1 — COMPLETE
 
 ## Current State
 
+- **Phase 1 is complete.** All 22 tasks merged to main.
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 21. All tasks through 21 merged.
-- **Latest commit**: Task 21: deployment assets + README (1c07dd1)
-- **Tests**: 350 tests, all green (134 MCP server / 149 client / 31 HummingbirdMCP; 36 in OpenStackMCPTests)
+- **Latest commit**: Task 22: hardening sweep, opt-in integration target, conformance smoke script (b9f5340)
+- **Tests**: 364 tests, all green across 5 targets (36 OpenStackMCP / 134 server / 149 client / 43 HummingbirdMCP / 2 integration self-skip)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
+- **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance` subcommand)
 
-## Immediate Next Step
+## Task 22 Implementation Notes (new — FINAL TASK)
 
-**Start Task 22: Integration test (opt-in) + conformance pass + final hardening sweep** — see plan (~line 911) and spec §14. This is the final task. After it, do a whole-branch review before finishing.
+### Hardening sweep (`Tests/HummingbirdMCPTests/HardeningTests.swift`, 12 tests)
+Pins spec §12 checklist:
+- **default bind 127.0.0.1** (config default), **body limit 413**, **per-IP auth-failure 429**
+- **per-token tool-call rate limit**: new `ToolCallLimiter` actor (`Sources/OpenStackMCPServer/Policy/ToolCallLimiter.swift`), sliding 60s window keyed by token id, wired into `ToolRegistry.dispatch` (returns a self-correctable `isError` tool error, not HTTP 429); `CloudWiring.makeServerFactory` shares one limiter sized to `policy.maxCallsPerMinute`
+- **user_data never echoed**: stripped at the result formatter in `ToolRegistry.handleGet` (servers), in addition to the redaction layer which already covers log lines
+- **metrics_token gating** (401 without / 200 with), **session.max_lifetime eviction** (`SessionRegistry.evictExpired` now drops sessions past `maxLifetime` even when within idle TTL; `MCPRoute` passes `config.maxLifetime`)
+- **token-per-request**: an expired token on a live session → 401 `invalid_token` (identity is per-token, not per-session). Fake gained `expireToken(_:)` test hook; the test also invalidates the validator's token cache
+- **tenant isolation** (proj-one/two never see each other's servers), **read-only mutating call → 403 `insufficient_scope`**, **login secret never stored** (TokenStore round-trip + completion page), **PRM at both canonical and endpoint-scoped URLs**
+- **Origin/CORS pinned as NOT required** (MCP 2025-11-25; the bearer token is the boundary) — no Origin assertion.
+
+### Test-infra fix (important)
+The shared-transport design could not reach the fake's services: the fake served Keystone only at `<base>/keystone/v3`, so a base-URL transport couldn't validate tokens and a `/keystone`-URL transport couldn't reach `<base>/nova`. Fixed by making the fake **also serve Keystone at the root** (`/v3/auth/tokens` GET/POST as aliases of the `/keystone/v3` routes). Added `makeServeAppReachable` (base-URL cloud) to `SessionTests.swift` for full-serve tests that make real OpenStack calls. `makeServeApp` (auth-surface only) is unchanged.
+
+### Opt-in integration target (`IntegrationTests/IntegrationTests.swift`, spec §14.6)
+New SwiftPM test target `OpenStackMCPIntegrationTests` (path `IntegrationTests`). Self-skips unless `OSMCP_IT_CLOUD` is set. Pass 1 read-only (whoami, clouds, list servers/networks/volumes/images, describe). Pass 2 network-only mutation (network→subnet→port, reverse cleanup, best-effort) gated by `OSMCP_IT_MUTATE=1` so CI never mutates. Drives `OpenStackClient` directly against a real cloud.
+
+### Conformance (spec §14.5)
+- Hidden `openstack-mcp conformance` subcommand (`main.swift`, `shouldDisplay: false`) drives the full Streamable-HTTP handshake with the binary as the HTTP client (`URLSession`/FoundationNetworking — no curl, which is absent from ubi10-minimal): 401 challenge, PRM shape, initialize→200+MCP-Session-Id, tools/list (15/9), os_whoami, DELETE. Exit 0/1.
+- `scripts/conformance.sh` (executable) is a thin wrapper: locates the built binary and `exec`s `conformance` with the caller's args (`--url ... --token ...` or `--auth-url ... --app-cred-id ... --app-cred-secret ...`, `--read-only` for the 9-tool surface).
+- README documents the conformance flow + MCP Inspector manual steps.
+
+### Gotchas learned in Task 22
+- **`OpenStackClient` is an actor** — its service accessors (`compute`/`network`/`blockStorage`/`image`) and `whoami`/`regions` need `await`.
+- **`exit(Int)` in the binary**: use `Foundation.exit(code:)` (the bare `exit` resolves to the wrong overload on Linux); `await` cannot appear to the right of `??` (autoclosure) — assign to a var first.
+- **SSE-framed test responses**: `tools/call` over the full-serve path returns `id: N` / `event: message` / `data: {jsonrpc...}` — extract the last `data:` line for assertions.
+- The existing full-serve tests only ever exercised `os_whoami` (no real service call), which is why the transport/fake mismatch was never caught before Task 22.
 
 ## Task 21 Implementation Notes (new)
 
@@ -104,7 +130,9 @@ Attempts `--static-swift-stdlib` first, falls back to dynamic release (ICU symbo
 | 19 | Logging, redaction, audit, metrics completeness | done @ c6ccd74 |
 | 20 | CLI — check, access-rules, tools, register-catalog | done @ 8fe26b1 |
 | 21 | Deployment assets + README | done @ 1c07dd1 |
-| 22 | Integration test (opt-in) + conformance pass + final hardening sweep | pending |
+| 22 | Integration test (opt-in) + conformance pass + final hardening sweep | done @ b9f5340 |
+
+**Phase 1 complete.** No remaining tasks.
 
 ## Services Completed (Tasks 1-12)
 
