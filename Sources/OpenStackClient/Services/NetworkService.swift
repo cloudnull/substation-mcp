@@ -59,7 +59,7 @@ public struct NetworkRegion: Sendable {
     // MARK: - Extension discovery
 
     /// Discover seeded Neutron extension aliases (cached 1800s).
-    func discoverExtensions(_ vt: ValidatedToken, region: String) async throws -> NeutronExtensions {
+    public func discoverExtensions(_ vt: ValidatedToken, region: String) async throws -> NeutronExtensions {
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: NetworkRegion.extensionsResource, suffix: "network")
         if let cached = try await cache.get(key, ttl: .seconds(1800), as: NeutronExtensions.self) {
             return cached

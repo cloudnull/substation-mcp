@@ -101,6 +101,91 @@ public struct KeystoneFake {
             {"token":{"id":"\(token.id)","expires_at":"\(expiresISO)","project":{"id":"\(token.projectID)","name":"\(token.projectName)"},"domain":{"id":"\(token.domainID)","name":"\(token.domainName)"},"user":{"id":"\(token.userID)","name":"\(token.userName)","domain":{"id":"\(token.userDomain)","name":"Default"}},"roles":[\(rolesJSON)],"catalog":\(catalogJSON)}}
             """)
         }
+
+        // MARK: - Catalog: services + endpoints (register-catalog)
+
+        let services = RouterPath("/keystone/v3/services")
+        router.get(services) { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
+                return Self.jsonResponse(status: .unauthorized, body: """
+                {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
+                """)
+            }
+            let svcs = await state.listServices()
+            let json = svcs.map { s in
+                "{\"id\":\"\(s.id)\",\"type\":\"\(s.type)\",\"name\":\"\(s.name)\",\"description\":\"\(s.description)\"}"
+            }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: "{\"services\":[\(json)]}")
+        }
+        router.post(services) { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
+                return Self.jsonResponse(status: .unauthorized, body: """
+                {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
+                """)
+            }
+            let body = try await Self.readBody(req)
+            guard let data = body.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(SvcWrap.self, from: data),
+                  let svc = parsed.service else {
+                return Self.jsonResponse(status: .badRequest, body: """
+                {"error":{"code":"badRequest","title":"Invalid service body"}}
+                """)
+            }
+            let created = await state.createService(type: svc.type, name: svc.name ?? "service", description: svc.description ?? "")
+            return Self.jsonResponse(status: .created, body: """
+            {"service":{"id":"\(created.id)","type":"\(created.type)","name":"\(created.name)","description":"\(created.description)"}}
+            """)
+        }
+
+        // POST /keystone/v3/services/:id/endpoints
+        router.post(RouterPath("/keystone/v3/services/:id/endpoints")) { req, context in
+            let svcID = context.parameters.get("id") ?? ""
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
+                return Self.jsonResponse(status: .unauthorized, body: """
+                {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
+                """)
+            }
+            let knownService = await state.listServices().contains(where: { $0.id == svcID })
+            if !knownService {
+                return Self.jsonResponse(status: .notFound, body: """
+                {"error":{"code":"serviceNotFound","title":"Service not found"}}
+                """)
+            }
+            let body = try await Self.readBody(req)
+            guard let data = body.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode(EPWrap.self, from: data),
+                  let ep = parsed.endpoint else {
+                return Self.jsonResponse(status: .badRequest, body: """
+                {"error":{"code":"badRequest","title":"Invalid endpoint body"}}
+                """)
+            }
+            let created = await state.createEndpoint(serviceID: svcID, interface: ep.interface, regionID: ep.region_id ?? "RegionOne", url: ep.url)
+            return Self.jsonResponse(status: .created, body: """
+            {"endpoint":{"id":"\(created.id)","service_id":"\(created.serviceID)","interface":"\(created.interface)","region_id":"\(created.regionID)","url":"\(created.url)"}}
+            """)
+        }
+        // GET /keystone/v3/endpoints
+        let endpointsPath = RouterPath("/keystone/v3/endpoints")
+        router.get(endpointsPath) { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
+                return Self.jsonResponse(status: .unauthorized, body: """
+                {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
+                """)
+            }
+            let serviceID = Self.queryParam("service_id", from: req)
+            let eps = await state.listEndpoints(serviceID: serviceID)
+            let json = eps.map { e in
+                "{\"id\":\"\(e.id)\",\"service_id\":\"\(e.serviceID)\",\"interface\":\"\(e.interface)\",\"region_id\":\"\(e.regionID)\",\"url\":\"\(e.url)\"}"
+            }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: "{\"endpoints\":[\(json)]}")
+        }
+    }
+
+    struct SvcWrap: Decodable { struct Svc: Decodable { let type: String; let name: String?; let description: String? }; let service: Svc? }
+    struct EPWrap: Decodable { struct EP: Decodable { let interface: String; let region_id: String?; let url: String }; let endpoint: EP? }
+
+    static func queryParam(_ name: String, from req: Request) -> String? {
+        req.uri.queryParameters[Substring(name)].map { String($0) }
     }
 
     static func readBody(_ req: Request) async throws -> String {

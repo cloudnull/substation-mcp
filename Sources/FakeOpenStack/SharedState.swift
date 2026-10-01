@@ -366,6 +366,26 @@ public actor FakeState {
     public private(set) var images: [FakeImage] = []
     public var extensions: Set<String> = ["provider", "qos", "security-group", "address-group"]
 
+    // MARK: - Keystone catalog (services + endpoints) for register-catalog
+
+    public struct FakeService: Sendable, Identifiable {
+        public let id: String
+        public let type: String
+        public let name: String
+        public let description: String
+    }
+
+    public struct FakeEndpoint: Sendable, Identifiable {
+        public let id: String
+        public let serviceID: String
+        public let interface: String
+        public let regionID: String
+        public let url: String
+    }
+
+    public private(set) var services: [FakeService] = []
+    public private(set) var endpoints: [FakeEndpoint] = []
+
     /// Delay applied before a server action settles to its final status
     /// (used by waiter tests to observe intermediate progress). Nil = instant.
     public var transitionDelay: Duration? = nil
@@ -581,6 +601,8 @@ public actor FakeState {
     private var snapIDCounter = 0
     private var backupIDCounter = 0
     private var imgIDCounter = 0
+    private var serviceIDCounter = 0
+    private var endpointIDCounter = 0
     private var _baseHost: String = "http://127.0.0.1:0"
 
     public var baseHost: String { _baseHost }
@@ -834,6 +856,41 @@ public actor FakeState {
             return nil
         }
         return token
+    }
+
+    // MARK: - Keystone catalog (services + endpoints)
+
+    public func listServices() -> [FakeService] { services }
+
+    public func serviceByType(_ type: String) -> FakeService? {
+        services.first { $0.type == type }
+    }
+
+    @discardableResult
+    public func createService(type: String, name: String, description: String) -> FakeService {
+        serviceIDCounter += 1
+        let id = "svc-\(serviceIDCounter)"
+        let svc = FakeService(id: id, type: type, name: name, description: description)
+        services.append(svc)
+        return svc
+    }
+
+    public func listEndpoints(serviceID: String? = nil) -> [FakeEndpoint] {
+        guard let serviceID else { return endpoints }
+        return endpoints.filter { $0.serviceID == serviceID }
+    }
+
+    public func endpoint(serviceID: String, interface: String, regionID: String) -> FakeEndpoint? {
+        endpoints.first { $0.serviceID == serviceID && $0.interface == interface && $0.regionID == regionID }
+    }
+
+    @discardableResult
+    public func createEndpoint(serviceID: String, interface: String, regionID: String, url: String) -> FakeEndpoint {
+        endpointIDCounter += 1
+        let id = "ep-\(endpointIDCounter)"
+        let ep = FakeEndpoint(id: id, serviceID: serviceID, interface: interface, regionID: regionID, url: url)
+        endpoints.append(ep)
+        return ep
     }
 
     // MARK: - Server CRUD
