@@ -1,21 +1,30 @@
-# Handoff: OpenStack MCP Phase 1 — Task 19 onwards
+# Handoff: OpenStack MCP Phase 1 — Task 20 onwards
 
 ## Current State
 
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Main**: up through Task 18. All tasks through 18 merged.
-- **Latest commit**: Task 18: OpenStack serve app (login page, token store, PRM, wiring, CLI)
-- **Tests**: 313 tests, all green (134 MCP server / 149 client / 30 HummingbirdMCP incl. 15 session + 1 soak)
+- **Main**: up through Task 19. All tasks through 19 merged.
+- **Latest commit**: Task 19: logging, redaction, audit, metrics completeness (c6ccd74)
+- **Tests**: 336 tests, all green (134 MCP server / 149 client / 31 HummingbirdMCP; 22 in OpenStackMCPTests: Redaction/Config/Audit + 1 metrics-emission)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 
 ## Immediate Next Step
 
-**Start Task 19: Logging, redaction, audit, metrics completeness** — see plan.
+**Start Task 20: CLI subcommands (check / access-rules / tools / register-catalog)** — see plan. Then Task 21 (deployment/README), 22 (integration + conformance). Final whole-branch review before finishing.
 
-## Task 18 Implementation Notes (new)
+## Task 19 Implementation Notes (new)
+
+### Observability (`Sources/OpenStackMCPServer/Observability/`, `Sources/OpenStackClient/Observability/`)
+- **Redaction**: `Redactor.redact(_ json:) -> String` — pure JSON->JSON mask (case-insensitive keys: Authorization, X-Auth-Token, X-Subject-Token, secret, password, adminpass, user_data, token, application_credential, appcredsecret -> `[REDACTED]`; recurses; non-JSON passes through). `RedactingJSONLogHandler` writes one redacted JSON object per record to stdout/stderr (no LoggingSystem.bootstrap). `makeLogger(level:format:sink:label:)` lives in the server lib; main.swift's old local `makeLogger` deleted.
+- **Audit**: one `.info` `category=audit` line per **mutating** tool call in `ToolRegistry.dispatch` (token id, project id, tool, outcome, request id, app_credential). Gated by `ToolRegistry.auditEnabled` (from `config.logAudit`). Read-only tools are not audited.
+- **Metrics** (`OSMetrics` in `OpenStackClient/Observability/Metrics.swift` — placed in the client so Transport/Cache and the server both emit without an import cycle): `bootstrapMetrics()` (swift-prometheus, call once at process start) + `MetricsCollector.render()` for `/metrics`. All 7 spec §12 metric names emitted: tool_calls_total + tool_duration_seconds (ToolRegistry), openstack_requests_total + openstack_request_duration_seconds (Transport), sessions_active (MCPRoute `onSessionStart`/`onSessionEnd`), auth_failures_total{reason} (`FailedAuthLimiter.onFailure` — `"rejected"`/`"rate_limited"`), cache_hits_total (Cache.get).
+- **/metrics** route (ServeApp) now returns `MetricsCollector.render()`.
+- **Config**: `ConfigLoader.resolve(cli:env:yaml:)` is a pure, unit-testable precedence resolver; key mapping fixed to section-aware + acronym-aware (`port`->`server__port`, `logLevel`->`log__level`, `readOnly`->`policy__read_only`, `publicURL`->`server__public_url`); env `OSMCP_` keys lowercased on strip.
+
+## Task 18 Implementation Notes
 
 ### Composition layer (`Sources/OpenStackMCPServer/`)
-- `ServeApp`: builds the full Hummingbird app — `MCPRoute` (from Task-17 `HummingbirdMCP`) + `healthz`/`readyz`, `/.well-known/oauth-protected-resource` (PRM), optional bearer-gated `/metrics` (Prometheus body deferred to Task 19), `/<endpoint>/login` (GET form + POST mint).
+- `ServeApp`: builds the full Hummingbird app — `MCPRoute` (from Task-17 `HummingbirdMCP`) + `healthz`/`readyz`, `/.well-known/oauth-protected-resource` (PRM), optional bearer-gated `/metrics` (Prometheus body completed in Task 19), `/<endpoint>/login` (GET form + POST mint).
 - `CloudWiring`: shared `Transport`/`Cache`/`TokenValidator`/`OpenStackClient` assembly, used by serve, stdio, and tests. `shutdown()` calls `transport.syncShutdown()`.
 - `AppTokenValidator: TokenValidating`: validates a presented token id via `TokenValidator.validate` (real Keystone GET, cached).
 - `TokenStore` (actor): per-session token binding — `bind(sessionID:elicitationID:token:expiry:)`, `token(for:sessionID:)`, `zeroize(sessionID:)`. Expired tokens are evicted on read.
