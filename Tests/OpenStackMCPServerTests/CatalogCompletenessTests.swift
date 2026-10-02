@@ -50,10 +50,12 @@ struct CatalogCompletenessTests {
             "image",
             // Object storage (2) — phase 2
             "container", "object",
+            // Key manager (2) — phase 2
+            "secret", "secret_container",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 37, "Expected 37 resources (10+10+9+5+1+2), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 39, "Expected 39 resources (10+10+9+5+1+2+2), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -334,6 +336,23 @@ struct CatalogCompletenessTests {
     @Test("objectStorage has 2 resources")
     func objectStorageCount() {
         #expect(catalog.resources(for: .objectStorage).count == 2, "Expected 2 object-storage resources, got \(catalog.resources(for: .objectStorage).count)")
+    }
+
+    @Test("keyManager has 2 resources")
+    func keyManagerCount() {
+        #expect(catalog.resources(for: .keyManager).count == 2, "Expected 2 key-manager resources, got \(catalog.resources(for: .keyManager).count)")
+    }
+
+    @Test("secret is pollable (status lifecycle) and has get_payload action")
+    func secretDescriptor() {
+        let d = catalog.descriptor("secret")!
+        #expect(d.service == .keyManager)
+        #expect(d.statusField == "status")
+        #expect(d.terminalStates.contains("active"))
+        #expect(d.actions.contains { $0.name == "get_payload" })
+        let sc = catalog.descriptor("secret_container")!
+        #expect(sc.service == .keyManager)
+        #expect(sc.statusField == nil)
     }
 
     @Test("container + object descriptors are well-formed")

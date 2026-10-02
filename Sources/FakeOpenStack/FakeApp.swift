@@ -24,6 +24,7 @@ public enum FakeApp {
         CinderFake.registerRoutes(router, state: state)
         GlanceFake.registerRoutes(router, state: state)
         SwiftFake.registerRoutes(router, state: state)
+        BarbicanFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()

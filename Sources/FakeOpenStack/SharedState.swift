@@ -390,9 +390,72 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Barbican (key manager) fake state
+
+    public struct FakeSecret: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var type: String
+        public var status: String
+        public var algorithm: String?
+        public var bitSize: Int?
+        public var mode: String?
+        public var isSecret: Bool
+        public var visibility: String
+        public var payload: String
+        public var payloadContentType: String
+
+        public init(
+            id: String,
+            projectID: String,
+            name: String? = nil,
+            type: String = "opaque",
+            status: String = "inactive",
+            algorithm: String? = nil,
+            bitSize: Int? = nil,
+            mode: String? = nil,
+            isSecret: Bool = true,
+            visibility: String = "private",
+            payload: String = "",
+            payloadContentType: String = "text/plain"
+        ) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.type = type
+            self.status = status
+            self.algorithm = algorithm
+            self.bitSize = bitSize
+            self.mode = mode
+            self.isSecret = isSecret
+            self.visibility = visibility
+            self.payload = payload
+            self.payloadContentType = payloadContentType
+        }
+    }
+
+    public struct FakeSecretContainer: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var type: String
+        public var secretRefs: [String]
+
+        public init(id: String, projectID: String, name: String? = nil, type: String = "generic", secretRefs: [String] = []) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.type = type
+            self.secretRefs = secretRefs
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
+    public private(set) var secrets: [FakeSecret] = []
+    public private(set) var secretContainers: [FakeSecretContainer] = []
     public private(set) var tokens: [String: FakeToken] = [:]
     public private(set) var servers: [FakeServer] = []
     public private(set) var flavors: [FakeFlavor] = []
@@ -666,6 +729,8 @@ public actor FakeState {
     private var volIDCounter = 0
     private var containerIDCounter = 0
     private var objectIDCounter = 0
+    private var secretIDCounter = 0
+    private var secretContainerIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -894,6 +959,22 @@ public actor FakeState {
         containers.append(FakeContainer(id: "ctn-1", projectID: "proj-one", name: "fake-bucket"))
         objectIDCounter = 1
         objects.append(FakeObject(id: "obj-1", projectID: "proj-one", container: "fake-bucket", name: "hello.txt", size: 11, contentType: "text/plain", data: Data("hello world".utf8)))
+
+        // Barbican (key manager) seed: one active opaque secret + one container.
+        secretIDCounter = 1
+        secrets.append(FakeSecret(
+            id: "sec-1",
+            projectID: "proj-one",
+            name: "fake-api-key",
+            type: "opaque",
+            status: "active",
+            isSecret: true,
+            visibility: "private",
+            payload: "ZmFrZS1zZWNyZXQtbWF0ZXJpYWw=",
+            payloadContentType: "text/plain"
+        ))
+        secretContainerIDCounter = 1
+        secretContainers.append(FakeSecretContainer(id: "sct-1", projectID: "proj-one", name: "fake-key-container", type: "generic", secretRefs: ["sec-1"]))
     }
 
     // MARK: - Token minting
@@ -1888,6 +1969,74 @@ public actor FakeState {
         let idx = objects.firstIndex { $0.projectID == projectID && $0.container == container && $0.name == name }
         guard let idx else { return false }
         objects.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Barbican (key manager) CRUD
+
+    public func listSecrets(projectID: String, name: String? = nil, type: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeSecret] {
+        var result = secrets.filter { $0.projectID == projectID }
+        if let name { result = result.filter { ($0.name ?? "").contains(name) } }
+        if let type { result = result.filter { $0.type == type } }
+        result.sort { ($0.name ?? "") < ($1.name ?? "") }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getSecret(id: String, projectID: String) -> FakeSecret? {
+        secrets.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createSecret(projectID: String, name: String?, type: String = "opaque", algorithm: String? = nil, bitSize: Int? = nil, mode: String? = nil, secret: String? = nil, visibility: String? = nil) -> FakeSecret {
+        secretIDCounter += 1
+        let s = FakeSecret(
+            id: "sec-\(secretIDCounter)",
+            projectID: projectID,
+            name: name,
+            type: type,
+            status: "active",
+            algorithm: algorithm,
+            bitSize: bitSize,
+            mode: mode,
+            isSecret: true,
+            visibility: visibility ?? "private",
+            payload: secret ?? "",
+            payloadContentType: "text/plain"
+        )
+        secrets.append(s)
+        return s
+    }
+
+    public func deleteSecret(id: String, projectID: String) -> Bool {
+        let idx = secrets.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        secrets.remove(at: idx)
+        return true
+    }
+
+    public func listSecretContainers(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeSecretContainer] {
+        var result = secretContainers.filter { $0.projectID == projectID }
+        if let name { result = result.filter { ($0.name ?? "").contains(name) } }
+        result.sort { ($0.name ?? "") < ($1.name ?? "") }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getSecretContainer(id: String, projectID: String) -> FakeSecretContainer? {
+        secretContainers.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func deleteSecretContainer(id: String, projectID: String) -> Bool {
+        let idx = secretContainers.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        secretContainers.remove(at: idx)
         return true
     }
 }

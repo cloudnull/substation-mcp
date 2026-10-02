@@ -21,6 +21,7 @@ public struct ResourceCatalog: Sendable {
             BlockStorageEntries.all,
             ImageEntries.all,
             ObjectStorageEntries.all,
+            KeyManagerEntries.all,
         ].flatMap { $0 }
         return ResourceCatalog(resources: all)
     }

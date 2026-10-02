@@ -110,6 +110,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Barbican key-manager client (phase 2).
+    public func keyManager(region: String? = nil) -> KeyManagerRegion {
+        KeyManagerService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

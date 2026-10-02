@@ -229,6 +229,18 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "object-store", status: 404, message: "Unknown object-storage resource: \(descriptor.name)")
             }
+        case .keyManager:
+            let r = await client.keyManager(region: region)
+            switch descriptor.name {
+            case "secret":
+                let s = try await r.getSecret(vt, id: id)
+                return try Self.encodeObject(s)
+            case "secret_container":
+                let c = try await r.getContainer(vt, id: id)
+                return try Self.encodeObject(c)
+            default:
+                throw OpenStackError(service: "key-manager", status: 404, message: "Unknown key-manager resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -333,6 +345,24 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "object-store", status: 404, message: "Unknown object-storage resource: \(descriptor.name)")
+            }
+        case .keyManager:
+            let r = await client.keyManager(region: region)
+            switch descriptor.name {
+            case "secret":
+                let secs = try await r.listSecrets(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(secs)
+                result["resource"] = .string("secret")
+                result["region"] = .string(region)
+                return result
+            case "secret_container":
+                let ctns = try await r.listContainers(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(ctns)
+                result["resource"] = .string("secret_container")
+                result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "key-manager", status: 404, message: "Unknown key-manager resource: \(descriptor.name)")
             }
         }
     }
@@ -472,6 +502,24 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "object-store", status: 400, message: "Unknown object-storage create: \(descriptor.name)")
             }
+        case .keyManager:
+            let r = await client.keyManager(region: region)
+            switch descriptor.name {
+            case "secret":
+                let spec = CreateSecretSpec(
+                    name: obj["name"]?.stringValue,
+                    type: obj["type"]?.stringValue ?? "opaque",
+                    algorithm: obj["algorithm"]?.stringValue,
+                    bit_size: obj["bit_size"]?.intValue,
+                    mode: obj["mode"]?.stringValue,
+                    secret: obj["secret"]?.stringValue,
+                    visibility: obj["visibility"]?.stringValue
+                )
+                let s = try await r.createSecret(vt, spec)
+                return try Self.encodeObject(s)
+            default:
+                throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager create: \(descriptor.name)")
+            }
         }
     }
 
@@ -524,6 +572,9 @@ public actor NameResolver {
         case .objectStorage:
             // Swift containers/objects have no partial-update path in phase 2.
             throw OpenStackError(service: "object-store", status: 501, message: "Object-storage resources are not updatable (re-create instead)")
+        case .keyManager:
+            // Barbican secrets/containers are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "key-manager", status: 501, message: "Key-manager resources are not updatable (re-create instead)")
         }
     }
 
@@ -591,6 +642,16 @@ public actor NameResolver {
                 try await r.deleteObject(vt, container: ctn, name: id)
             default:
                 throw OpenStackError(service: "object-store", status: 400, message: "Unknown object-storage delete: \(descriptor.name)")
+            }
+        case .keyManager:
+            let r = await client.keyManager(region: region)
+            switch descriptor.name {
+            case "secret":
+                try await r.deleteSecret(vt, id: id)
+            case "secret_container":
+                try await r.deleteContainer(vt, id: id)
+            default:
+                throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -747,6 +808,20 @@ public actor NameResolver {
         case .objectStorage:
             // Phase 2 Swift has no custom actions (protect/delete are verbs).
             throw OpenStackError(service: "object-store", status: 501, message: "Object-storage actions not supported (use delete for removal)")
+        case .keyManager:
+            let r = await client.keyManager(region: region)
+            switch descriptor.name {
+            case "secret":
+                switch action {
+                case "get_payload":
+                    let payload = try await r.getSecretPayload(vt, id: id)
+                    return try Self.encodeObject(payload)
+                default:
+                    throw OpenStackError(service: "key-manager", status: 400, message: "Unknown secret action: \(action)")
+                }
+            default:
+                throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager action resource: \(descriptor.name)")
+            }
         }
     }
 

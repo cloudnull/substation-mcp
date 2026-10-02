@@ -170,6 +170,7 @@ public struct Waiter: Sendable {
         case .image: return descriptor.name == "image"
         case .identity: return false
         case .objectStorage: return false
+        case .keyManager: return descriptor.name == "secret"
         }
     }
 
@@ -245,6 +246,13 @@ public struct Waiter: Sendable {
         case .objectStorage:
             // Swift containers/objects have no status a waiter can poll.
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on object-storage resources not supported")
+        case .keyManager:
+            if descriptor.name == "secret" {
+                let r = await client.keyManager(region: region)
+                let s = try await r.getSecret(vt, id: id)
+                return ["status": .string(s.status)]
+            }
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
         }
     }
 
