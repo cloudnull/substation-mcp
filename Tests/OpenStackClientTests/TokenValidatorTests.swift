@@ -224,6 +224,74 @@ struct TokenValidatorTests {
     }
 }
 
+@Suite("LoginMinter")
+struct LoginMinterTests {
+    // The Transport already sends `Content-Type: application/json` on every
+    // request. If a caller ALSO passes it as an extraHeader, the request
+    // carries TWO Content-Type headers, which Keystone 3.14 rejects with 400
+    // ("Expecting to find application/json in Content-Type header"). The mint
+    // must therefore send exactly ONE.
+    @Test func mintSendsExactlyOneContentType() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        let contentTypeCount = ManagedAtomic(0)
+        let bodyHasAppCred = ManagedAtomic(0)
+        server.addHandler("/v3/auth/tokens") { req in
+            contentTypeCount.store(
+                req.rawHeaders
+                    .split(separator: "\n")
+                    .filter { $0.lowercased().hasPrefix("content-type:") }.count,
+                ordering: .relaxed
+            )
+            if String(decoding: req.body, as: UTF8.self).contains("application_credential") {
+                bodyHasAppCred.store(1, ordering: .relaxed)
+            }
+            return (201, #"{"token":{"id":"tok-mint","expires_at":"2026-10-02T13:03:34.000000Z","project":{"id":"p","name":"p"},"user":{"id":"u","name":"u"},"roles":["admin"],"catalog":[]}}"#, [("Content-Type", "application/json")])
+        }
+
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        _ = try await minter.mint(method: .applicationCredential(id: "ac-1", secret: Array("s".utf8).map { Int8($0) }))
+
+        let count = contentTypeCount.load(ordering: .relaxed)
+        #expect(count == 1, "mint must send exactly one Content-Type header, got \(count)")
+        #expect(bodyHasAppCred.load(ordering: .relaxed) == 1, "mint body must be the app-cred form")
+    }
+
+    @Test func mintThrowsOn400() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        server.addHandler("/v3/auth/tokens") { _ in
+            (400, #"{"error":{"code":400,"message":"bad","title":"Bad Request"}}"#, [("Content-Type", "application/json")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        do {
+            _ = try await minter.mint(method: .applicationCredential(id: "ac-1", secret: Array("s".utf8).map { Int8($0) }))
+            #expect(false, "should have thrown 400")
+        } catch let err as OpenStackError {
+            #expect(err.status == 400)
+        }
+    }
+}
+
 @Suite("ScopeDerivation")
 struct ScopeDerivationTests {
     @Test func memberGetsRead() {

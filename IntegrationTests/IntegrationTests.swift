@@ -77,13 +77,25 @@ private func makeRig(cloud: CloudEntry, logger: Logger) async throws -> ItRig? {
     }, logger: logger)
     let validator = TokenValidator(transport: transport, cache: cache, servedProjects: [])
     let client = OpenStackClient(cloud: cloud, transport: transport, cache: cache, validator: validator, logger: logger)
-    guard let token = try await mintToken(cloud: cloud, transport: transport, logger: logger) else {
+    // The transport's HTTPClient must be shut down on EVERY path that does not
+    // hand a live rig to the caller. If mintToken THROWS (as opposed to
+    // returning nil), the guard-else below is skipped and the transport would
+    // be released unshut-down; AsyncHTTPClient then traps in its deinit
+    // ("Client not shut down before the deinit") and kills the test process.
+    // So wrap the fallible setup in do/catch and always shut down before
+    // returning/throwing without a rig.
+    do {
+        guard let token = try await mintToken(cloud: cloud, transport: transport, logger: logger) else {
+            transport.syncShutdown()
+            return nil
+        }
+        let vt = ValidatedToken(token: token, scopes: deriveScopes(roles: token.roles))
+        let region = cloud.regionName ?? token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        return ItRig(client: client, vt: vt, region: region, transport: transport)
+    } catch {
         transport.syncShutdown()
-        return nil
+        throw error
     }
-    let vt = ValidatedToken(token: token, scopes: deriveScopes(roles: token.roles))
-    let region = cloud.regionName ?? token.catalog.first?.endpoints.first?.region ?? "RegionOne"
-    return ItRig(client: client, vt: vt, region: region, transport: transport)
 }
 
 @Suite("OpenStack MCP integration (opt-in, spec §14.6)", .timeLimit(.minutes(15)))

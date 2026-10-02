@@ -71,6 +71,15 @@ public actor Transport {
         try? client.syncShutdown()
     }
 
+    // Safety net: if a Transport is released without an explicit shutdown (a
+    // leak), AsyncHTTPClient traps in its own deinit ("Client not shut down
+    // before the deinit"), which kills the whole process — including an opt-in
+    // test runner. Draining here turns a hard crash into a logged leak so the
+    // underlying bug surfaces as an error, not a SIGTRAP.
+    deinit {
+        try? client.syncShutdown()
+    }
+
     public func request(
         method: String,
         service: String,

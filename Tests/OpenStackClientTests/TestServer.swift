@@ -15,6 +15,10 @@ final class TestServer: @unchecked Sendable {
         let method: String
         let path: String
         let headers: [String: String]
+        /// The raw request-header block (newline-joined "Name: value" lines).
+        /// Preserved so tests can count DUPLICATE headers, which the collapsed
+        /// `headers` dict above silently drops.
+        let rawHeaders: String
         let body: Data
     }
 
@@ -84,8 +88,9 @@ final class TestServer: @unchecked Sendable {
                         headers[name] = value
                     }
                 }
+                let rawHeaders = lines.dropFirst().joined(separator: "\n")
 
-                let req = TestServerRequest(method: method, path: path, headers: headers, body: bodyData)
+                let req = TestServerRequest(method: method, path: path, headers: headers, rawHeaders: rawHeaders, body: bodyData)
                 let server = self.server
                 let channel = context.channel
 

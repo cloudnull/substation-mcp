@@ -132,9 +132,11 @@ public actor LoginMinter {
         //  - `tokenOverride: ""` suppresses the `X-Auth-Token` header (a
         //    bogus token there makes Keystone reject the mint) instead of
         //    falling back to the standing token source;
-        //  - an explicit `Content-Type` is sent via `extraHeaders` so the
-        //    body is always presented as JSON (the transport default is JSON
-        //    too, but being explicit keeps the mint unambiguous);
+        //  - the Transport already sends `Content-Type: application/json` on
+        //    every request, so we must NOT add it again as an extraHeader —
+        //    doing so produces a DUPLICATE Content-Type header, which Keystone
+        //    3.14 rejects with 400 "Expecting to find application/json in
+        //    Content-Type header";
         //  - POSTs are not retried by the transport, so a transient network
         //    error is surfaced rather than re-sent (minting twice would
         //    create two tokens).
@@ -143,8 +145,7 @@ public actor LoginMinter {
             service: "keystone",
             path: "/v3/auth/tokens",
             body: body,
-            tokenOverride: "",
-            extraHeaders: [("Content-Type", "application/json")]
+            tokenOverride: ""
         )
 
         guard status == 201 else {
