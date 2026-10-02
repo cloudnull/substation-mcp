@@ -1,0 +1,89 @@
+{{- if .Values.gateway.enabled }}
+{{- $gw := .Values.gateway -}}
+{{- $fullname := include "openstack-mcp.fullname" . -}}
+{{- $ns := include "openstack-mcp.namespace" . -}}
+---
+{{- if $gw.createGateway }}
+# Creates the Gateway when the operator has not already provisioned one.
+# `gatewayClassName` must match an existing GatewayClass in the cluster
+# (Envoy: `envoy-gateway`; Poundcake: `poundcake` — see Genestack docs).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ $gw.gatewayName }}
+  namespace: {{ $gw.namespace }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ $gw.gatewayClassName }}
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "{{ $gw.fqdn }}"
+      # TLS cert: the operator must ensure a certificate for $gw.fqdn is
+      # available to this listener (cert-manager ClusterIssuer, or a
+      # manually-managed secret via `tls.certificateRef`).
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $gw.gatewayName }}-tls   # ← operator must create/point this
+            group: ""
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "{{ $gw.fqdn }}"
+---
+{{- end }}
+# HTTPRoute: routes traffic for $gw.fqdn to the openstack-mcp Service.
+#
+# CRITICAL FOR SSE: the openstack-mcp server streams Server-Sent Events on
+# /v1 and /mcp. The Gateway MUST NOT buffer responses on these paths.
+#
+# Envoy Gateway: set this annotation on the HTTPRoute (or on the listener)
+# to disable response buffering:
+#   gateway.envoyproxy.io/disable-route-caching: "true"
+#   gateway.envoyproxy.io/override-backend-protocol: "HTTP"
+#
+# Poundcake: response buffering is off by default for streaming routes.
+#
+# The operator should verify their Gateway's buffering config matches.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullname }}-route
+  namespace: {{ $ns }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+  annotations:
+    # Envoy-specific: disable route caching + buffer for SSE.
+    {{- if eq $gw.gatewayClassName "envoy-gateway" }}
+    gateway.envoyproxy.io/disable-route-caching: "true"
+    {{- end }}
+spec:
+  hostnames:
+    - "{{ $gw.fqdn }}"
+  parents:
+    - name: {{ $gw.gatewayName }}
+      namespace: {{ $gw.namespace }}
+      {{- if $gw.useExistingListener }}
+      sectionName: {{ $gw.listenerName }}
+      {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Forwarded-Proto
+                value: https
+      backendRefs:
+        - name: {{ $fullname }}
+          namespace: {{ $ns }}
+          port: {{ .Values.service.port }}
+          weight: 1
+{{- end }}

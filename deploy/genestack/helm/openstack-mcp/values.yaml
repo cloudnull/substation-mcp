@@ -1,0 +1,208 @@
+# Default values for the openstack-mcp Helm chart (Genestack add-on).
+#
+# Override via:
+#   - base-helm-configs/openstack-mcp/openstack-mcp-helm-overrides.yaml  (baseline)
+#   - /etc/genestack/helm-configs/global_overrides/*.yaml                (global)
+#   - /etc/genestack/helm-configs/openstack-mcp/*.yaml                   (custom, highest precedence)
+#   - helm --set flags in install-openstack-mcp.sh
+#
+# All server-side config that the openstack-mcp binary reads from its YAML
+# config file lives under `config:` below. The chart renders `config.*`
+# into /etc/openstack-mcp/config.yaml via the ConfigMap. Env vars
+# (OSMCP_*) remain available as a higher-precedence override layer if set
+# in `env` below.
+
+# ── Image ──────────────────────────────────────────────────────────────────────
+image:
+  # Cluster-registry path to the built image (operator builds from deploy/Dockerfile
+  # and pushes to their registry before install).
+  repository: registry.example.com/openstack/openstack-mcp
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Optional imagePullSecrets (name of a k8s Secret in the openstack namespace).
+imagePullSecrets: []
+#  - name: my-registry-cred
+
+# ── Replicas / scheduling ──────────────────────────────────────────────────────
+replicas: 1
+# resourceSpreadConstraints / topologySpreadConstraints left unset (single-AZ is fine
+# for a stateless token-per-request proxy).
+
+# ── Resources ──────────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "500m"
+    memory: 512Mi
+
+# ── Security ───────────────────────────────────────────────────────────────────
+# Container runs as uid 10001 (matches deploy/Dockerfile + rootfs tarball).
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# ── Probes ─────────────────────────────────────────────────────────────────────
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 3
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+# ── Port ───────────────────────────────────────────────────────────────────────
+containerPort: 8080
+service:
+  type: ClusterIP
+  port: 8080
+
+# ── Server config (rendered to /etc/openstack-mcp/config.yaml) ─────────────────
+config:
+  server:
+    host: 0.0.0.0
+    port: 8080
+    endpoint: /v1
+    # MCP endpoint path. /mcp is retained as an alias by the server.
+    publicUrl: https://openstack-mcp.example.com
+    allowedOrigins:
+      - "*"
+    maxBodyBytes: 1048576
+    metricsToken: ""   # set to gate /metrics with a bearer token
+  auth:
+    profile: keystone_token
+    # keystoneUrl is derived from the Keystone catalog at runtime (empty = use catalog).
+    keystoneUrl: ""
+    tokenCacheTtl: 60s
+    failedAuthPerMinute: 10
+    loginPageEnabled: true
+  clouds:
+    # Name of the default cloud in clouds.yaml (see cloudsClouds below).
+    default: mycloud
+    # Names a session may select (empty = all).
+    allowed: []
+    # Path to clouds.yaml (mounted).
+    file: /etc/openstack/clouds.yaml
+  session:
+    idleTtl: 30m
+    maxLifetime: 12h
+    maxSessions: 500
+  policy:
+    read_only: false
+    deny_resources:
+      - project
+      - user
+      - group
+      - role
+      - role_assignment
+      - domain
+    max_list_limit: 200
+    max_calls_per_minute: 120
+  client:
+    requestTimeout: 60s
+  cache:
+    # Per-resource TTLs (empty = server defaults).
+    ttl: {}
+  log:
+    level: info
+    format: json
+    audit: true
+
+# ── clouds.yaml (rendered to /etc/openstack/clouds.yaml) ───────────────────────
+# The operator must fill in `auth` for their cloud. The `clouds` section of the
+# openstack-mcp binary reads this file.
+#
+# Note: `clouds` here is the *OpenStack clouds.yaml* content (the file format
+# documented at https://docs.openstack.org/cli-reference/project/clouds-yaml.html),
+# NOT the `config.clouds` section above (which tells the binary which cloud
+# to use by default).
+cloudsClouds:
+  cloud_name:
+    mycloud:
+      auth_type: application_credential
+      auth:
+        # Fill these in via the appCred secret (see `appCred` below) OR inline.
+        # If using the secret, leave `user_id`/`secret` empty and the chart
+        # will inject them from the secret into the config file at mount time
+        # (via a sidecar / init — see templates/notes).
+        user_id: ""
+        secret: ""
+        auth_url: "https://keystone.example.com/v3"
+        region_name: "RegionOne"
+      interface: public
+      identity_interface: admin
+      verify: true
+
+# ── Application credential (optional; powers /v1/login URL-mode page) ─────────
+# Set `id` + `secret` to create an openstack-mcp-appcred Secret and mount it
+# as env vars (OS_APPLICATION_CREDENTIAL_ID / OS_APPLICATION_CREDENTIAL_SECRET).
+# If the login page is disabled (config.auth.loginPageEnabled: false), this
+# can be left empty.
+appCred:
+  enabled: false
+  id: ""
+  secret: ""
+
+# ── Extra env vars (OSMCP_* form, higher precedence than the config file) ─────
+env: []
+#  - name: OSMCP_LOG__LEVEL
+#    value: "debug"
+
+# ── Gateway API (optional external exposure) ───────────────────────────────────
+# When enabled, the chart renders an HTTPRoute (and, if `createGateway` is true,
+# a Gateway) that routes traffic for `fqdn` to the openstack-mcp Service.
+# TLS terminates at the Gateway. The operator must ensure the Gateway listener
+# has a certificate for `fqdn` (cert-manager or manual).
+#
+# CRITICAL: disable response buffering on the /v1 and /mcp routes for SSE.
+# In Envoy Gateway this is done via the listener's `hostname` + a route-level
+# `backendRefs` + the Envoy Gateway's `EnvoyProxy` resource setting
+# `envoy.filters.http.buffer: { max_request_bytes: 0 }` OR by using the
+# `disableRouteCaching` annotation. See templates/gateway.yaml + README.
+gateway:
+  enabled: false
+  createGateway: false        # true if the operator has NOT already created a Gateway
+  fqdn: openstack-mcp.example.com
+  namespace: openstack         # namespace of the Gateway (cross-ns routing supported)
+  gatewayName: openstack-mcp-gateway
+  gatewayClassName: envoy-gateway   # match the operator's GatewayClass
+  listenerName: openstack-mcp
+  # If the operator's existing Gateway already has a listener for the wildcard
+  # domain (e.g. *.example.com), set `useExistingListener: true` and the chart
+  # will NOT create a new listener — it will only create the HTTPRoute.
+  useExistingListener: false
+
+# ── Labels / annotations ───────────────────────────────────────────────────────
+labels: {}
+annotations: {}
+podLabels: {}
+podAnnotations: {}
+
+# ── ServiceAccount ─────────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  name: openstack-mcp
+  annotations: {}
+
+# ── Node selector / tolerations / affinity ─────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}

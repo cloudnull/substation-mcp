@@ -1,0 +1,30 @@
+# Renders the openstack-mcp server YAML config + the OpenStack clouds.yaml.
+#
+# Two ConfigMaps:
+#   <fullname>-config  → /etc/openstack-mcp/config.yaml  (server config)
+#   <fullname>-clouds  → /etc/openstack/clouds.yaml      (OpenStack clouds)
+#
+# The Deployment mounts both. The `checksum/config` pod annotation (in
+# deployment.yaml) triggers a rolling restart when either ConfigMap changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openstack-mcp.fullname" . }}-config
+  namespace: {{ include "openstack-mcp.namespace" . }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openstack-mcp.fullname" . }}-clouds
+  namespace: {{ include "openstack-mcp.namespace" . }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+data:
+  clouds.yaml: |
+    clouds:
+      {{- toYaml .Values.cloudsClouds | nindent 6 }}
