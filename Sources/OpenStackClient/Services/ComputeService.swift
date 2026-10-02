@@ -56,6 +56,43 @@ public struct ComputeRegion: Sendable {
         self.serviceType = serviceType
     }
 
+    /// The version root the catalog URL should carry (empty = catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root). Nova's root is its own
+    /// base, so empty.
+    private let serviceRoot: String = ""
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (i.e. it starts
+    /// with `basePath`); the leading `basePath` is replaced by the resolved
+    /// service-root prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: serviceType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     // MARK: - Server operations
 
     public func listServers(
@@ -83,13 +120,7 @@ public struct ComputeRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/servers",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers", query: query)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServerList: Decodable {
@@ -120,13 +151,8 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getServer(_ vt: ValidatedToken, id: String) async throws -> Server {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/servers/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/\(id)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServerResp: Decodable {
@@ -183,13 +209,7 @@ public struct ComputeRegion: Sendable {
         }
 
         let body = spec.body().data(using: .utf8)!
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers",
-            body: body,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers", body: body)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         // Invalidate server list cache
@@ -212,13 +232,7 @@ public struct ComputeRegion: Sendable {
             query.append(URLQueryItem(name: "force", value: "true"))
         }
 
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "compute",
-            path: "\(basePath)/servers/\(id)",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/servers/\(id)", query: query)
         // Nova returns 200, 202, or 204 for delete
         if ![200, 202, 204].contains(result.status) {
             try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
@@ -231,13 +245,7 @@ public struct ComputeRegion: Sendable {
         let region = try resolveRegion(vt)
         let body = action.body().data(using: .utf8)!
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/action",
-            body: body,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/action", body: body)
 
         // Some actions return 202 with no body, some return a server
         if result.status == 202 || result.status == 204 {
@@ -258,16 +266,10 @@ public struct ComputeRegion: Sendable {
     /// scoped to the requesting identity (Nova-side), so it is returned only to
     /// the session that asked.
     public func getConsole(_ vt: ValidatedToken, _ serverID: String, type: String) async throws -> Console {
-        let _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"getVNCConsole\":{\"type\":\"\(type)\"}}".data(using: .utf8)!
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/action",
-            body: body,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/action", body: body)
 
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
@@ -280,16 +282,10 @@ public struct ComputeRegion: Sendable {
 
     /// Fetch serial console output (last `lines` lines) for a server.
     public func getConsoleOutput(_ vt: ValidatedToken, _ serverID: String, lines: Int) async throws -> String {
-        let _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let body = "{\"getConsoleOutput\":{\"length\":\(lines)}}".data(using: .utf8)!
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/action",
-            body: body,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/action", body: body)
 
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
@@ -308,12 +304,7 @@ public struct ComputeRegion: Sendable {
             return cached
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/flavors",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/flavors")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct FlavorList: Decodable {
@@ -325,13 +316,8 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getFlavor(_ vt: ValidatedToken, id: String) async throws -> Flavor {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/flavors/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/flavors/\(id)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct FlavorResp: Decodable {
@@ -344,13 +330,8 @@ public struct ComputeRegion: Sendable {
     // MARK: - Keypairs
 
     public func listKeypairs(_ vt: ValidatedToken) async throws -> [KeyPair] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-keypairs",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-keypairs")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct KeyPairList: Decodable {
@@ -366,13 +347,7 @@ public struct ComputeRegion: Sendable {
             ? "{\"keypair\":{\"name\":\"\(name)\",\"public_key\":\"\(publicKey!)\"}}"
             : "{\"keypair\":{\"name\":\"\(name)\"}}"
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/os-keypairs",
-            body: keypairJSON.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/os-keypairs", body: keypairJSON.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct KeyPairResp: Decodable {
@@ -385,12 +360,7 @@ public struct ComputeRegion: Sendable {
 
     public func deleteKeyPair(_ vt: ValidatedToken, name: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "compute",
-            path: "\(basePath)/os-keypairs/\(name)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/os-keypairs/\(name)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "keypair", tokenID: vt.token.id, region: region)
     }
@@ -398,13 +368,8 @@ public struct ComputeRegion: Sendable {
     // MARK: - Server groups
 
     public func listServerGroups(_ vt: ValidatedToken) async throws -> [ServerGroup] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-server-groups",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-server-groups")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServerGroupList: Decodable {
@@ -417,13 +382,8 @@ public struct ComputeRegion: Sendable {
     // MARK: - Availability zones
 
     public func listAvailabilityZones(_ vt: ValidatedToken) async throws -> [AvailabilityZone] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-availability-zone",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-availability-zone")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct AZList: Decodable {
@@ -436,13 +396,8 @@ public struct ComputeRegion: Sendable {
     // MARK: - Hypervisors (admin)
 
     public func listHypervisors(_ vt: ValidatedToken) async throws -> [Hypervisor] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-hypervisors",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct HypervisorList: Decodable {
@@ -453,13 +408,8 @@ public struct ComputeRegion: Sendable {
     }
 
     public func getHypervisor(_ vt: ValidatedToken, host: String) async throws -> Hypervisor {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-hypervisors/\(host)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/\(host)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct HypervisorResp: Decodable {
@@ -472,13 +422,8 @@ public struct ComputeRegion: Sendable {
     // MARK: - Compute services (admin)
 
     public func listComputeServices(_ vt: ValidatedToken) async throws -> [ComputeServiceInfo] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-services",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-services")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServiceList: Decodable {
@@ -491,14 +436,9 @@ public struct ComputeRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuotaSet(_ vt: ValidatedToken) async throws -> QuotaSet {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: "\(basePath)/os-quota-sets/\(projectID)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-quota-sets/\(projectID)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct QuotaSetResp: Decodable {
@@ -526,13 +466,7 @@ public struct ComputeRegion: Sendable {
         parts.append("\"floating_ips\":\(quotas.floatingIPs)")
 
         let body = "{\"quota_set\":{\(parts.joined(separator: ","))}}"
-        let result = try await transport.request(
-            method: "PUT",
-            service: "compute",
-            path: "\(basePath)/os-quota-sets/\(projectID)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/os-quota-sets/\(projectID)", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct QuotaSetResp: Decodable {
@@ -558,25 +492,14 @@ public struct ComputeRegion: Sendable {
         if let deleteOnTermination { parts.append("\"delete_on_termination\":\(deleteOnTermination ? "true" : "false")") }
 
         let body = "{\"os-attach-volume\":{\(parts.joined(separator: ","))}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/os-volume_attachments",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/os-volume_attachments", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
     }
 
     public func detachVolume(_ vt: ValidatedToken, serverID: String, attachmentID: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/os-volume_attachments/\(attachmentID)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/servers/\(serverID)/os-volume_attachments/\(attachmentID)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
     }
@@ -599,13 +522,7 @@ public struct ComputeRegion: Sendable {
         if let fixedIP { parts.append("\"fixed_ip\":\"\(fixedIP)\"") }
 
         let body = "{\"os-interface-attach\":{\(parts.joined(separator: ","))}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/os-interface-attach",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/os-interface-attach", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
     }
@@ -613,13 +530,7 @@ public struct ComputeRegion: Sendable {
     public func detachInterface(_ vt: ValidatedToken, serverID: String, portID: String) async throws {
         let region = try resolveRegion(vt)
         let body = "{\"os-interface-detach\":{\"port\":\"\(portID)\"}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(serverID)/os-interface-detach",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/os-interface-detach", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
     }
@@ -648,13 +559,7 @@ public struct ComputeRegion: Sendable {
         }
 
         let body = "{\"server\":{\(parts.joined(separator: ","))}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "compute",
-            path: "\(basePath)/servers/\(id)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(id)", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
 
@@ -677,12 +582,7 @@ public struct ComputeRegion: Sendable {
             }
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "compute",
-            path: basePath,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: basePath)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct VersionDoc: Decodable {

@@ -54,7 +54,7 @@ public actor TokenValidator {
             )
         }
 
-        guard let token = try? Token.decode(from: body) else {
+        guard let token = try? Token.decode(from: body, tokenID: tokenID) else {
             throw OpenStackError(
                 service: "keystone",
                 status: 500,
@@ -207,7 +207,13 @@ public actor LoginMinter {
 
 extension Token {
     /// Decode a Token from a Keystone token response body.
-    public static func decode(from data: Data) throws -> Token {
+    ///
+    /// - Parameter tokenID: the token as presented on the request (the
+    ///   `X-Auth-Token` / bearer). Keystone's whoami body omits `token.id`
+    ///   (it is the request token, not a response field), so when the body has
+    ///   no id we fall back to this — NOT "unknown" — so downstream calls can
+    ///   send the real token upstream.
+    public static func decode(from data: Data, tokenID: String? = nil) throws -> Token {
         struct RawDomain: Codable {
             let id: String
             let name: String?
@@ -287,8 +293,10 @@ extension Token {
 
         // Keystone omits the token `id` from the whoami body (it is the request
         // token, not a field in the response) and omits a top-level `domain` on
-        // project-scoped tokens. Synthesize sensible values for both.
-        let id = raw.id ?? "unknown"
+        // project-scoped tokens. Synthesize sensible values for both. The id
+        // falls back to the presented tokenID (the real token to send upstream),
+        // never "unknown", so data-plane calls carry a valid token.
+        let id = raw.id ?? tokenID ?? "unknown"
         let domain = raw.domain
             .map { IdentityRef(id: $0.id, name: $0.name) }
             ?? IdentityRef(id: user.domain?.id ?? "default", name: user.domain?.name)

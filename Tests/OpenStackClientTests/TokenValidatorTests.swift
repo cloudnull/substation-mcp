@@ -63,8 +63,9 @@ struct TokenValidatorTests {
         }
         """
         let token = try Token.decode(from: Data(body.utf8))
-        // No `id` in the body: decoded to a placeholder, not a throw.
-        #expect(!token.id.isEmpty)
+        // No `id` in the body and no tokenID passed: decoded to a placeholder,
+        // not a throw.
+        #expect(token.id == "unknown")
         #expect(token.project.id == "proj-one")
         #expect(token.project.name == "admin")
         #expect(token.user.name == "admin")
@@ -73,6 +74,46 @@ struct TokenValidatorTests {
         #expect(token.roles.contains("admin"))
         #expect(token.catalog.count == 1)
         #expect(token.catalog.first?.endpoints.first?.region == "SAT0")
+    }
+
+    /// Rackspace/Keystone whoami bodies omit `token.id`. The decode must fall
+    /// back to the presented `tokenID` (the real token to send upstream), not
+    /// "unknown" — otherwise data-plane calls carry no valid token and 401.
+    @Test func decodeMissingID_fallsBackToPresentedTokenID() throws {
+        let body = """
+        {
+          "token": {
+            "expires_at": "2026-10-02T13:03:34.000000Z",
+            "is_domain": false,
+            "user": {"id": "user-1", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "project": {"id": "proj-one", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "roles": ["member"],
+            "catalog": []
+          }
+        }
+        """
+        let token = try Token.decode(from: Data(body.utf8), tokenID: "the-presented-token")
+        #expect(token.id == "the-presented-token")
+        #expect(token.project.id == "proj-one")
+    }
+
+    /// When the body DOES carry an id (e.g. a minted token), the id wins over
+    /// the tokenID fallback.
+    @Test func decodeWithID_prefersBodyID() throws {
+        let body = """
+        {
+          "token": {
+            "id": "body-id-wins",
+            "expires_at": "2026-10-02T13:03:34.000000Z",
+            "user": {"id": "user-1", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "project": {"id": "proj-one", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "roles": ["member"],
+            "catalog": []
+          }
+        }
+        """
+        let token = try Token.decode(from: Data(body.utf8), tokenID: "the-presented-token")
+        #expect(token.id == "body-id-wins")
     }
 
     // A token may carry roles as plain strings (the legacy/fixture shape) or as

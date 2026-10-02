@@ -16,6 +16,46 @@ public struct ShareRegion: Sendable {
     let serviceType: String
     let defaultRegion: String?
 
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = ""
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "sharev2"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil,
+        extraHeaders: [(String, String)] = []
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            extraHeaders: extraHeaders,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "sharev2", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
@@ -34,15 +74,15 @@ public struct ShareRegion: Sendable {
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "share", suffix: suffix)
         if let cached = try await cache.get(key, ttl: .seconds(120), as: [Share].self) { return cached }
         struct Envelope: Decodable { let shares: [Share] }
-        let body = try await fetchBody(vt, path: "\(basePath)/shares", filters: filters, limit: limit, marker: marker)
+        let body = try await fetchBody(vt, region: region, path: "\(basePath)/shares", filters: filters, limit: limit, marker: marker)
         let items = try JSONDecoder().decode(Envelope.self, from: body).shares
         await cache.put(key, ttl: .seconds(120), value: items)
         return items
     }
 
     public func getShare(_ vt: ValidatedToken, id: String) async throws -> Share {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(method: "GET", service: "sharev2", path: "\(basePath)/shares/\(id)", tokenOverride: vt.token.id)
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/shares/\(id)")
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -51,7 +91,7 @@ public struct ShareRegion: Sendable {
 
     public func createShare(_ vt: ValidatedToken, _ spec: CreateShareSpec) async throws -> Share {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(method: "POST", service: "sharev2", path: "\(basePath)/shares", body: Data(spec.body().utf8), tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/shares", body: Data(spec.body().utf8))
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -61,7 +101,7 @@ public struct ShareRegion: Sendable {
 
     public func deleteShare(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(method: "DELETE", service: "sharev2", path: "\(basePath)/shares/\(id)", tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/shares/\(id)")
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -71,13 +111,13 @@ public struct ShareRegion: Sendable {
     // MARK: - Share access
 
     public func listShareAccess(_ vt: ValidatedToken, shareID: String, filters: [String: String] = [:], limit: Int? = nil, marker: String? = nil) async throws -> [ShareAccess] {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         struct Envelope: Decodable { let share_access_list: [ShareAccess] }
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
-        let result = try await transport.request(method: "GET", service: "sharev2", path: "\(basePath)/shares/\(shareID)/access", query: query, tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/shares/\(shareID)/access", query: query)
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -85,8 +125,8 @@ public struct ShareRegion: Sendable {
     }
 
     public func getShareAccess(_ vt: ValidatedToken, shareID: String, id: String) async throws -> ShareAccess {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(method: "GET", service: "sharev2", path: "\(basePath)/shares/\(shareID)/access/\(id)", tokenOverride: vt.token.id)
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/shares/\(shareID)/access/\(id)")
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -95,7 +135,7 @@ public struct ShareRegion: Sendable {
 
     public func createShareAccess(_ vt: ValidatedToken, _ spec: CreateShareAccessSpec) async throws -> ShareAccess {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(method: "POST", service: "sharev2", path: "\(basePath)/shares/\(spec.share_id)/access", body: Data(spec.body().utf8), tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/shares/\(spec.share_id)/access", body: Data(spec.body().utf8))
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -105,7 +145,7 @@ public struct ShareRegion: Sendable {
 
     public func deleteShareAccess(_ vt: ValidatedToken, shareID: String, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(method: "DELETE", service: "sharev2", path: "\(basePath)/shares/\(shareID)/access/\(id)", tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/shares/\(shareID)/access/\(id)")
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }
@@ -114,12 +154,12 @@ public struct ShareRegion: Sendable {
 
     // MARK: - Helpers
 
-    private func fetchBody(_ vt: ValidatedToken, path: String, filters: [String: String], limit: Int?, marker: String?) async throws -> Data {
+    private func fetchBody(_ vt: ValidatedToken, region: String, path: String, filters: [String: String], limit: Int?, marker: String?) async throws -> Data {
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
-        let result = try await transport.request(method: "GET", service: "sharev2", path: path, query: query, tokenOverride: vt.token.id)
+        let result = try await req(vt, region, method: "GET", path: path, query: query)
         guard (200...299).contains(result.status) else {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "sharev2", requestID: result.requestID, hasAccessRules: false)
         }

@@ -93,7 +93,14 @@ public actor Transport {
         /// - non-empty: send that token (e.g. token validation).
         tokenOverride: String? = nil,
         extraHeaders: [(String, String)] = [],
-        timeoutOverride: Duration? = nil
+        timeoutOverride: Duration? = nil,
+        /// When set, the request is sent to this base URL instead of the
+        /// cloud's `authURL`. Used for per-service endpoint resolution from the
+        /// token's service catalog on multi-endpoint clouds (e.g. Rackspace,
+        /// where nova/glance/neutron each live on separate hosts). `path` is
+        /// appended to this base, so callers pass a path relative to the
+        /// service root.
+        overrideBase: URL? = nil
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let requestID = UUID().uuidString
         let token: String?
@@ -104,7 +111,8 @@ public actor Transport {
         }
 
         let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
-        var url = baseURL.appendingPathComponent(cleanPath)
+        let effectiveBase = overrideBase ?? baseURL
+        var url = effectiveBase.appendingPathComponent(cleanPath)
         if !query.isEmpty {
             if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 comps.queryItems = query

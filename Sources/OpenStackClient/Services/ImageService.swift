@@ -11,6 +11,44 @@ public struct ImageRegion: Sendable {
     let serviceType: String
     let defaultRegion: String?
 
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = ""
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "image"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "image", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
@@ -42,13 +80,7 @@ public struct ImageRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "image",
-            path: "\(basePath)/images",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/images", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -60,13 +92,8 @@ public struct ImageRegion: Sendable {
     }
 
     public func getImage(_ vt: ValidatedToken, id: String) async throws -> Image {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "image",
-            path: "\(basePath)/images/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/images/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -76,13 +103,7 @@ public struct ImageRegion: Sendable {
 
     public func createImage(_ vt: ValidatedToken, _ spec: CreateImageSpec) async throws -> Image {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "image",
-            path: "\(basePath)/images",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/images", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -112,13 +133,7 @@ public struct ImageRegion: Sendable {
         if let status { parts.append("\"status\":\"\(status)\"") }
         let body = "{\"image\":{\(parts.joined(separator: ","))}}"
 
-        let result = try await transport.request(
-            method: "PATCH",
-            service: "image",
-            path: "\(basePath)/images/\(id)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PATCH", path: "\(basePath)/images/\(id)", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -129,12 +144,7 @@ public struct ImageRegion: Sendable {
 
     public func deleteImage(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "image",
-            path: "\(basePath)/images/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/images/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
@@ -149,13 +159,7 @@ public struct ImageRegion: Sendable {
         let region = try resolveRegion(vt)
         let joined = tags.map { "\"\($0)\"" }.joined(separator: ",")
         let body = "{\"tags\":[\(joined)]}"
-        let result = try await transport.request(
-            method: "PUT",
-            service: "image",
-            path: "\(basePath)/images/\(id)/tags",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/images/\(id)/tags", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -164,12 +168,7 @@ public struct ImageRegion: Sendable {
 
     public func removeTag(_ vt: ValidatedToken, id: String, tag: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "image",
-            path: "\(basePath)/images/\(id)/tags/\(tag)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/images/\(id)/tags/\(tag)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
@@ -207,13 +206,7 @@ public struct ImageRegion: Sendable {
     public func importImage(_ vt: ValidatedToken, id: String, mechanism: String, uri: String) async throws {
         let region = try resolveRegion(vt)
         let body = "{\"import\":\(mechanism == "web-download" ? "{\"method\":\"web-download\",\"uri\":\"\(uri)\"}" : "{}}")}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "image",
-            path: "\(basePath)/images/\(id)/import",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/images/\(id)/import", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }

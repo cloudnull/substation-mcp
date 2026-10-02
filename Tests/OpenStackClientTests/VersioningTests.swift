@@ -131,6 +131,92 @@ struct EndpointResolverTests {
             #expect(false, "wrong error type: \(error)")
         }
     }
+
+    // MARK: - resolveEndpoint (per-service base + prefix for multi-endpoint routing)
+
+    /// A catalog that mirrors the fake's conventional layout: every endpoint URL
+    /// carries the service's full base (service-name + version), matching the
+    /// client's basePath.
+    private func makeConventionalCatalog() -> ServiceCatalog {
+        ServiceCatalog(entries: [
+            CatalogEntry(type: "compute", name: "nova", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://keystone.local/nova")!)
+            ]),
+            CatalogEntry(type: "network", name: "neutron", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://keystone.local/neutron/v2.0")!)
+            ]),
+            CatalogEntry(type: "volumev3", name: "cinder", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://keystone.local/cinder/v3")!)
+            ])
+        ])
+    }
+
+    /// A catalog that mirrors Rackspace: each service on its own host, and the
+    /// neutron endpoint omits the version root (real API is at /v2.0).
+    private func makeRackspaceCatalog() -> ServiceCatalog {
+        ServiceCatalog(entries: [
+            CatalogEntry(type: "compute", name: "nova", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://nova.api.sjc3.example.com/v2.1")!)
+            ]),
+            CatalogEntry(type: "network", name: "neutron", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://neutron.api.sjc3.example.com/neutron")!)
+            ]),
+            CatalogEntry(type: "volumev3", name: "cinder", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://cinder.api.sjc3.example.com/v3")!)
+            ])
+        ])
+    }
+
+    @Test func conventionalCatalog_usesCatalogURLAsRoot() throws {
+        // Fake/conventional: the catalog URL already carries the service root,
+        // so the client's basePath is dropped (pathPrefix == "").
+        let r = EndpointResolver(catalog: makeConventionalCatalog(), preferredInterface: "public")
+        // nova: serviceRoot empty -> catalog URL is always the authoritative
+        // root, basePath dropped.
+        let nova = try r.resolveEndpoint(serviceType: "compute", region: "R1", basePath: "nova", serviceRoot: "", fallbackBase: URL(string: "http://keystone.local")!)
+        #expect(nova.base.absoluteString == "http://keystone.local/nova")
+        #expect(nova.pathPrefix == "")
+
+        let net = try r.resolveEndpoint(serviceType: "network", region: "R1", basePath: "neutron/v2.0", serviceRoot: "v2.0", fallbackBase: URL(string: "http://keystone.local")!)
+        #expect(net.base.absoluteString == "http://keystone.local/neutron/v2.0")
+        #expect(net.pathPrefix == "")
+    }
+
+    @Test func rackspaceCatalog_usesCatalogURLAsRoot() throws {
+        // Multi-endpoint, catalog carries the version root: use it in full and
+        // drop the client basePath.
+        let r = EndpointResolver(catalog: makeRackspaceCatalog(), preferredInterface: "public")
+        // nova: serviceRoot empty -> the Rackspace catalog URL (nova.api/v2.1)
+        // is used in full and the basePath is dropped.
+        let nova = try r.resolveEndpoint(serviceType: "compute", region: "SJC3", basePath: "nova", serviceRoot: "", fallbackBase: URL(string: "https://keystone.api.sjc3.example.com")!)
+        #expect(nova.base.absoluteString == "https://nova.api.sjc3.example.com/v2.1")
+        #expect(nova.pathPrefix == "")
+
+        let cinder = try r.resolveEndpoint(serviceType: "volumev3", region: "SJC3", basePath: "cinder/v3", serviceRoot: "v3", fallbackBase: URL(string: "https://keystone.api.sjc3.example.com")!)
+        #expect(cinder.base.absoluteString == "https://cinder.api.sjc3.example.com/v3")
+        #expect(cinder.pathPrefix == "")
+    }
+
+    @Test func rackspaceNeutron_omitsVersion_usesHostAndServiceRoot() throws {
+        // Rackspace neutron catalog path is /neutron (no version). The real API
+        // is at the host's /v2.0. So: base = catalog host, pathPrefix = the
+        // service root (v2.0), NOT the full basePath (neutron/v2.0) — that would
+        // add a spurious /neutron segment.
+        let r = EndpointResolver(catalog: makeRackspaceCatalog(), preferredInterface: "public")
+        let net = try r.resolveEndpoint(serviceType: "network", region: "SJC3", basePath: "neutron/v2.0", serviceRoot: "v2.0", fallbackBase: URL(string: "https://keystone.api.sjc3.example.com")!)
+        #expect(net.base.absoluteString == "https://neutron.api.sjc3.example.com")
+        #expect(net.pathPrefix == "v2.0")
+    }
+
+    @Test func missingCatalogEndpoint_fallsBackToAuthURLWithBasePath() throws {
+        // Service absent from the catalog (e.g. designate not on Rackspace): use
+        // the cloud authURL with the full basePath — the single-endpoint behavior.
+        let r = EndpointResolver(catalog: makeRackspaceCatalog(), preferredInterface: "public")
+        let fb = URL(string: "https://keystone.api.sjc3.example.com")!
+        let dns = try r.resolveEndpoint(serviceType: "dns", region: "SJC3", basePath: "designate/v3", serviceRoot: "v3", fallbackBase: fb)
+        #expect(dns.base.absoluteString == "https://keystone.api.sjc3.example.com")
+        #expect(dns.pathPrefix == "designate/v3")
+    }
 }
 
 @Suite("NeutronExtensions")

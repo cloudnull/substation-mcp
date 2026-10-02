@@ -17,6 +17,44 @@ public struct KeyManagerRegion: Sendable {
     let serviceType: String
     let defaultRegion: String?
 
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = ""
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "key-manager"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "key-manager", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
@@ -48,13 +86,7 @@ public struct KeyManagerRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "key-manager",
-            path: "\(basePath)/secrets",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/secrets", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -67,13 +99,8 @@ public struct KeyManagerRegion: Sendable {
     }
 
     public func getSecret(_ vt: ValidatedToken, id: String) async throws -> Secret {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "key-manager",
-            path: "\(basePath)/secrets/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/secrets/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -82,13 +109,7 @@ public struct KeyManagerRegion: Sendable {
 
     public func createSecret(_ vt: ValidatedToken, _ spec: CreateSecretSpec) async throws -> Secret {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "key-manager",
-            path: "\(basePath)/secrets",
-            body: Data(spec.body().utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/secrets", body: Data(spec.body().utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -98,12 +119,7 @@ public struct KeyManagerRegion: Sendable {
 
     public func deleteSecret(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "key-manager",
-            path: "\(basePath)/secrets/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/secrets/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -113,13 +129,8 @@ public struct KeyManagerRegion: Sendable {
     /// Fetch a secret's payload (the actual secret value). Only readable when
     /// the token's roles permit; Barbican returns the payload + content type.
     public func getSecretPayload(_ vt: ValidatedToken, id: String) async throws -> SecretPayload {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "key-manager",
-            path: "\(basePath)/secrets/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/secrets/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -147,13 +158,7 @@ public struct KeyManagerRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "key-manager",
-            path: "\(basePath)/containers",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/containers", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -166,13 +171,8 @@ public struct KeyManagerRegion: Sendable {
     }
 
     public func getContainer(_ vt: ValidatedToken, id: String) async throws -> SecretContainer {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "key-manager",
-            path: "\(basePath)/containers/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/containers/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }
@@ -181,12 +181,7 @@ public struct KeyManagerRegion: Sendable {
 
     public func deleteContainer(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "key-manager",
-            path: "\(basePath)/containers/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/containers/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "key-manager", requestID: result.requestID, hasAccessRules: false)
         }

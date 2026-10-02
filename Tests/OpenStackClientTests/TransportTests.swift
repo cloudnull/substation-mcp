@@ -227,4 +227,125 @@ struct TransportTests {
             #expect(err.status == 0)
         }
     }
+
+    // MARK: - Multi-endpoint routing (per-service endpoint resolution)
+
+    /// Proves the client routes a service call to the catalog's per-service host
+    /// (Rackspace-style: nova on its own host with a `/v2.1` root) and strips the
+    /// client's `basePath`, instead of always going under the cloud authURL.
+    @Test func routesComputeToCatalogHostAndStripsBasePath() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        // The catalog's nova endpoint is <server>/v2.1 (Rackspace-style: the
+        // host is the nova host, the path is the version root). The client's
+        // basePath is "nova"; the request must arrive at /v2.1/servers (nova
+        // stripped), NOT /nova/v2.1/servers or under the authURL host.
+        let hit = PathRecorder()
+        server.addHandler("/v2.1/servers") { req in
+            hit.record(req.path)
+            return (200, #"{"servers":[]}"#, [("Content-Type", "application/json")])
+        }
+
+        // authURL points at a DIFFERENT, unreachable host: if the client wrongly
+        // routed under authURL the request would fail (connection error), so
+        // success proves it used the catalog host.
+        let unreachable = URL(string: "http://127.0.0.1:1")! // port 1 = nothing
+        let cloud = CloudEntry(name: "rs", authURL: unreachable, regionName: "R1")
+        let transport = Transport(
+            cloud: cloud,
+            tokenSource: { "tok-rs" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test-routing")
+        )
+        let cache = Cache()
+        let region = ComputeRegion(
+            cloud: cloud, transport: transport, cache: cache,
+            logger: Logger(label: "test-routing"),
+            defaultRegion: "R1", basePath: "nova"
+        )
+        let token = Token(
+            id: "tok-rs",
+            expiresAt: Date(timeIntervalSinceNow: 3600),
+            project: IdentityRef(id: "p1", name: "P", domain: nil),
+            domain: IdentityRef(id: "d1", name: "D", domain: nil),
+            user: IdentityRef(id: "u1", name: "U", domain: nil),
+            roles: ["member"],
+            catalog: [
+                CatalogEntry(type: "compute", name: "nova", endpoints: [
+                    CatalogEndpoint(region: "R1", interface: "public", url: server.baseURL.appendingPathComponent("v2.1"))
+                ])
+            ]
+        )
+        let vt = ValidatedToken(token: token, scopes: [.read])
+
+        let servers = try await region.listServers(vt)
+        #expect(servers.isEmpty, "expected an empty server list from the stub")
+        #expect(hit.path == "/v2.1/servers", "client should have hit /v2.1/servers (basePath stripped), got \(hit.path)")
+    }
+
+    /// Proves the neutron special-case: when the catalog URL omits the version
+    /// root (Rackspace advertises neutron at `.../neutron/`), the client uses the
+    /// catalog host + the version root (`v2.0`), not the full basePath
+    /// (`neutron/v2.0`) which would add a spurious `/neutron` segment.
+    @Test func routesNeutronWithVersionRootWhenCatalogOmitsIt() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        let hit = PathRecorder()
+        server.addHandler("/v2.0/networks") { req in
+            hit.record(req.path)
+            return (200, #"{"networks":[]}"#, [("Content-Type", "application/json")])
+        }
+
+        let unreachable = URL(string: "http://127.0.0.1:1")!
+        let cloud = CloudEntry(name: "rs", authURL: unreachable, regionName: "R1")
+        let transport = Transport(
+            cloud: cloud, tokenSource: { "tok-rs" },
+            maxConnectionsPerHost: 4, requestTimeout: .seconds(10),
+            logger: Logger(label: "test-routing")
+        )
+        let cache = Cache()
+        let region = NetworkRegion(
+            cloud: cloud, transport: transport, cache: cache,
+            logger: Logger(label: "test-routing"),
+            defaultRegion: "R1", basePath: "neutron/v2.0"
+        )
+        let token = Token(
+            id: "tok-rs",
+            expiresAt: Date(timeIntervalSinceNow: 3600),
+            project: IdentityRef(id: "p1", name: "P", domain: nil),
+            domain: IdentityRef(id: "d1", name: "D", domain: nil),
+            user: IdentityRef(id: "u1", name: "U", domain: nil),
+            roles: ["member"],
+            catalog: [
+                // Rackspace-style: neutron endpoint path omits the /v2.0 root.
+                CatalogEntry(type: "network", name: "neutron", endpoints: [
+                    CatalogEndpoint(region: "R1", interface: "public", url: server.baseURL.appendingPathComponent("neutron"))
+                ])
+            ]
+        )
+        let vt = ValidatedToken(token: token, scopes: [.read])
+
+        let networks = try await region.listNetworks(vt)
+        #expect(networks.isEmpty)
+        #expect(hit.path == "/v2.0/networks", "neutron should hit /v2.0/networks (host + version root), got \(hit.path)")
+    }
+}
+
+/// Thread-safe single-slot path recorder for @Sendable test handlers.
+final class PathRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _path: String?
+    func record(_ path: String) {
+        lock.lock(); defer { lock.unlock() }
+        _path = path
+    }
+    var path: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _path
+    }
 }

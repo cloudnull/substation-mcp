@@ -54,6 +54,45 @@ public struct NetworkRegion: Sendable {
         self.defaultRegion = defaultRegion
         self.basePath = basePath
         self.serviceType = serviceType
+
+    }
+
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = "v2.0"
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "network"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
     }
 
     // MARK: - Extension discovery
@@ -65,12 +104,7 @@ public struct NetworkRegion: Sendable {
             return cached
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/extensions",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/extensions")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -130,13 +164,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/networks",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/networks", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -156,13 +184,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getNetwork(_ vt: ValidatedToken, id: String) async throws -> Network {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/networks/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/networks/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -185,13 +208,7 @@ public struct NetworkRegion: Sendable {
             try requireExtension("provider", ext)
         }
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/networks",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/networks", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -210,13 +227,7 @@ public struct NetworkRegion: Sendable {
 
     public func updateNetwork(_ vt: ValidatedToken, id: String, _ spec: UpdateNetworkSpec) async throws -> Network {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/networks/\(id)",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/networks/\(id)", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -235,12 +246,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteNetwork(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/networks/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/networks/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -283,13 +289,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/subnets",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/subnets", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -307,13 +307,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSubnet(_ vt: ValidatedToken, id: String) async throws -> Subnet {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/subnets/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/subnets/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -331,13 +326,7 @@ public struct NetworkRegion: Sendable {
 
     public func createSubnet(_ vt: ValidatedToken, _ spec: CreateSubnetSpec) async throws -> Subnet {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/subnets",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/subnets", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -362,13 +351,7 @@ public struct NetworkRegion: Sendable {
         if let enableDHCP { parts.append("\"enable_dhcp\":\(enableDHCP ? "true" : "false")") }
         let body = "{\"subnet\":{\(parts.joined(separator: ","))}}"
 
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/subnets/\(id)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/subnets/\(id)", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -387,12 +370,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteSubnet(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/subnets/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/subnets/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -434,13 +412,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/ports",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/ports", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -458,13 +430,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getPort(_ vt: ValidatedToken, id: String) async throws -> OSPort {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/ports/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/ports/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -483,13 +450,7 @@ public struct NetworkRegion: Sendable {
     /// Create a port. An empty `fixedIPs` list asks Neutron to auto-assign.
     public func createPort(_ vt: ValidatedToken, _ spec: CreatePortSpec) async throws -> OSPort {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/ports",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/ports", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -509,13 +470,7 @@ public struct NetworkRegion: Sendable {
     public func updatePort(_ vt: ValidatedToken, id: String, name: String? = nil, adminStateUp: Bool? = nil, description: String? = nil, securityGroups: [String]? = nil) async throws -> OSPort {
         let region = try resolveRegion(vt)
         let spec = UpdatePortSpec(name: name, adminStateUp: adminStateUp, description: description, securityGroups: securityGroups)
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/ports/\(id)",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/ports/\(id)", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -534,12 +489,7 @@ public struct NetworkRegion: Sendable {
 
     public func deletePort(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/ports/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/ports/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -581,13 +531,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/routers",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/routers", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -605,13 +549,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getRouter(_ vt: ValidatedToken, id: String) async throws -> Router {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/routers/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/routers/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -629,13 +568,7 @@ public struct NetworkRegion: Sendable {
 
     public func createRouter(_ vt: ValidatedToken, _ spec: CreateRouterSpec) async throws -> Router {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/routers",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/routers", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -662,13 +595,7 @@ public struct NetworkRegion: Sendable {
         }
         let body = "{\"router\":{\(parts.joined(separator: ","))}}"
 
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/routers/\(id)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/routers/\(id)", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -687,12 +614,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteRouter(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/routers/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/routers/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -734,13 +656,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/floatingips",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/floatingips", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -758,13 +674,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getFloatingIP(_ vt: ValidatedToken, id: String) async throws -> FloatingIP {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/floatingips/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/floatingips/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -782,13 +693,7 @@ public struct NetworkRegion: Sendable {
 
     public func createFloatingIP(_ vt: ValidatedToken, _ spec: CreateFloatingIPSpec) async throws -> FloatingIP {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/floatingips",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/floatingips", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -813,13 +718,7 @@ public struct NetworkRegion: Sendable {
         if let fixedIPAddress { parts.append("\"fixed_ip_address\":\"\(fixedIPAddress)\"") } else { parts.append("\"fixed_ip_address\":null") }
         let body = "{\"floatingip\":{\(parts.joined(separator: ","))}}"
 
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/floatingips/\(id)",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/floatingips/\(id)", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -838,12 +737,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteFloatingIP(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/floatingips/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/floatingips/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -880,13 +774,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/security-groups",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/security-groups", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -904,13 +792,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSecurityGroup(_ vt: ValidatedToken, id: String) async throws -> SecurityGroup {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/security-groups/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/security-groups/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -928,13 +811,7 @@ public struct NetworkRegion: Sendable {
 
     public func createSecurityGroup(_ vt: ValidatedToken, _ spec: CreateSecurityGroupSpec) async throws -> SecurityGroup {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/security-groups",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/security-groups", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -953,12 +830,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteSecurityGroup(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/security-groups/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/security-groups/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -1000,13 +872,7 @@ public struct NetworkRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/security-group-rules",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/security-group-rules", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1024,13 +890,8 @@ public struct NetworkRegion: Sendable {
     }
 
     public func getSecurityGroupRule(_ vt: ValidatedToken, id: String) async throws -> SecurityGroupRule {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/security-group-rules/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/security-group-rules/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1067,13 +928,7 @@ public struct NetworkRegion: Sendable {
             portRangeMax: portRangeMax,
             remoteIPPrefix: remoteIPPrefix
         )
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/security-group-rules",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/security-group-rules", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1092,12 +947,7 @@ public struct NetworkRegion: Sendable {
 
     public func deleteSecurityGroupRule(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/security-group-rules/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/security-group-rules/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -1119,12 +969,7 @@ public struct NetworkRegion: Sendable {
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/address-groups",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/address-groups")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1145,12 +990,7 @@ public struct NetworkRegion: Sendable {
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/address-groups/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/address-groups/\(id)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1171,13 +1011,7 @@ public struct NetworkRegion: Sendable {
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
-        let result = try await transport.request(
-            method: "POST",
-            service: "network",
-            path: "\(basePath)/address-groups",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/address-groups", body: spec.body().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1198,12 +1032,7 @@ public struct NetworkRegion: Sendable {
         let ext = try await discoverExtensions(vt, region: region)
         try requireExtension("address-group", ext)
 
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "network",
-            path: "\(basePath)/address-groups/\(id)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/address-groups/\(id)")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(
@@ -1220,14 +1049,9 @@ public struct NetworkRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuota(_ vt: ValidatedToken) async throws -> NetworkQuota {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await transport.request(
-            method: "GET",
-            service: "network",
-            path: "\(basePath)/quota/\(projectID)",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/quota/\(projectID)")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1246,13 +1070,7 @@ public struct NetworkRegion: Sendable {
     public func updateQuota(_ vt: ValidatedToken, _ quota: NetworkQuota) async throws -> NetworkQuota {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await transport.request(
-            method: "PUT",
-            service: "network",
-            path: "\(basePath)/quota/\(projectID)",
-            body: quota.updateBody().data(using: .utf8),
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/quota/\(projectID)", body: quota.updateBody().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,

@@ -16,6 +16,46 @@ public struct ObjectStorageRegion: Sendable {
     let serviceType: String
     let defaultRegion: String?
 
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = ""
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "object-store"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil,
+        extraHeaders: [(String, String)] = []
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            extraHeaders: extraHeaders,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "object-store", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
@@ -61,13 +101,7 @@ public struct ObjectStorageRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(enc(account(vt)))", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -97,7 +131,7 @@ public struct ObjectStorageRegion: Sendable {
     }
 
     public func getContainer(_ vt: ValidatedToken, name: String) async throws -> Container {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         // Real Swift exposes container metadata via HEAD (headers, no body).
         // Some HTTP stacks handle a container-scoped GET (object listing) and a
         // HEAD differently, so we resolve a container by listing the account's
@@ -107,12 +141,7 @@ public struct ObjectStorageRegion: Sendable {
             return match
         }
         // Confirm the 404 with a direct probe so the error shape is precise.
-        let result = try await transport.request(
-            method: "GET",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(name))",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(enc(account(vt)))/\(enc(name))")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -123,14 +152,7 @@ public struct ObjectStorageRegion: Sendable {
         let region = try resolveRegion(vt)
         var extra = spec.headers()
         extra.append(("X-Trans-Id", "osmcp-\(spec.name)"))
-        let result = try await transport.request(
-            method: "PUT",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(spec.name))",
-            body: Data("{}".utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: extra
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/\(enc(account(vt)))/\(enc(spec.name))", body: Data("{}".utf8), extraHeaders: extra)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -140,12 +162,7 @@ public struct ObjectStorageRegion: Sendable {
 
     public func deleteContainer(_ vt: ValidatedToken, name: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(name))",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(enc(account(vt)))/\(enc(name))")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
@@ -176,13 +193,7 @@ public struct ObjectStorageRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(container))",
-            query: query,
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(enc(account(vt)))/\(enc(container))", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -193,14 +204,8 @@ public struct ObjectStorageRegion: Sendable {
     }
 
     public func getObject(_ vt: ValidatedToken, container: String, name: String) async throws -> Object {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(container))/\(enc(name))",
-            query: [URLQueryItem(name: "format", value: "json")],
-            tokenOverride: vt.token.id
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(enc(account(vt)))/\(enc(container))/\(enc(name))", query: [URLQueryItem(name: "format", value: "json")])
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -213,14 +218,7 @@ public struct ObjectStorageRegion: Sendable {
 
     public func createObject(_ vt: ValidatedToken, _ spec: CreateObjectSpec) async throws -> Object {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "PUT",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(spec.container))/\(enc(spec.name))",
-            body: Data(spec.content.utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: spec.headers()
-        )
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/\(enc(account(vt)))/\(enc(spec.container))/\(enc(spec.name))", body: Data(spec.content.utf8), extraHeaders: spec.headers())
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)
         }
@@ -230,12 +228,7 @@ public struct ObjectStorageRegion: Sendable {
 
     public func deleteObject(_ vt: ValidatedToken, container: String, name: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "object-store",
-            path: "\(basePath)/\(enc(account(vt)))/\(enc(container))/\(enc(name))",
-            tokenOverride: vt.token.id
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(enc(account(vt)))/\(enc(container))/\(enc(name))")
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "object-store", requestID: result.requestID, hasAccessRules: false)

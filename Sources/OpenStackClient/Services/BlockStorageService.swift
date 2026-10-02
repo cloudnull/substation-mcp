@@ -15,6 +15,46 @@ public struct BlockStorageRegion: Sendable {
     static let floor = "3.44"
     static let clientMax = "3.70"
 
+    /// The version root the catalog URL should carry (empty = the catalog URL is
+    /// always the authoritative base; non-empty = verify the catalog path ends
+    /// with it, else use the catalog host + this root).
+    private let serviceRoot: String = ""
+    /// The Keystone catalog service type (may differ from the transport label,
+    /// e.g. magnum is catalog type `container-infra` but labeled `container`).
+    private let catalogType: String = "volumev3"
+
+    /// Route a request to the service's real endpoint from the token catalog
+    /// (multi-endpoint clouds) or the cloud authURL (single-endpoint fallback).
+    /// `path` is the full service path relative to the authURL (starts with
+    /// `basePath`); the leading `basePath` is replaced by the resolved prefix.
+    private func req(
+        _ vt: ValidatedToken,
+        _ region: String,
+        method: String,
+        path: String,
+        query: [URLQueryItem]? = nil,
+        body: Data? = nil,
+        timeoutOverride: Duration? = nil,
+        extraHeaders: [(String, String)] = []
+    ) async throws -> (status: Int, body: Data, requestID: String?) {
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: catalogType, fullPath: path
+        )
+        return try await transport.request(
+            method: method,
+            service: serviceType,
+            path: ep.path,
+            query: query ?? [],
+            body: body,
+            tokenOverride: vt.token.id,
+            extraHeaders: extraHeaders,
+            timeoutOverride: timeoutOverride,
+            overrideBase: ep.overrideBase
+        )
+    }
+
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, basePath: String, serviceType: String = "volumev3", defaultRegion: String? = nil) {
         self.cloud = cloud
         self.transport = transport
@@ -54,14 +94,7 @@ public struct BlockStorageRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/volumes/detail",
-            query: query,
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volumes/detail", query: query, extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -73,14 +106,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getVolume(_ vt: ValidatedToken, id: String) async throws -> Volume {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volumes/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -90,14 +117,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func createVolume(_ vt: ValidatedToken, _ spec: CreateVolumeSpec) async throws -> Volume {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -108,13 +128,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func deleteVolume(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/volumes/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -126,14 +140,7 @@ public struct BlockStorageRegion: Sendable {
     public func extendVolume(_ vt: ValidatedToken, id: String, size: Int) async throws -> Volume {
         let region = try resolveRegion(vt)
         let body = "{\"os-extend\":{\"new_size\":\(size)}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)/action",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes/\(id)/action", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -145,14 +152,7 @@ public struct BlockStorageRegion: Sendable {
     public func retypeVolume(_ vt: ValidatedToken, id: String, volumeType: String) async throws -> Volume {
         let region = try resolveRegion(vt)
         let body = "{\"os-retype\":{\"new_type\":\"\(volumeType)\"}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)/action",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes/\(id)/action", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -164,14 +164,7 @@ public struct BlockStorageRegion: Sendable {
     public func setBootable(_ vt: ValidatedToken, id: String, bootable: Bool) async throws -> Volume {
         let region = try resolveRegion(vt)
         let body = "{\"os-set_bootable\":{\"bootable\":\(bootable ? "true" : "false")}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)/action",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes/\(id)/action", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -183,14 +176,7 @@ public struct BlockStorageRegion: Sendable {
     public func uploadToImage(_ vt: ValidatedToken, id: String) async throws -> String {
         let region = try resolveRegion(vt)
         let body = "{\"os-volume_upload_to_image\":{}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)/action",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes/\(id)/action", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -205,14 +191,7 @@ public struct BlockStorageRegion: Sendable {
     public func resetStatus(_ vt: ValidatedToken, id: String, status: String) async throws {
         let region = try resolveRegion(vt)
         let body = "{\"reset-status\":{\"status\":\"\(status)\"}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volumes/\(id)/action",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volumes/\(id)/action", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -222,14 +201,8 @@ public struct BlockStorageRegion: Sendable {
     // MARK: - Volume Types
 
     public func listVolumeTypes(_ vt: ValidatedToken) async throws -> [VolumeType] {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/volume-types",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volume-types", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -238,14 +211,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getVolumeType(_ vt: ValidatedToken, id: String) async throws -> VolumeType {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/volume-types/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volume-types/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -254,15 +221,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createVolumeType(_ vt: ValidatedToken, _ spec: CreateVolumeTypeSpec) async throws -> VolumeType {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/volume-types",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volume-types", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -271,14 +231,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteVolumeType(_ vt: ValidatedToken, id: String) async throws {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "volumev3",
-            path: "\(basePath)/volume-types/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/volume-types/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -294,20 +248,13 @@ public struct BlockStorageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Snapshot] {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/snapshots",
-            query: query,
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/snapshots", query: query, extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -316,14 +263,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getSnapshot(_ vt: ValidatedToken, id: String) async throws -> Snapshot {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/snapshots/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/snapshots/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -332,15 +273,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createSnapshot(_ vt: ValidatedToken, _ spec: CreateSnapshotSpec) async throws -> Snapshot {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/snapshots",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/snapshots", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -349,14 +283,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteSnapshot(_ vt: ValidatedToken, id: String) async throws {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "volumev3",
-            path: "\(basePath)/snapshots/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/snapshots/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -372,20 +300,13 @@ public struct BlockStorageRegion: Sendable {
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [Backup] {
-        _ = try resolveRegion(vt)
+        let region = try resolveRegion(vt)
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/backups",
-            query: query,
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/backups", query: query, extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -394,14 +315,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func getBackup(_ vt: ValidatedToken, id: String) async throws -> Backup {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/backups/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/backups/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -410,15 +325,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func createBackup(_ vt: ValidatedToken, _ spec: CreateBackupSpec) async throws -> Backup {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/backups",
-            body: spec.body().data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/backups", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -427,14 +335,8 @@ public struct BlockStorageRegion: Sendable {
     }
 
     public func deleteBackup(_ vt: ValidatedToken, id: String) async throws {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "DELETE",
-            service: "volumev3",
-            path: "\(basePath)/backups/\(id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/backups/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -446,14 +348,7 @@ public struct BlockStorageRegion: Sendable {
     public func restoreBackup(_ vt: ValidatedToken, id: String) async throws -> Volume {
         let region = try resolveRegion(vt)
         let body = "{\"restore\":{}}"
-        let result = try await transport.request(
-            method: "POST",
-            service: "volumev3",
-            path: "\(basePath)/backups/\(id)/restore",
-            body: body.data(using: .utf8),
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/backups/\(id)/restore", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -465,14 +360,8 @@ public struct BlockStorageRegion: Sendable {
     // MARK: - Quotas
 
     public func getQuota(_ vt: ValidatedToken) async throws -> VolumeQuota {
-        _ = try resolveRegion(vt)
-        let result = try await transport.request(
-            method: "GET",
-            service: "volumev3",
-            path: "\(basePath)/os-quota-sets/\(vt.token.project.id)",
-            tokenOverride: vt.token.id,
-            extraHeaders: versionHeader
-        )
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-quota-sets/\(vt.token.project.id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
