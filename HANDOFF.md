@@ -2,12 +2,77 @@
 
 ## Current State
 
-- **Phase 1 is complete.** All 22 tasks merged to main. The one dropped §12 item (`console_url`, session-scoped) is now also implemented.
+- **Phase 1 is complete** (all 22 tasks + `console_url`), and **three real-cloud integration bugs found while wiring to sat0 are fixed**.
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Latest commit**: `console_url` end-to-end + session-scoped console urls (b723462)
-- **Tests**: 367 tests, all green across 5 targets (36 OpenStackMCP / 134 server / 151 client / 44 HummingbirdMCP / 2 integration self-skip)
+- **Latest commit**: `36330b8` fix(conformance): assert on the result envelope, not the tool name
+- **Tests**: 373 tests, all green across 5 targets (38 OpenStackMCP / 134 server / 2 / 155 client / 44 HummingbirdMCP)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
+- **Native image**: `scripts/build-image.sh` → `dist/openstack-mcp-aarch64-ubi10-v0.1.0.tar.gz` (UBI10 rootfs, see `deploy/NATIVE-AARCH64.md`)
+- **Real-cloud proof**: live sat0 conformance **6/6 PASS** (see below)
 - **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance` subcommand)
+
+## Real-cloud integration against sat0 (2026-10-01)
+
+Goal: produce a native aarch64/UBI10 deployable and integrate against the local
+cloud `https://keystone.api.sat0.cloudnull.dev` (read-only + conformance). No
+docker on this host → the deployable is a UBI10 **filesystem-image tarball**
+built with Apple `container` (aarch64, no QEMU).
+
+Wiring to the live cloud surfaced **three latent bugs the unit suite never
+caught** (tests exercise the library, not the process entry or live-wire
+shapes). All three fixed TDD, all merged to main:
+
+1. **`fix(transport): also send token as X-Subject-Token` (8961a73)** — Keystone
+   3.14 on sat0 only honors the presented token on the whoami endpoint
+   (`GET /v3/auth/tokens`) when it is also sent as `X-Subject-Token`;
+   `X-Auth-Token` alone → 404 "No token in the request". The server-side
+   `TokenValidator` relies on that endpoint, so without the header the serve
+   path 401s. `Transport.request` now sends the token on **both** headers
+   (standard, version-compatible).
+2. **`fix(cli): wire the real entry point + correct subcommand names` (6036748)** —
+   *the critical one.* The CLI types live in `main.swift` (a top-level-code
+   file), so Swift does **not** synthesize `@main` for the `AsyncParsableCommand`
+   root and there was no top-level `.main()` call. **Every subcommand exited 0
+   with zero output for every invocation** (even a bad one) — the phase-1 CLI
+   had never actually run through its real entry. Fix: `Entry.swift` (not
+   `main.swift`) with an explicit `@main` wrapper. A second latent bug:
+   subcommands without `commandName` fell back to `<Type>-command`
+   (`serve-command`, etc.), so the documented names were unreachable — added
+   `commandName` to all 7. New `CLIEntryTests` run the built binary and assert
+   the entry produces output (self-skips if no binary; prefers the freshest).
+3. **`fix(identity): decode real Keystone v3 token shapes` (17f09fc)** — live
+   Keystone v3 whoami bodies differ from the test fixture: no top-level `id`,
+   no top-level `domain` on project-scoped tokens, and `roles` as objects
+   `{"id","name"}` (or a mix of strings/objects). `Token.decode` threw
+   "Missing required fields in token" → serve-path 401/500. Now tolerant of all
+   standard shapes (synthesizes id, falls back domain to `user.domain`, decodes
+   roles via a single-value container).
+
+Plus a conformance-smoke fix: **`fix(conformance)` (36330b8)** — the os_whoami
+step wrongly required the literal tool name in the response body; a valid
+`tools/call` result returns a JSON-RPC `result` envelope and never echoes the
+name. Now asserts on the result envelope.
+
+**Result — live sat0 conformance 6/6 PASS** (run in-container, read-only):
+401 challenge, PRM, initialize (200 + MCP-Session-Id), tools/list (15),
+tools/call os_whoami (returns real identity: project admin, region SAT0, all 9
+services, roles reader/member/admin/manager/glance_admin), DELETE.
+
+### Native aarch64 image
+`scripts/build-image.sh TAG=v0.1.0` → `dist/openstack-mcp-aarch64-ubi10-v0.1.0.tar.gz`
+(27 MB UBI10 rootfs: binary at `/usr/local/bin/openstack-mcp`, `openstack-mcp`
+uid 10001, `/etc/openstack*` mount points) + `.manifest.json`. See
+`deploy/NATIVE-AARCH64.md`. `dist/sat0/{clouds.yaml,config.yaml,clouds-it.yaml}`
+are working config templates (app-cred secret scrubbed).
+
+### Known remaining issue (opt-in IT suite only, not in scope)
+`OSMCP_IT_CLOUD=... swift test --filter IntegrationTests` read-only pass crashes
+the runner at teardown: `AsyncHTTPClient … Client not shut down before the
+deinit` (SIGTRAP). The read-only client calls themselves work (proven by the
+`check`/whoami probes returning real data), but an `HTTPClient` created inside
+the client/transport is not drained before the test process exits. CI self-skips
+(this is opt-in), and the conformance smoke is the authoritative real-cloud
+proof. Fixing the HTTPClient lifecycle in the IT rig is a follow-up.
 
 ## Post-completion gap closure: `console_url` (b723462)
 

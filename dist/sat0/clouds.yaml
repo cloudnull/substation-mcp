@@ -1,0 +1,16 @@
+# clouds.yaml for the sat0.cloudnull.dev local cloud (integration testing).
+#
+# The MCP server authenticates *clients* via a Bearer Keystone token they
+# present (validated per-request against Keystone); it does NOT mint tokens
+# itself in serve mode, so no application_credential is required here. The
+# token is supplied at runtime (e.g. `scripts/conformance.sh --token <id>`).
+#
+# auth_url is the Keystone BASE (no trailing /v3): the client transport
+# appends /v3/... paths itself (e.g. /v3/auth/tokens). A /v3 here would
+# double to /v3/v3 and break readiness/validation.
+clouds:
+  sat0:
+    region_name: SAT0
+    interface: public
+    auth:
+      auth_url: https://keystone.api.sat0.cloudnull.dev

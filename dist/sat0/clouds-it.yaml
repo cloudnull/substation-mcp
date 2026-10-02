@@ -1,0 +1,15 @@
+# clouds.yaml template for the OPT-IN integration test suite (spec §14.6).
+# The IT suite mints a token via the cloud's application credential, so fill in
+# a real app-cred id + secret for a cloud you control (e.g. sat0).
+#
+#   OSMCP_IT_CLOUD=sat0 OSMCP_IT_CLOUDS=<this-file> swift test --filter IntegrationTests
+#
+# auth_url is the Keystone BASE (no trailing /v3) — the client appends /v3/... .
+clouds:
+  sat0:
+    region_name: SAT0
+    interface: public
+    auth:
+      auth_url: https://keystone.api.sat0.cloudnull.dev
+      # application_credential_id: "..."     # paste a real app-cred id
+      # application_credential_secret: "..."  # paste a real app-cred secret
