@@ -173,6 +173,7 @@ public struct Waiter: Sendable {
         case .keyManager: return descriptor.name == "secret"
         case .loadBalancer: return descriptor.name == "load_balancer"
         case .dns: return descriptor.name == "zone"
+        case .containerInfra: return descriptor.name == "cluster"
         }
     }
 
@@ -267,6 +268,13 @@ public struct Waiter: Sendable {
                 let r = await client.dns(region: region)
                 let z = try await r.getZone(vt, id: id)
                 return ["status": .string(z.status)]
+            }
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
+        case .containerInfra:
+            if descriptor.name == "cluster" {
+                let r = await client.containerInfra(region: region)
+                let c = try await r.getContainer(vt, id: id)
+                return ["status": .string(c.status)]
             }
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
         }

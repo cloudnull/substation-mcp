@@ -128,6 +128,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Magnum container-infrastructure client (phase 2).
+    public func containerInfra(region: String? = nil) -> ContainerRegion {
+        ContainerService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

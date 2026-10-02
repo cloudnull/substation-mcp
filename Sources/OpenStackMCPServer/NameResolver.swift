@@ -274,6 +274,18 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "dns", status: 404, message: "Unknown dns resource: \(descriptor.name)")
             }
+        case .containerInfra:
+            let r = await client.containerInfra(region: region)
+            switch descriptor.name {
+            case "cluster":
+                let c = try await r.getContainer(vt, id: id)
+                return try Self.encodeObject(c)
+            case "cluster_template":
+                let t = try await r.getClusterTemplate(vt, id: id)
+                return try Self.encodeObject(t)
+            default:
+                throw OpenStackError(service: "container", status: 404, message: "Unknown container resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -443,6 +455,22 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "dns", status: 404, message: "Unknown dns resource: \(descriptor.name)")
+            }
+        case .containerInfra:
+            let r = await client.containerInfra(region: region)
+            switch descriptor.name {
+            case "cluster":
+                let items = try await r.listContainers(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("cluster"); result["region"] = .string(region)
+                return result
+            case "cluster_template":
+                let items = try await r.listClusterTemplates(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("cluster_template"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "container", status: 404, message: "Unknown container resource: \(descriptor.name)")
             }
         }
     }
@@ -675,6 +703,34 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "dns", status: 400, message: "Unknown dns create: \(descriptor.name)")
             }
+        case .containerInfra:
+            let r = await client.containerInfra(region: region)
+            switch descriptor.name {
+            case "cluster":
+                guard let name = obj["name"]?.stringValue else {
+                    throw OpenStackError(service: "container", status: 400, message: "cluster create requires a 'name'")
+                }
+                let spec = CreateMagnumClusterSpec(
+                    name: name,
+                    cluster_template_id: obj["cluster_template_id"]?.stringValue,
+                    master_count: obj["master_count"]?.intValue,
+                    node_count: obj["node_count"]?.intValue,
+                    server_group: obj["server_group"]?.stringValue
+                )
+                return try Self.encodeObject(try await r.createContainer(vt, spec))
+            case "cluster_template":
+                guard let name = obj["name"]?.stringValue else {
+                    throw OpenStackError(service: "container", status: 400, message: "cluster_template create requires a 'name'")
+                }
+                let spec = CreateMagnumClusterTemplateSpec(
+                    name: name,
+                    master_count: obj["master_count"]?.intValue ?? 1,
+                    node_count: obj["node_count"]?.intValue ?? 0
+                )
+                return try Self.encodeObject(try await r.createClusterTemplate(vt, spec))
+            default:
+                throw OpenStackError(service: "container", status: 400, message: "Unknown container create: \(descriptor.name)")
+            }
         }
     }
 
@@ -736,6 +792,9 @@ public actor NameResolver {
         case .dns:
             // Designate zones/recordsets are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "dns", status: 501, message: "DNS resources are not updatable (re-create instead)")
+        case .containerInfra:
+            // Magnum clusters/templates are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "container", status: 501, message: "Container resources are not updatable (re-create instead)")
         }
     }
 
@@ -839,6 +898,16 @@ public actor NameResolver {
                 try await r.deleteRecordSet(vt, id: id)
             default:
                 throw OpenStackError(service: "dns", status: 400, message: "Unknown dns delete: \(descriptor.name)")
+            }
+        case .containerInfra:
+            let r = await client.containerInfra(region: region)
+            switch descriptor.name {
+            case "cluster":
+                try await r.deleteContainer(vt, id: id)
+            case "cluster_template":
+                try await r.deleteClusterTemplate(vt, id: id)
+            default:
+                throw OpenStackError(service: "container", status: 400, message: "Unknown container delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -1015,6 +1084,9 @@ public actor NameResolver {
         case .dns:
             // Designate has no custom actions in phase 2.
             throw OpenStackError(service: "dns", status: 501, message: "DNS actions not supported")
+        case .containerInfra:
+            // Magnum has no custom actions in phase 2.
+            throw OpenStackError(service: "container", status: 501, message: "Container actions not supported")
         }
     }
 

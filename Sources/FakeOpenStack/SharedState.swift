@@ -595,11 +595,51 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Magnum (container) fake state
+
+    public struct FakeMagnumCluster: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var masterCount: Int
+        public var nodeCount: Int
+        public var clusterTemplateID: String?
+
+        public init(id: String, projectID: String, name: String, status: String = "ACTIVE", masterCount: Int = 1, nodeCount: Int = 0, clusterTemplateID: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.masterCount = masterCount
+            self.nodeCount = nodeCount
+            self.clusterTemplateID = clusterTemplateID
+        }
+    }
+
+    public struct FakeMagnumTemplate: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var masterCount: Int
+        public var nodeCount: Int
+
+        public init(id: String, projectID: String, name: String, masterCount: Int = 1, nodeCount: Int = 0) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.masterCount = masterCount
+            self.nodeCount = nodeCount
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
     public private(set) var zones: [FakeZone] = []
     public private(set) var recordSets: [FakeRecordSet] = []
+    public private(set) var magnumClusters: [FakeMagnumCluster] = []
+    public private(set) var magnumTemplates: [FakeMagnumTemplate] = []
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -889,6 +929,8 @@ public actor FakeState {
     private var healthMonitorIDCounter = 0
     private var zoneIDCounter = 0
     private var recordSetIDCounter = 0
+    private var magnumClusterIDCounter = 0
+    private var magnumTemplateIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -1147,6 +1189,12 @@ public actor FakeState {
         zones.append(FakeZone(id: "zone-1", projectID: "proj-one", name: "example.com.", email: "admin@example.com", status: "active", ttl: 3600))
         recordSetIDCounter = 1
         recordSets.append(FakeRecordSet(id: "rs-1", projectID: "proj-one", name: "www.example.com.", type: "A", ttl: 3600, records: ["10.0.0.1"], zoneID: "zone-1"))
+
+        // Magnum (container) seed: one template + one active cluster.
+        magnumTemplateIDCounter = 1
+        magnumTemplates.append(FakeMagnumTemplate(id: "ct-1", projectID: "proj-one", name: "fake-k8s-template", masterCount: 1, nodeCount: 3))
+        magnumClusterIDCounter = 1
+        magnumClusters.append(FakeMagnumCluster(id: "cluster-1", projectID: "proj-one", name: "fake-k8s-cluster", status: "ACTIVE", masterCount: 1, nodeCount: 3, clusterTemplateID: "ct-1"))
     }
 
     // MARK: - Token minting
@@ -2402,6 +2450,64 @@ public actor FakeState {
         let idx = recordSets.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         recordSets.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Magnum (container) CRUD
+
+    public func listMagnumClusters(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeMagnumCluster] {
+        var result = magnumClusters.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getMagnumCluster(id: String, projectID: String) -> FakeMagnumCluster? {
+        magnumClusters.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createMagnumCluster(projectID: String, name: String, masterCount: Int?, nodeCount: Int?, clusterTemplateID: String?) -> FakeMagnumCluster {
+        magnumClusterIDCounter += 1
+        let c = FakeMagnumCluster(id: "cluster-\(magnumClusterIDCounter)", projectID: projectID, name: name, status: "ACTIVE", masterCount: masterCount ?? 1, nodeCount: nodeCount ?? 0, clusterTemplateID: clusterTemplateID)
+        magnumClusters.append(c)
+        return c
+    }
+
+    public func deleteMagnumCluster(id: String, projectID: String) -> Bool {
+        let idx = magnumClusters.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        magnumClusters.remove(at: idx)
+        return true
+    }
+
+    public func listMagnumTemplates(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeMagnumTemplate] {
+        var result = magnumTemplates.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getMagnumTemplate(id: String, projectID: String) -> FakeMagnumTemplate? {
+        magnumTemplates.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createMagnumTemplate(projectID: String, name: String, masterCount: Int, nodeCount: Int) -> FakeMagnumTemplate {
+        magnumTemplateIDCounter += 1
+        let t = FakeMagnumTemplate(id: "ct-\(magnumTemplateIDCounter)", projectID: projectID, name: name, masterCount: masterCount, nodeCount: nodeCount)
+        magnumTemplates.append(t)
+        return t
+    }
+
+    public func deleteMagnumTemplate(id: String, projectID: String) -> Bool {
+        let idx = magnumTemplates.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        magnumTemplates.remove(at: idx)
         return true
     }
 }
