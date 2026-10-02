@@ -104,6 +104,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Swift object-storage client (phase 2).
+    public func objectStorage(region: String? = nil) -> ObjectStorageRegion {
+        ObjectStorageService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

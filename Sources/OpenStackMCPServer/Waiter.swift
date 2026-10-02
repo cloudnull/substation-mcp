@@ -169,6 +169,7 @@ public struct Waiter: Sendable {
         case .blockStorage: return descriptor.name == "volume"
         case .image: return descriptor.name == "image"
         case .identity: return false
+        case .objectStorage: return false
         }
     }
 
@@ -241,6 +242,9 @@ public struct Waiter: Sendable {
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
         case .identity:
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on identity resources not supported")
+        case .objectStorage:
+            // Swift containers/objects have no status a waiter can poll.
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on object-storage resources not supported")
         }
     }
 

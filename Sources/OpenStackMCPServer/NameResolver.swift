@@ -202,6 +202,33 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not resolvable in phase 1")
+        case .objectStorage:
+            let r = await client.objectStorage(region: region)
+            switch descriptor.name {
+            case "container":
+                let c = try await r.getContainer(vt, name: id)
+                return try Self.encodeObject(c)
+            case "object":
+                // Objects are container-scoped; `id` is the object name. Resolve
+                // by scanning the project's containers for a uniquely-named object.
+                let ctns = try await r.listContainers(vt)
+                var found: [Object] = []
+                for ctn in ctns {
+                    if let obj = try? await r.getObject(vt, container: ctn.name, name: id) {
+                        found.append(obj)
+                    }
+                }
+                switch found.count {
+                case 0:
+                    throw OpenStackError(service: "object-store", status: 404, code: "itemNotFound", message: "No object named '\(id)' found")
+                case 1:
+                    return try Self.encodeObject(found[0])
+                default:
+                    throw AmbiguousNameError(candidates: found.map { (id: $0.name, name: $0.name) })
+                }
+            default:
+                throw OpenStackError(service: "object-store", status: 404, message: "Unknown object-storage resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -275,6 +302,38 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not resolvable in phase 1")
+        case .objectStorage:
+            let r = await client.objectStorage(region: region)
+            switch descriptor.name {
+            case "container":
+                let ctns = try await r.listContainers(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(ctns)
+                result["resource"] = .string("container")
+                result["region"] = .string(region)
+                return result
+            case "object":
+                // Object listing is container-scoped. With a `container` filter,
+                // list objects in that container; without one, flatten objects
+                // across all containers (each tagged with its container name).
+                if let ctn = filters["container"] {
+                    let objs = try await r.listObjects(vt, container: ctn, filters: filters, limit: limit, marker: filters["marker"])
+                    var result: [String: JSONValue] = try Self.encodeList(objs)
+                    result["resource"] = .string("object")
+                    result["region"] = .string(region)
+                    return result
+                }
+                let ctns = try await r.listContainers(vt, limit: limit)
+                var all: [Object] = []
+                for c in ctns {
+                    all.append(contentsOf: (try? await r.listObjects(vt, container: c.name, limit: limit)) ?? [])
+                }
+                var result: [String: JSONValue] = try Self.encodeList(all)
+                result["resource"] = .string("object")
+                result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "object-store", status: 404, message: "Unknown object-storage resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -392,6 +451,27 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not creatable in phase 1")
+        case .objectStorage:
+            let r = await client.objectStorage(region: region)
+            switch descriptor.name {
+            case "container":
+                let name = obj["name"]?.stringValue ?? "mcp-container"
+                let spec = CreateContainerSpec(name: name, quotaBytes: obj["quota_bytes"]?.intValue)
+                let c = try await r.createContainer(vt, spec)
+                return try Self.encodeObject(c)
+            case "object":
+                let container = obj["container"]?.stringValue
+                let name = obj["name"]?.stringValue ?? "mcp-object"
+                guard let container else {
+                    throw OpenStackError(service: "object-store", status: 400, message: "object create requires a 'container'")
+                }
+                let content = obj["content"]?.stringValue ?? ""
+                let spec = CreateObjectSpec(container: container, name: name, content: content, contentType: obj["content_type"]?.stringValue ?? "application/octet-stream")
+                let o = try await r.createObject(vt, spec)
+                return try Self.encodeObject(o)
+            default:
+                throw OpenStackError(service: "object-store", status: 400, message: "Unknown object-storage create: \(descriptor.name)")
+            }
         }
     }
 
@@ -441,6 +521,9 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not updatable in phase 1")
+        case .objectStorage:
+            // Swift containers/objects have no partial-update path in phase 2.
+            throw OpenStackError(service: "object-store", status: 501, message: "Object-storage resources are not updatable (re-create instead)")
         }
     }
 
@@ -484,6 +567,31 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity resources not deletable in phase 1")
+        case .objectStorage:
+            let r = await client.objectStorage(region: region)
+            switch descriptor.name {
+            case "container":
+                try await r.deleteContainer(vt, name: id)
+            case "object":
+                // Object delete is container-scoped; `id` is the object name.
+                // Resolve the (unique) container holding it, then delete.
+                let ctns = try await r.listContainers(vt)
+                var target: String? = nil
+                for ctn in ctns {
+                    if (try? await r.getObject(vt, container: ctn.name, name: id)) != nil {
+                        if target != nil {
+                            throw AmbiguousNameError(candidates: [(id: id, name: id), (id: id, name: id)])
+                        }
+                        target = ctn.name
+                    }
+                }
+                guard let ctn = target else {
+                    throw OpenStackError(service: "object-store", status: 404, code: "itemNotFound", message: "No object named '\(id)' found")
+                }
+                try await r.deleteObject(vt, container: ctn, name: id)
+            default:
+                throw OpenStackError(service: "object-store", status: 400, message: "Unknown object-storage delete: \(descriptor.name)")
+            }
         }
         return ["deleted": .bool(true), "id": .string(id)]
     }
@@ -636,6 +744,9 @@ public actor NameResolver {
             }
         case .identity:
             throw OpenStackError(service: "keystone", status: 501, message: "Identity actions not supported in phase 1")
+        case .objectStorage:
+            // Phase 2 Swift has no custom actions (protect/delete are verbs).
+            throw OpenStackError(service: "object-store", status: 501, message: "Object-storage actions not supported (use delete for removal)")
         }
     }
 

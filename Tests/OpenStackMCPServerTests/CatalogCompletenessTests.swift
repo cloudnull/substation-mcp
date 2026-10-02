@@ -48,10 +48,12 @@ struct CatalogCompletenessTests {
             "volume", "volume_type", "volume_snapshot", "volume_backup", "volume_quota",
             // Image (1)
             "image",
+            // Object storage (2) — phase 2
+            "container", "object",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 35, "Expected 35 resources (10+10+9+5+1), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 37, "Expected 37 resources (10+10+9+5+1+2), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -327,5 +329,22 @@ struct CatalogCompletenessTests {
     @Test("image has 1 resource")
     func imageCount() {
         #expect(catalog.resources(for: .image).count == 1, "Expected 1 image resource, got \(catalog.resources(for: .image).count)")
+    }
+
+    @Test("objectStorage has 2 resources")
+    func objectStorageCount() {
+        #expect(catalog.resources(for: .objectStorage).count == 2, "Expected 2 object-storage resources, got \(catalog.resources(for: .objectStorage).count)")
+    }
+
+    @Test("container + object descriptors are well-formed")
+    func objectStorageDescriptors() {
+        let ctn = catalog.descriptor("container")!
+        #expect(ctn.service == .objectStorage)
+        #expect(ctn.verbs.contains(.list) && ctn.verbs.contains(.create) && ctn.verbs.contains(.delete))
+        #expect(!ctn.verbs.contains(.update))
+        let obj = catalog.descriptor("object")!
+        #expect(obj.service == .objectStorage)
+        #expect(obj.createSchema != nil)
+        #expect(obj.listFilters.contains("container"))
     }
 }

@@ -348,6 +348,48 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Swift (object storage) fake state
+
+    public struct FakeContainer: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var quotaBytes: Int?
+        public var metadata: [String: String]
+        public var created: String
+
+        public init(id: String, projectID: String, name: String = "", quotaBytes: Int? = nil, metadata: [String: String] = [:], created: String = "2026-01-01T00:00:00.000") {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.quotaBytes = quotaBytes
+            self.metadata = metadata
+            self.created = created
+        }
+    }
+
+    public struct FakeObject: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var container: String
+        public var name: String
+        public var size: Int
+        public var contentType: String
+        public var data: Data
+        public var metadata: [String: String]
+
+        public init(id: String, projectID: String, container: String, name: String = "", size: Int = 0, contentType: String = "application/octet-stream", data: Data = Data(), metadata: [String: String] = [:]) {
+            self.id = id
+            self.projectID = projectID
+            self.container = container
+            self.name = name
+            self.size = size
+            self.contentType = contentType
+            self.data = data
+            self.metadata = metadata
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
@@ -367,6 +409,8 @@ public actor FakeState {
     public private(set) var snapshots: [FakeSnapshot] = []
     public private(set) var backups: [FakeBackup] = []
     public private(set) var images: [FakeImage] = []
+    public private(set) var containers: [FakeContainer] = []
+    public private(set) var objects: [FakeObject] = []
     public var extensions: Set<String> = ["provider", "qos", "security-group", "address-group"]
 
     // MARK: - Keystone catalog (services + endpoints) for register-catalog
@@ -620,6 +664,8 @@ public actor FakeState {
     private var fipIDCounter = 0
     private var agIDCounter = 0
     private var volIDCounter = 0
+    private var containerIDCounter = 0
+    private var objectIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -842,6 +888,12 @@ public actor FakeState {
             created: "2026-01-01T00:00:00.000",
             updated: "2026-01-01T00:00:00.000"
         ))
+
+        // Swift (object storage) seed: one container with one object.
+        containerIDCounter = 1
+        containers.append(FakeContainer(id: "ctn-1", projectID: "proj-one", name: "fake-bucket"))
+        objectIDCounter = 1
+        objects.append(FakeObject(id: "obj-1", projectID: "proj-one", container: "fake-bucket", name: "hello.txt", size: 11, contentType: "text/plain", data: Data("hello world".utf8)))
     }
 
     // MARK: - Token minting
@@ -1764,5 +1816,78 @@ public actor FakeState {
         guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
         images[idx].tags.removeAll { $0 == tag }
         return images[idx]
+    }
+
+    // MARK: - Swift (object storage) CRUD
+
+    public func listContainers(projectID: String, prefix: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeContainer] {
+        var result = containers.filter { $0.projectID == projectID }
+        if let prefix { result = result.filter { $0.name.hasPrefix(prefix) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.name == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getContainer(name: String, projectID: String) -> FakeContainer? {
+        containers.first { $0.name == name && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createContainer(projectID: String, name: String, quotaBytes: Int? = nil, metadata: [String: String] = [:]) -> FakeContainer? {
+        guard getContainer(name: name, projectID: projectID) == nil else { return nil }
+        containerIDCounter += 1
+        let ctn = FakeContainer(id: "ctn-\(containerIDCounter)", projectID: projectID, name: name, quotaBytes: quotaBytes, metadata: metadata)
+        containers.append(ctn)
+        return ctn
+    }
+
+    public func deleteContainer(name: String, projectID: String) -> Bool {
+        let idx = containers.firstIndex { $0.name == name && $0.projectID == projectID }
+        guard let idx else { return false }
+        containers.remove(at: idx)
+        // Swift: deleting a container also removes its objects.
+        objects.removeAll { $0.container == name && $0.projectID == projectID }
+        return true
+    }
+
+    public func listObjects(projectID: String, container: String, prefix: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeObject] {
+        var result = objects.filter { $0.projectID == projectID && $0.container == container }
+        if let prefix { result = result.filter { $0.name.hasPrefix(prefix) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.name == marker }) {
+            result = Array(result[(idx + 1)...])
+        }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func countObjects(projectID: String, container: String) -> Int {
+        objects.filter { $0.projectID == projectID && $0.container == container }.count
+    }
+
+    public func sumObjectBytes(projectID: String, container: String) -> Int {
+        objects.filter { $0.projectID == projectID && $0.container == container }.reduce(0) { $0 + $1.size }
+    }
+
+    public func getObject(projectID: String, container: String, name: String) -> FakeObject? {
+        objects.first { $0.projectID == projectID && $0.container == container && $0.name == name }
+    }
+
+    @discardableResult
+    public func createObject(projectID: String, container: String, name: String, data: Data, contentType: String = "application/octet-stream", metadata: [String: String] = [:]) -> FakeObject {
+        objectIDCounter += 1
+        let obj = FakeObject(id: "obj-\(objectIDCounter)", projectID: projectID, container: container, name: name, size: data.count, contentType: contentType, data: data, metadata: metadata)
+        objects.append(obj)
+        return obj
+    }
+
+    public func deleteObject(projectID: String, container: String, name: String) -> Bool {
+        let idx = objects.firstIndex { $0.projectID == projectID && $0.container == container && $0.name == name }
+        guard let idx else { return false }
+        objects.remove(at: idx)
+        return true
     }
 }
