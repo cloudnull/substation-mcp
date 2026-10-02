@@ -473,7 +473,13 @@ struct ConformanceRunner {
         // 3. tools/call os_whoami -> 200, isError not true.
         let whoamiBody = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"os_whoami","arguments":{}}}"#
         let (callStatus, _, callResp) = await raw(endpoint: endpoint, method: "POST", token: tokenID, sessionID: sid, body: whoamiBody)
-        let whoamiOk = callStatus == 200 && callResp.contains("os_whoami") && !callResp.contains(#"isError":true"#)
+        // A successful tools/call returns a JSON-RPC "result" with content; it
+        // does NOT echo the tool name. So assert on the result envelope, not the
+        // literal name (earlier versions wrongly required "os_whoami" in the
+        // body, which a valid response never contains).
+        let whoamiOk = callStatus == 200
+            && !callResp.contains(#"isError":true"#)
+            && (callResp.contains(#""result""#) || callResp.contains(#""content""#))
         steps.append(.init(name: "tools/call os_whoami", ok: whoamiOk, detail: "status=\(callStatus)"))
 
         // 4. DELETE -> 200, terminates the session.
