@@ -20,6 +20,7 @@ public struct OpenStackMCPConfig: Sendable {
 
     // MARK: auth
     public var authProfile: String
+    public var authScopes: String
     public var authKeystoneURL: String?
     public var authTokenCacheTTL: Int        // seconds
     public var authFailedAuthPerMinute: Int
@@ -62,6 +63,7 @@ public struct OpenStackMCPConfig: Sendable {
         serverTLSCert: String? = nil,
         serverTLSKey: String? = nil,
         authProfile: String = "keystone_token",
+        authScopes: String = "coarse",
         authKeystoneURL: String? = nil,
         authTokenCacheTTL: Int = 60,
         authFailedAuthPerMinute: Int = 10,
@@ -95,6 +97,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.serverTLSCert = serverTLSCert
         self.serverTLSKey = serverTLSKey
         self.authProfile = authProfile
+        self.authScopes = authScopes
         self.authKeystoneURL = authKeystoneURL
         self.authTokenCacheTTL = authTokenCacheTTL
         self.authFailedAuthPerMinute = authFailedAuthPerMinute
@@ -136,6 +139,12 @@ public struct OpenStackMCPConfig: Sendable {
     /// The auth profile as the typed enum.
     public var authProfileEnum: AuthProfile {
         AuthProfile(rawValue: authProfile) ?? .keystoneToken
+    }
+
+    /// Whether P2 per-service scopes are enabled (`auth.scopes = per_service`).
+    /// Default is `coarse`: a write-scoped token may mutate any service.
+    public var authScopesPerService: Bool {
+        authScopes == "per_service"
     }
 
     /// Projects this deployment serves; empty = serve all (the phase-1 default).

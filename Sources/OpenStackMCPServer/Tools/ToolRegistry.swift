@@ -29,10 +29,22 @@ public struct RequestIdentity: Sendable {
 /// The registry is scope-aware: a read-only token gets 9 tools,
 /// a write-scoped token gets all 15.
 public struct ToolRegistry: Sendable {
+    /// How write scope is enforced (spec §6.1.2 / P2 per-service scopes).
+    public enum ScopeMode: Sendable {
+        /// Coarse (default): a token with `openstack:write` may mutate any
+        /// service. This is the phase-1 behavior.
+        case coarse
+        /// Per-service (P2): a token with `openstack:write` may mutate only
+        /// services present in its own token catalog.
+        case perService
+    }
+
     public let client: OpenStackClient
     public let catalog: ResourceCatalog
     public let policy: Policy
     public let identity: RequestIdentity
+    /// The scope-enforcement mode (default `coarse` = phase-1 behavior).
+    public let scopeMode: ScopeMode
     public let logger: Logger
     /// Whether to emit one audit log line per mutating tool call (spec §12,
     /// gated by `log.audit`, default true).
@@ -46,6 +58,7 @@ public struct ToolRegistry: Sendable {
         catalog: ResourceCatalog,
         policy: Policy = Policy(),
         identity: RequestIdentity,
+        scopeMode: ScopeMode = .coarse,
         logger: Logger = Logger(label: "openstack-mcp"),
         auditEnabled: Bool = true,
         callLimiter: ToolCallLimiter? = nil
@@ -54,12 +67,53 @@ public struct ToolRegistry: Sendable {
         self.catalog = policy.effective(catalog)
         self.policy = policy
         self.identity = identity
+        self.scopeMode = scopeMode
         self.logger = logger
         self.auditEnabled = auditEnabled
         // A limiter that never throttles (limit far above any real usage) is
         // the default so existing constructions/tests are unaffected; the
         // serve path passes a real one sized to `policy.maxCallsPerMinute`.
         self.callLimiter = callLimiter ?? ToolCallLimiter(limitPerMinute: .max)
+    }
+
+    /// In `perService` mode, the set of catalog service types the token may
+    /// write to. In `coarse` mode this is unused.
+    private var allowedWriteServices: Set<String> {
+        Set(identity.vt.token.catalog.map(\.type))
+    }
+
+    /// The per-service scope enforcement for a mutating tool call (P2, spec
+    /// §6.1.2). Returns an `insufficient_scope` error when the call targets a
+    /// service absent from the token's catalog, or `nil` to allow. In `coarse`
+    /// mode this always returns `nil` (phase-1 behavior).
+    func serviceScopeError(tool: String, params: CallTool.Parameters) -> OpenStackError? {
+        guard scopeMode == .perService else { return nil }
+
+        /// The service for a `resource`/`*_type` argument, when it names a
+        /// known catalog resource.
+        func serviceFor(_ key: String) -> Service? {
+            guard let name = argOptional(params, key) else { return nil }
+            return catalog.descriptor(name)?.service
+        }
+
+        let targetServices: [Service]
+        switch tool {
+        case "os_create", "os_update", "os_delete", "os_action":
+            targetServices = serviceFor("resource").map { [$0] } ?? []
+        case "os_attach", "os_detach":
+            targetServices = [serviceFor("source_type"), serviceFor("target_type")].compactMap { $0 }
+        default:
+            return nil
+        }
+
+        let allowed = allowedWriteServices
+        let denied = targetServices.filter { !allowed.contains($0.serviceTypeName) }
+        guard !denied.isEmpty else { return nil }
+        let names = denied.map { "\($0.serviceTypeName):write" }
+        return OpenStackError(
+            service: "mcp", status: 403, code: "insufficient_scope",
+            message: "Tool \(tool) requires \(names.joined(separator: ", ")); the token's catalog does not include \(denied.map(\.serviceTypeName).joined(separator: ", "))"
+        )
     }
 
     public var hasWrite: Bool {
@@ -163,6 +217,16 @@ public struct ToolRegistry: Sendable {
                     OpenStackError(service: "mcp", status: 403, code: "insufficient_scope", message: "Tool \(params.name) requires write scope"),
                     what: "Calling \(params.name)"
                 ), metadata: nil)],
+                isError: true
+            )
+        }
+
+        // P2 per-service scopes: a write-scoped token may mutate only services
+        // present in its own catalog (no-op in `coarse` mode).
+        if isMutating, hasWrite, let scopeErr = serviceScopeError(tool: params.name, params: params) {
+            OSMetrics.toolCall(tool: params.name, outcome: "forbidden")
+            return CallTool.Result(
+                content: [.text(text: errorParagraph(scopeErr, what: "Calling \(params.name)"), metadata: nil)],
                 isError: true
             )
         }

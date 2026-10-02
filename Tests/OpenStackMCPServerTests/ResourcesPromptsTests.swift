@@ -272,4 +272,22 @@ struct ResourcesPromptsTests {
         #expect(text.contains("0600"), "should mention file mode")
         #expect(text.contains("401"), "should mention re-running on 401")
     }
+
+    @Test("login prompt only ever offers URL-mode / client-mint (never form-mode credential collection)")
+    func loginPromptIsURLModeOnly() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let prompt = try await bundle.mcpClient.getPrompt(name: "login")
+        let text = promptText(prompt)
+        // The two sanctioned paths: client-side mint, or the server's URL-mode login page.
+        #expect(text.contains("Client-side mint"), "should offer client-side mint: \(text)")
+        #expect(text.contains("/v1/login"), "should offer the URL-mode login page: \(text)")
+        #expect(text.lowercased().contains("out-of-band"), "credentials enter out-of-band (never via the MCP client): \(text)")
+        // Spec §6.1b: credentials MUST NOT be collected via form-mode elicitation.
+        #expect(!text.lowercased().contains("form mode"), "must not instruct form-mode credential entry: \(text)")
+        #expect(!text.lowercased().contains("form-mode"), "must not instruct form-mode credential entry: \(text)")
+    }
 }

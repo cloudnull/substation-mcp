@@ -74,6 +74,7 @@ public struct CloudWiring: Sendable {
     public func makeServerFactory(
         policy: Policy,
         catalog: ResourceCatalog = ResourceCatalog.phase1(),
+        scopeMode: ToolRegistry.ScopeMode = .coarse,
         logger: Logger,
         auditEnabled: Bool = true
     ) -> @Sendable (ValidatedIdentity) async -> MCPServer {
@@ -101,6 +102,7 @@ public struct CloudWiring: Sendable {
                     catalog: catalog,
                     policy: policy,
                     identity: identity,
+                    scopeMode: scopeMode,
                     logger: logger,
                     auditEnabled: auditEnabled,
                     callLimiter: callLimiter
@@ -132,6 +134,7 @@ public struct CloudWiring: Sendable {
                     catalog: catalog,
                     policy: policy,
                     identity: identity,
+                    scopeMode: scopeMode,
                     logger: logger,
                     auditEnabled: auditEnabled,
                     callLimiter: callLimiter

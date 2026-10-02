@@ -366,6 +366,30 @@ struct HardeningTests {
         }
     }
 
+    // MARK: - Login page is URL-mode (spec §6.1b): a server-rendered HTML form,
+    // not a form-mode MCP elicitation. Credentials enter the server's page
+    // out-of-band; the MCP client never sees them.
+
+    @Test("GET /v1/login renders the URL-mode HTML form (not a form-mode elicitation)")
+    func loginPageIsURLMode() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            let response = try await sendRequest(client, uri: "/v1/login", method: .get)
+            #expect(response.status == .ok, "login page should 200, got \(response.status)")
+            let html = bodyString(response)
+            #expect(html.contains("<form"), "URL-mode page renders an HTML form the user fills in the browser: \(html)")
+            #expect(html.lowercased().contains("secret"), "form includes the credential field: \(html)")
+            // The page is plain HTML served to a browser — it must not be an
+            // MCP JSON-RPC elicitation response (form-mode credential collection
+            // is forbidden, spec §6.1b).
+            #expect(!html.hasPrefix("{"), "login page must be HTML, not a JSON-RPC elicitation envelope: \(html)")
+        }
+    }
+
     // MARK: - PRM at both URLs
 
     @Test("PRM document served at both canonical and endpoint-scoped URLs")
@@ -389,6 +413,43 @@ struct HardeningTests {
             let b2 = bodyString(r2)
             #expect(b2.contains("resource") && b2.contains("authorization_servers") && b2.contains("scopes_supported"),
                     "scoped PRM missing RFC 9728 keys: \(b2)")
+        }
+    }
+
+    // MARK: - PRM advertises per-service scopes only when enabled (P2)
+
+    @Test("PRM advertises per-service scopes when auth.scopes = per_service")
+    func prmPerServiceAdvertised() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        var cfg = defaultConfig
+        cfg.authScopes = "per_service"
+        let app = makeServeApp(handle: handle, config: cfg, tokenStore: store)
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            let r = try await sendRequest(client, uri: "/.well-known/oauth-protected-resource", method: .get)
+            #expect(r.status == .ok, "PRM should 200, got \(r.status)")
+            let body = bodyString(r)
+            #expect(body.contains("compute:write"), "per-service mode should advertise compute:write: \(body)")
+            #expect(body.contains("network:write"), "per-service mode should advertise network:write: \(body)")
+            #expect(body.contains("openstack:write"), "base write scope still advertised: \(body)")
+        }
+    }
+
+    @Test("PRM advertises only coarse scopes by default (auth.scopes = coarse)")
+    func prmCoarseDefault() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            let r = try await sendRequest(client, uri: "/.well-known/oauth-protected-resource", method: .get)
+            #expect(r.status == .ok, "PRM should 200, got \(r.status)")
+            let body = bodyString(r)
+            #expect(body.contains("openstack:read") && body.contains("openstack:write"), "base scopes advertised: \(body)")
+            #expect(!body.contains("compute:write"), "coarse mode must NOT advertise per-service scopes: \(body)")
         }
     }
 

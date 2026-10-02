@@ -60,7 +60,10 @@ public struct ServeApp: Sendable {
         let prmDocument = ProtectedResourceMetadata.document(
             publicURL: publicURL,
             authProfile: config.authProfileEnum,
-            keystoneURL: keystoneURL
+            keystoneURL: keystoneURL,
+            scopesSupported: config.authScopesPerService
+                ? ["openstack:read", "openstack:write"] + Service.allServiceScopeNames
+                : nil
         )
 
         let minter = LoginMinter(transport: wiring.transport, logger: logger)
@@ -68,6 +71,7 @@ public struct ServeApp: Sendable {
 
         let serverFactory = wiring.makeServerFactory(
             policy: policy,
+            scopeMode: config.authScopesPerService ? .perService : .coarse,
             logger: logger,
             auditEnabled: config.logAudit
         )

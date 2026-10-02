@@ -118,6 +118,92 @@ func makeRegistry(handle: FakeHandle, credID: String, secret: String) async thro
     )
 }
 
+/// Like `makeRegistry` but with `auth.scopes = per_service` enabled (P2), so
+/// the write gate enforces per-service catalog presence.
+func makeRegistryPerService(handle: FakeHandle, credID: String, secret: String) async throws -> MCPTestBundle {
+    let logger = Logger(label: "test")
+
+    guard let ft = await handle.state.mintToken(credID: credID, secret: secret, domain: nil, password: nil, userID: nil) else {
+        throw OpenStackError(service: "test", status: 500, message: "Failed to mint token for \(credID)")
+    }
+    let vt = try await decodeToken(id: ft.id, keystoneURL: handle.keystoneURL)
+
+    let whoami = Whoami(
+        project: IdentityRef(id: ft.projectID, name: ft.projectName),
+        domain: IdentityRef(id: ft.domainID, name: ft.domainName),
+        roles: ft.roles,
+        scopes: deriveScopes(roles: ft.roles),
+        expiresAt: ft.expiresAt,
+        regions: ["RegionOne"],
+        services: [
+            "compute": ["nova"],
+            "network": ["neutron"],
+            "volumev3": ["cinder"],
+            "image": ["glance"],
+        ]
+    )
+    let identity = RequestIdentity(vt: vt, whoami: whoami, cloudName: "fake")
+
+    let cloud = CloudEntry(
+        name: "fake",
+        authURL: URL(string: handle.url.absoluteString)!,
+        regionName: nil
+    )
+    let cache = Cache(maxEntries: 100)
+    let transport = Transport(
+        cloud: cloud,
+        tokenSource: { ft.id },
+        logger: logger
+    )
+    let validator = TokenValidator(
+        transport: transport,
+        cache: cache,
+        servedProjects: []
+    )
+    let client = OpenStackClient(
+        cloud: cloud,
+        transport: transport,
+        cache: cache,
+        validator: validator,
+        logger: logger
+    )
+
+    let catalog = ResourceCatalog.phase1()
+    let policy = Policy()
+    let registry = ToolRegistry(
+        client: client, catalog: catalog, policy: policy, identity: identity,
+        scopeMode: .perService, logger: logger
+    )
+    return try await finishBundle(registry: registry, client: client, identity: identity) { transport.syncShutdown() }
+}
+
+/// Shared tail of the registry builders: start the in-memory MCP server, connect
+/// the client, and bundle everything for shutdown. The shutdown action is passed
+/// as a closure so the `Transport` type is never *named* (it is ambiguous against
+/// the MCP SDK's `Transport` in files that import both modules).
+func finishBundle(
+    registry: ToolRegistry,
+    client: OpenStackClient,
+    identity: RequestIdentity,
+    _ shutdown: @escaping @Sendable () -> Void
+) async throws -> MCPTestBundle {
+    let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
+    let mcpClient = MCP.Client(name: "test-client", version: "1.0.0")
+    let server = await registry.makeServer()
+
+    // Start server first so its receive loop is ready before the client sends initialize
+    try await server.start(transport: serverTransport)
+    _ = try await mcpClient.connect(transport: clientTransport)
+
+    return MCPTestBundle(
+        mcpClient: mcpClient,
+        mcpServer: server,
+        client: client,
+        identity: identity,
+        shutdownClosure: shutdown
+    )
+}
+
 /// Extract the first text content from a callTool result.
 func firstText(_ content: [Tool.Content]) -> String? {
     for block in content {

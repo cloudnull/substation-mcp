@@ -41,7 +41,8 @@ public struct ProtectedResourceMetadata: Codable, Sendable {
         publicURL: String?,
         authProfile: AuthProfile,
         keystoneURL: URL?,
-        authServerURL: URL? = nil
+        authServerURL: URL? = nil,
+        scopesSupported: [String]? = nil
     ) -> ProtectedResourceMetadata {
         let resource = publicURL ?? keystoneURL?.absoluteString ?? ""
         let servers: [String]
@@ -56,7 +57,7 @@ public struct ProtectedResourceMetadata: Codable, Sendable {
         return ProtectedResourceMetadata(
             resource: resource,
             authorizationServers: servers,
-            scopesSupported: ["openstack:read", "openstack:write"]
+            scopesSupported: scopesSupported ?? ["openstack:read", "openstack:write"]
         )
     }
 

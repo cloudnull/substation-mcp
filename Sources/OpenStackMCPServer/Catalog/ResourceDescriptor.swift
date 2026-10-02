@@ -16,6 +16,37 @@ public enum Service: String, Sendable, CaseIterable, Codable {
     case sharev2
 }
 
+extension Service {
+    /// The Keystone catalog `service_type` that this service resolves to in a
+    /// token's catalog. Used by P2 per-service scopes: a token may mutate a
+    /// service only if its own catalog contains this type.
+    ///
+    /// Note this is the *catalog* type, which for block storage is `volumev3`
+    /// (the Cinder v3 service type real clouds advertise), NOT the v2 `volume`
+    /// alias.
+    public var serviceTypeName: String {
+        switch self {
+        case .identity: "identity"
+        case .compute: "compute"
+        case .network: "network"
+        case .blockStorage: "volumev3"
+        case .image: "image"
+        case .objectStorage: "object-store"
+        case .keyManager: "key-manager"
+        case .loadBalancer: "load-balancer"
+        case .dns: "dns"
+        case .containerInfra: "container-infra"
+        case .orchestration: "orchestration"
+        case .sharev2: "sharev2"
+        }
+    }
+
+    /// Every per-service scope name, for PRM advertisement (`<type>:write`).
+    public static var allServiceScopeNames: [String] {
+        allCases.map { "\($0.serviceTypeName):write" }
+    }
+}
+
 /// The five resource verbs.
 public enum Verb: String, Sendable, CaseIterable, Codable {
     case list

@@ -108,7 +108,11 @@ struct StdioCommand: AsyncParsableCommand {
             scopes: vt.scopes.map { $0.rawValue },
             raw: HummingbirdMCP.AnyTokenPayload(data: try JSONEncoder().encode(vt.token))
         )
-        let factory = wiring.makeServerFactory(policy: policy, logger: logger)
+        let factory = wiring.makeServerFactory(
+            policy: policy,
+            scopeMode: cfg.authScopesPerService ? .perService : .coarse,
+            logger: logger
+        )
         let server = await factory(identity)
 
         let transport = StdioTransport(logger: nil)
@@ -176,14 +180,12 @@ struct CheckCommand: AsyncParsableCommand {
             // Negotiated versions per service present in the catalog.
             var versions: [String: Microversion] = [:]
             for svc in ["compute", "volumev3"] {
-                if whoami.services[svc] != nil {
-                    let clientMax = svc == "compute" ? Microversion(major: 2, minor: 104) : Microversion(major: 3, minor: 70)
-                    let floor: Microversion? = svc == "compute" ? nil : Microversion(major: 3, minor: 44)
+                if whoami.services[svc] != nil, let profile = ServiceVersionProfile.profile(for: svc) {
                     let negotiator = VersionNegotiator(
                         transport: wiring.transport, cache: wiring.cache,
-                        serviceType: svc, clientMax: clientMax, floor: floor, logger: logger
+                        profile: profile, logger: logger
                     )
-                    do { versions[svc] = try await negotiator.negotiate(region: region) }
+                    do { versions[svc] = try await negotiator.negotiate(region: region).version }
                     catch { /* service absent or unreachable — skip */ }
                 }
             }
