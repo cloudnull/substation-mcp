@@ -49,6 +49,56 @@ struct TransportTests {
         #expect(requestID == rid)
     }
 
+    // Some Keystone versions (e.g. 3.14) only honor the token on the whoami
+    // endpoint (GET /v3/auth/tokens) when it is sent as X-Subject-Token; they
+    // ignore it on X-Auth-Token there. The transport must therefore present the
+    // token on BOTH headers so the server-side validator works everywhere.
+    @Test func presentsTokenOnXSubjectTokenToo() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        server.addHandler("/headers") { req in
+            let json = """
+            {"x-auth-token":"\(req.headers["x-auth-token"] ?? "")","x-subject-token":"\(req.headers["x-subject-token"] ?? "")"}
+            """
+            return (200, json, [("Content-Type", "application/json")])
+        }
+
+        let transport = makeTransport(baseURL: server.baseURL)
+        defer { transport.syncShutdown() }
+        let (status, body, _) = try await transport.request(
+            method: "GET", service: "test", path: "/headers"
+        )
+        #expect(status == 200)
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: String]
+        #expect(json["x-auth-token"] == "tok-123")
+        #expect(json["x-subject-token"] == "tok-123", "token must also be sent as X-Subject-Token")
+    }
+
+    @Test func noTokenMeansNoXSubjectTokenHeader() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        server.addHandler("/headers") { req in
+            let json = """
+            {"x-subject-token":"\(req.headers["x-subject-token"] ?? "")"}
+            """
+            return (200, json, [("Content-Type", "application/json")])
+        }
+
+        // tokenOverride: "" suppresses the standing token source (anonymous req).
+        let transport = makeTransport(baseURL: server.baseURL)
+        defer { transport.syncShutdown() }
+        let (status, body, _) = try await transport.request(
+            method: "GET", service: "test", path: "/headers", tokenOverride: ""
+        )
+        #expect(status == 200)
+        let json = try JSONSerialization.jsonObject(with: body) as! [String: String]
+        #expect(json["x-subject-token"] == "", "no token => no X-Subject-Token header")
+    }
+
     // MARK: - Retry
 
     @Test func retriesOn503ForGET() async throws {

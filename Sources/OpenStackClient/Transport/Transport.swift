@@ -106,6 +106,10 @@ public actor Transport {
         var req = try HTTPClient.Request(url: url.absoluteString, method: .init(rawValue: method))
         if let token, !token.isEmpty {
             req.headers.add(name: "X-Auth-Token", value: token)
+            // Some Keystone versions (e.g. 3.14) only honor the token on the
+            // whoami endpoint when it is also sent as X-Subject-Token; sending
+            // both is standard and compatible across Keystone versions.
+            req.headers.add(name: "X-Subject-Token", value: token)
         }
         req.headers.add(name: "Accept", value: "application/json")
         req.headers.add(name: "Content-Type", value: "application/json")
