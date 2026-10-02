@@ -5,6 +5,10 @@
 #   OSMCP_IT_CLOUD=sat0 OSMCP_IT_CLOUDS=<this-file> swift test --filter IntegrationTests
 #
 # auth_url is the Keystone BASE (no trailing /v3) — the client appends /v3/... .
+# NOTE: the read-only client service calls (list/get servers, etc.) currently
+# route under auth_url, so they only reach a real cloud whose services share the
+# Keystone host. Multi-endpoint clouds (nova/neutron on separate hosts) need the
+# per-service endpoint-resolution follow-up before those calls succeed.
 clouds:
   sat0:
     region_name: SAT0
