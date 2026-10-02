@@ -20,12 +20,22 @@ This follows the same pattern as Genestack's built-in add-ons
 
 | Path | Purpose |
 |------|---------|
-| `helm/openstack-mcp/` | The Helm chart (Deployment, Service, ConfigMaps, Secret, ServiceAccount, optional Gateway+HTTPRoute). |
-| `kustomize/base/` | Kustomize base (namespace, common labels, placeholder `all.yaml`). |
+| `helm/openstack-mcp/` | The Helm chart (Deployment, Service, config ConfigMap, clouds Secret, ServiceAccount, optional Gateway+HTTPRoute). |
+| `kustomize/base/` | Kustomize base (namespace, common labels, `all.yaml` written by the post-renderer). |
 | `kustomize/overlay/` | Kustomize overlay (post-renderer target for the install script). |
 | `install-openstack-mcp.sh` | The install/upgrade script (mirrors `bin/install-barbican-exporter.sh`). |
 | `base-helm-configs/openstack-mcp-helm-overrides.yaml` | Baseline Helm overrides to copy into the Genestack tree. |
 | `helm-chart-versions.yaml` | The one-line version entry to append to `/etc/genestack/helm-chart-versions.yaml`. |
+
+> **How the post-renderer works:** `install-openstack-mcp.sh` invokes
+> `helm upgrade --install --post-renderer /etc/genestack/kustomize/kustomize.sh
+> --post-renderer-args openstack-mcp/overlay`. Genestack's `kustomize.sh`
+> writes the `helm template` output (stdin) to `kustomize/base/all.yaml`, then
+> runs `kubectl kustomize kustomize/overlay/`. The overlay's `resources:
+> [../base]` pulls in that written `all.yaml`, applies the Genestack namespace
+> + labels, and emits the final manifests. The checked-in `all.yaml` is a
+> placeholder so `kustomize build` works in CI without running the install
+> script first.
 
 ## Step 1 — Build and push the image
 
@@ -104,13 +114,15 @@ If you set `gateway.enabled=true`, the chart renders an `HTTPRoute` (and a
 `Gateway` if `gateway.createGateway=true`). Ensure:
 
 1. The `gatewayClassName` matches your cluster's GatewayClass
-   (`envoy-gateway` for Envoy, `poundcake` for Poundcake).
+   (`envoy-gateway` for Envoy, `poundcake` for Poundcake). Check with
+   `kubectl get gatewayclass`.
 2. A TLS certificate for `gateway.fqdn` is available to the listener
    (cert-manager or a manually-created Secret).
-3. **Response buffering is disabled** for the `/v1` and `/mcp` routes (SSE).
-   The chart sets `gateway.envoyproxy.io/disable-route-caching: "true"` on
-   the HTTPRoute when `gatewayClassName` is `envoy-gateway`. Verify your
-   Gateway's buffering config matches.
+3. **SSE streaming:** Envoy Gateway and Poundcake do not buffer HTTP
+   responses by default, so the Server-Sent Events on `/v1` and `/mcp`
+   work out of the box — no special annotation is required. If your Gateway
+   implementation DOES buffer responses, see its docs for the exact
+   mechanism to disable buffering on this route.
 4. The FQDN is reachable via MetalLB VIP (Genestack convention).
 
 ## Step 6 — Register the MCP service in Keystone

@@ -6,6 +6,9 @@
 # Then adjust values for your environment. The install script picks up
 # every *.yaml in this directory (in addition to global_overrides and
 # the operator's custom overrides).
+#
+# IMPORTANT: config keys are snake_case (they map 1:1 to the server's
+# ConfigLoader.read lookups, e.g. server__public_url). Do NOT use camelCase.
 
 # ── Image ──────────────────────────────────────────────────────────────────────
 image:
@@ -14,7 +17,7 @@ image:
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
-# ── Server config ──────────────────────────────────────────────────────────────
+# ── Server config (snake_case keys, rendered to /etc/openstack-mcp/config.yaml) ─
 # Full config reference: deploy/genestack/helm/openstack-mcp/values.yaml
 # Only set the keys you want to override; the chart's defaults apply for
 # everything else.
@@ -22,44 +25,48 @@ image:
 config:
   server:
     # Public URL (must match the Gateway FQDN + register-catalog PUBLIC_URL).
-    publicUrl: https://openstack-mcp.example.com
+    public_url: https://openstack-mcp.example.com
     # Gate /metrics with a bearer token (recommended for production).
-    metricsToken: "change-me"
+    # Set a strong, unique token — do NOT ship "change-me".
+    metrics_token: ""
   auth:
-    # keystone_token profile (P1, default). Set keystoneUrl if your Keystone
+    # keystone_token profile (P1, default). Set keystone_url if your Keystone
     # is not discoverable via the catalog.
     profile: keystone_token
-    keystoneUrl: ""
+    keystone_url: ""
   clouds:
-    # Default cloud name (must match a key under clouds.cloud_name in cloudsClouds).
+    # Default cloud name (must match a key under `clouds:` in the clouds
+    # section below).
     default: mycloud
   policy:
     # Set read_only: true to expose only the 9 read-only tools.
     read_only: false
 
-# ── clouds.yaml (OpenStack cloud definition) ───────────────────────────────────
-# Fill in your cloud's auth details. The `auth` block must match the
-# clouds.yaml format: https://docs.openstack.org/cli-reference/project/clouds-yaml.html
+# ── clouds.yaml (OpenStack cloud definition, rendered into a Secret) ────────────
+# Each key directly under `clouds:` is a cloud name. The value is a flat map
+# the server's CloudConfig.makeEntry reads (snake_case, NOT camelCase):
+#   auth.auth_url, auth.application_credential_id,
+#   auth.application_credential_secret, region_name, interface, verify.
 #
-# If you use an application credential for the login page (appCred),
-# set user_id/secret to empty and enable appCred below — the chart will
-# inject them from the Secret into the pod's env.
-cloudsClouds:
-  cloud_name:
-    mycloud:
-      auth_type: application_credential
-      auth:
-        user_id: ""
-        secret: ""
-        auth_url: "https://keystone.example.com/v3"
-        region_name: "RegionOne"
-      interface: public
-      identity_interface: admin
-      verify: true
+# https://docs.openstack.org/cli-reference/project/clouds-yaml.html
+#
+# If you use an application credential for the /v1/login page, set
+# appCred.enabled: true below — the chart fills the app-cred fields from
+# appCred.id / appCred.secret. Otherwise they stay empty and the server
+# relies on the Bearer token each MCP client presents.
+clouds:
+  mycloud:
+    auth:
+      auth_url: "https://keystone.example.com/v3"
+      application_credential_id: ""
+      application_credential_secret: ""
+    region_name: "RegionOne"
+    interface: public
+    verify: true
 
-# ── Application credential (optional) ──────────────────────────────────────────
-# Enable if you want the /v1/login URL-mode elicitation page.
-# The id+secret are stored in a Secret and injected as env vars.
+# ── Application credential (optional; powers /v1/login URL-mode page) ──────────
+# When enabled, the chart renders appCred.id + appCred.secret into the
+# clouds.yaml Secret's application_credential_id/secret fields.
 appCred:
   enabled: false
   id: ""
@@ -68,6 +75,9 @@ appCred:
 # ── Gateway (external exposure) ────────────────────────────────────────────────
 # Enable to render the HTTPRoute (+ optionally a Gateway). Set fqdn to
 # the FQDN that will be exposed via MetalLB VIP + Gateway API.
+#
+# SSE: Envoy Gateway / Poundcake do not buffer responses by default, so
+# SSE streaming on /v1 + /mcp works out of the box — no annotation needed.
 gateway:
   enabled: true
   createGateway: false    # true only if you have NOT created a Gateway yet

@@ -57,19 +57,6 @@ spec:
               valueFrom: {{ toYaml .valueFrom | nindent 14 }}
               {{- end }}
             {{- end }}
-            # Application credential (optional; powers the /v1/login page).
-            {{- if .Values.appCred.enabled }}
-            - name: OS_APPLICATION_CREDENTIAL_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "openstack-mcp.fullname" . }}-appcred
-                  key: id
-            - name: OS_APPLICATION_CREDENTIAL_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "openstack-mcp.fullname" . }}-appcred
-                  key: secret
-            {{- end }}
           volumeMounts:
             - name: config
               mountPath: /etc/openstack-mcp/config.yaml
@@ -105,8 +92,11 @@ spec:
           configMap:
             name: {{ include "openstack-mcp.fullname" . }}-config
         - name: clouds
-          configMap:
-            name: {{ include "openstack-mcp.fullname" . }}-clouds
+          secret:
+            secretName: {{ include "openstack-mcp.fullname" . }}-clouds
+            items:
+              - key: clouds.yaml
+                path: clouds.yaml
         - name: tmp
           emptyDir: {}
       {{- with .Values.nodeSelector }}

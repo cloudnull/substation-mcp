@@ -38,17 +38,15 @@ spec:
 {{- end }}
 # HTTPRoute: routes traffic for $gw.fqdn to the openstack-mcp Service.
 #
-# CRITICAL FOR SSE: the openstack-mcp server streams Server-Sent Events on
-# /v1 and /mcp. The Gateway MUST NOT buffer responses on these paths.
+# SSE / streaming: the openstack-mcp server streams Server-Sent Events on
+# /v1 and /mcp. Envoy Gateway does NOT buffer HTTP responses by default
+# (it is a streaming L7 proxy), so SSE works out of the box. Poundcake
+# likewise does not buffer by default. No special annotation is required.
 #
-# Envoy Gateway: set this annotation on the HTTPRoute (or on the listener)
-# to disable response buffering:
-#   gateway.envoyproxy.io/disable-route-caching: "true"
-#   gateway.envoyproxy.io/override-backend-protocol: "HTTP"
-#
-# Poundcake: response buffering is off by default for streaming routes.
-#
-# The operator should verify their Gateway's buffering config matches.
+# If your Gateway implementation DOES buffer responses (check your
+# GatewayClass config), disable buffering for this route — see your
+# Gateway's docs for the exact mechanism (e.g. an EnvoyProxy resource with
+# `envoy.filters.http.buffer` tuning, or a route-level filter).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -56,11 +54,6 @@ metadata:
   namespace: {{ $ns }}
   labels:
     {{- include "openstack-mcp.labels" . | nindent 4 }}
-  annotations:
-    # Envoy-specific: disable route caching + buffer for SSE.
-    {{- if eq $gw.gatewayClassName "envoy-gateway" }}
-    gateway.envoyproxy.io/disable-route-caching: "true"
-    {{- end }}
 spec:
   hostnames:
     - "{{ $gw.fqdn }}"

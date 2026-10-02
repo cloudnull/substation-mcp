@@ -133,7 +133,10 @@ helm_command=(
   --create-namespace
   --timeout 120m
 )
-if [[ -n "$SERVICE_VERSION" ]]; then
+# --version is only meaningful for repo charts (not in-tree directory charts).
+# Pass it only when the chart came from a remote repo (HELM_CHART_PATH is a
+# repo/chart reference, not a local directory).
+if [[ -n "$SERVICE_VERSION" && ! -d "$HELM_CHART_PATH" ]]; then
   helm_command+=("--version" "$SERVICE_VERSION")
 fi
 if [[ ${#overrides_args[@]} -gt 0 ]]; then

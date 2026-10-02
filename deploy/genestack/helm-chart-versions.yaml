@@ -1,5 +1,6 @@
 # Add this entry to /etc/genestack/helm-chart-versions.yaml on the Genestack
-# controller node (one line):
+# controller node. The real file has a top-level `charts:` map (see Genestack
+# docs/genestack-structure-and-files.md). Append one indented line under it:
 #
 charts:
   openstack-mcp: 0.1.0
