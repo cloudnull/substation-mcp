@@ -538,6 +538,27 @@ public actor NameResolver {
                 default:
                     throw OpenStackError(service: "compute", status: 400, message: "Unknown server action: \(action)")
                 }
+                // Console actions return a payload (console object / output
+                // string) rather than 202-no-body, so they take a dedicated
+                // client path that decodes the response (spec §12: console
+                // urls are returned only to the requesting session).
+                if action == "console_url" {
+                    let type = params["type"]?.stringValue ?? "novnc"
+                    let console = try await r.getConsole(vt, id, type: type)
+                    return [
+                        "action": .string("console_url"),
+                        "id": .string(id),
+                        "console": .object([
+                            "type": .string(console.type),
+                            "url": .string(console.url),
+                        ]),
+                    ]
+                }
+                if action == "console_output" {
+                    let lines = params["lines"]?.intValue ?? 20
+                    let output = try await r.getConsoleOutput(vt, id, lines: lines)
+                    return ["action": .string("console_output"), "id": .string(id), "output": .string(output)]
+                }
                 let result = try await r.action(vt, id, serverAction)
                 if let s = result {
                     return try Self.encodeObject(s)

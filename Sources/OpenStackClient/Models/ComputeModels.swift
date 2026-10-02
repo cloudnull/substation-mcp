@@ -377,6 +377,18 @@ public struct QuotaSet: Sendable, Codable {
     }
 }
 
+/// A Nova console (vnc/spice/rdp) returned by `getVNCConsole`. The `url` is a
+/// short-lived tokenized endpoint that Nova scopes to the requesting identity.
+public struct Console: Sendable, Equatable, Decodable {
+    public let type: String
+    public let url: String
+
+    public init(type: String, url: String) {
+        self.type = type
+        self.url = url
+    }
+}
+
 /// Server action enum covering all compute actions.
 public enum ServerAction: Sendable, Equatable {
     case start

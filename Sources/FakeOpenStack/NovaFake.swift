@@ -85,6 +85,20 @@ public struct NovaFake {
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
 
+            // Console actions return 200 with a {"console":{...}} body. The url
+            // is scoped to the requesting token (session), so each MCP session
+            // only ever sees the console url it requested (spec §12).
+            if body.contains("\"getVNCConsole\"") {
+                let type = Self.parseConsoleType(body) ?? "novnc"
+                let url = await state.consoleURL(tokenID: tokenID, serverID: id, type: type)
+                return Self.jsonResponse(status: .ok, body: #"""
+                {"console":{"type":"\#(type)","url":"\#(url)"}}
+                """#)
+            }
+            if body.contains("\"getConsoleOutput\"") {
+                return Self.jsonResponse(status: .ok, body: #"{"output":"fake-console-output\n"}"#)
+            }
+
             let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue","resize","confirmResize","revertResize","rebuild","createImage","evacuate","liveMigrate","os-migrate","os-start","os-stop"]
             guard let actionKey = actions.first(where: { body.contains("\"" + $0 + "\"") }) else {
                 return Self.novaError(status: .badRequest, message: "Unknown action")
@@ -349,6 +363,16 @@ public struct NovaFake {
     /// Extract a query parameter from the request URI.
     static func queryParam(_ key: String, from req: Request) -> String? {
         req.uri.queryParameters[Substring(key)].map { String($0) }
+    }
+
+    /// Extract the `"type":"..."` value from a getVNCConsole request body
+    /// (e.g. `{"getVNCConsole":{"type":"vnc"}}`).
+    static func parseConsoleType(_ body: String) -> String? {
+        let marker = "\"type\":\""
+        guard let start = body.range(of: marker)?.upperBound else { return nil }
+        let rest = body[start...]
+        guard let end = rest.range(of: "\"") else { return nil }
+        return String(rest[..<end.lowerBound])
     }
 
     static func readBody(_ req: Request) async throws -> String {

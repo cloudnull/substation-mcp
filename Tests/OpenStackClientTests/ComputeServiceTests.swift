@@ -231,6 +231,61 @@ struct ComputeServiceTests {
         #expect(result == nil)
     }
 
+    @Test("console_url returns a console object with type and url", .timeLimit(.minutes(2)))
+    func consoleURL() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let console = try await region.getConsole(vt, "srv-0001", type: "novnc")
+        #expect(console.type == "novnc", "Expected console type novnc, got \(console.type)")
+        #expect(!console.url.isEmpty, "Console url must be non-empty")
+        // The url is scoped to the server.
+        #expect(console.url.contains("srv-0001"), "Console url should reference the server: \(console.url)")
+    }
+
+    @Test("console_url is scoped to the requesting session (token)", .timeLimit(.minutes(2)))
+    func consoleURLSessionScoped() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let state = handle.state
+
+        // Two distinct sessions: proj-one admin and proj-two admin.
+        guard let t1 = await state.mintToken(credID: "fake-cred-admin", secret: "secret-admin", domain: nil, password: nil, userID: nil),
+              let t2 = await state.mintToken(credID: "fake-cred-two", secret: "secret-two", domain: nil, password: nil, userID: nil) else {
+            throw OpenStackError(service: "keystone", status: 500, message: "mint failed")
+        }
+        func validated(_ tokenID: String) async throws -> ValidatedToken {
+            let url = handle.keystoneURL.appendingPathComponent("auth/tokens")
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            req.setValue(tokenID, forHTTPHeaderField: "X-Auth-Token")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            return ValidatedToken(token: try Token.decode(from: data), scopes: [.read, .write])
+        }
+        let cloud = CloudEntry(name: "fake", authURL: URL(string: handle.url.absoluteString)!, regionName: "RegionOne")
+        let cache = Cache(maxEntries: 100)
+        let transport = Transport(cloud: cloud, tokenSource: { t1.id }, logger: logger)
+        defer { transport.syncShutdown() }
+        let compute = ComputeService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+        let region = compute.region("RegionOne")
+
+        let vt1 = try await validated(t1.id)
+        let vt2 = try await validated(t2.id)
+        // Each session requests a console for a server in its own project.
+        let c1 = try await region.getConsole(vt1, "srv-0001", type: "novnc")
+        let c2 = try await region.getConsole(vt2, "srv-0004", type: "novnc")
+
+        // Each session sees a url scoped to its own request; the values differ.
+        #expect(c1.url != c2.url, "Sessions must not see the same console url: \(c1.url) vs \(c2.url)")
+        // Each session can re-read only its own url (the map is keyed per token).
+        let c1Again = try await region.getConsole(vt1, "srv-0001", type: "novnc")
+        #expect(c1Again.url == c1.url, "A session re-reading its own console should see the same url")
+        // The other session's url is not derivable from this session's token.
+        let c2Again = try await region.getConsole(vt2, "srv-0004", type: "novnc")
+        #expect(c2Again.url == c2.url, "proj-two session should see its own url")
+    }
+
     @Test("list flavors", .timeLimit(.minutes(2)))
     func listFlavors() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()

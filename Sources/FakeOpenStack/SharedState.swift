@@ -397,6 +397,26 @@ public actor FakeState {
     public private(set) var routerInterfaces: [String: [String]] = [:]
     /// Volume attachments: attachment id -> (serverID, volumeID, device, status).
     public private(set) var volumeAttachments: [String: (serverID: String, volumeID: String, device: String, status: String)] = [:]
+    /// Console urls keyed by (tokenID, serverID). Nova scopes a console url to
+    /// the requesting identity, so a session only ever sees the url it asked
+    /// for; same-project sessions mint their own (distinct) urls.
+    public private(set) var consoles: [String: [String: String]] = [:]
+
+    /// Generate (or return the existing) console url for a token+server pair.
+    /// The url is derived from the token's project + server so it is stable per
+    /// requestor but distinct across requestors.
+    public func consoleURL(tokenID: String, serverID: String, type: String) -> String {
+        let key = "\(tokenID):\(serverID):\(type)"
+        if let existing = consoles[tokenID]?[key] {
+            return existing
+        }
+        let token = tokens[tokenID]
+        let project = token?.projectName ?? "unknown"
+        let url = "http://127.0.0.1:6080/console/\(project)/\(serverID)/\(UUID().uuidString)"
+        consoles[tokenID, default: [:]][key] = url
+        return url
+    }
+
     /// Test-only knob: set true to make the next server status change settle instantly.
     public var suppressTransitionDelay: Bool = false
 

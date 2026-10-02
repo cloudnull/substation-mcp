@@ -6,6 +6,7 @@ import HummingbirdTesting
 import HummingbirdMCP
 import MCP
 import Logging
+import NIOConcurrencyHelpers
 import OpenStackClient
 import OpenStackMCPServer
 import FakeOpenStack
@@ -389,6 +390,89 @@ struct HardeningTests {
             #expect(b2.contains("resource") && b2.contains("authorization_servers") && b2.contains("scopes_supported"),
                     "scoped PRM missing RFC 9728 keys: \(b2)")
         }
+    }
+
+    // MARK: - Console URL returned only to the requesting session (spec §12)
+
+    /// Extract the `"url":"..."` value from the `console` object in an
+    /// SSE-framed tools/call response. Returns the URL or nil.
+    private func consoleURL(from body: String) -> String? {
+        // Find the JSON payload (the last data: line).
+        let lines = body.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let dataLine = lines.last(where: { $0.hasPrefix("data:") }) else { return nil }
+        let json = String(dataLine.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+        // The tool result content text contains a JSON object with a "console".
+        let marker = "\"console\""
+        guard let consoleStart = json.range(of: marker)?.upperBound else { return nil }
+        let rest = json[consoleStart...]
+        let urlMarker = "\"url\":\""
+        guard let urlStart = rest.range(of: urlMarker)?.upperBound else { return nil }
+        let after = rest[urlStart...]
+        guard let end = after.range(of: "\"") else { return nil }
+        return String(after[..<end.lowerBound])
+    }
+
+    @Test("console_url is returned only to the requesting session")
+    func consoleURLSessionScoped() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeAppReachable(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+        guard let one = await handle.state.mintToken(
+            credID: "fake-cred-admin", secret: "secret-admin", domain: nil, password: nil, userID: nil
+        ), let two = await handle.state.mintToken(
+            credID: "fake-cred-two", secret: "secret-two", domain: nil, password: nil, userID: nil
+        ) else {
+            throw OpenStackError(service: "test", status: 500, message: "mint failed")
+        }
+        let box = URLBox()
+        try await app.app.test(.router) { client in
+            // proj-one session requests a console for its server.
+            let oneSc = SessionClient(client: client, tokenID: one.id)
+            _ = try await oneSc.initialize()
+            let r1 = try await oneSc.callToolJSON(
+                "os_action",
+                argumentsJSON: #"{"resource":"server","id_or_name":"srv-0001","action":"console_url","type":"novnc","region":"RegionOne"}"#
+            )
+            #expect(r1.status == .ok, "console_url (one) failed: \(r1.status)")
+            box.one = consoleURL(from: bodyString(r1))
+            #expect(box.one != nil, "proj-one console url not returned")
+
+            // proj-two session requests a console for its own server.
+            let twoSc = SessionClient(client: client, tokenID: two.id)
+            _ = try await twoSc.initialize()
+            let r2 = try await twoSc.callToolJSON(
+                "os_action",
+                argumentsJSON: #"{"resource":"server","id_or_name":"srv-0004","action":"console_url","type":"novnc","region":"RegionOne"}"#
+            )
+            #expect(r2.status == .ok, "console_url (two) failed: \(r2.status)")
+            box.two = consoleURL(from: bodyString(r2))
+            #expect(box.two != nil, "proj-two console url not returned")
+        }
+        let urlOne = box.one
+        let urlTwo = box.two
+        // Each session gets its own console url; they differ (no cross-session
+        // leakage of the url value).
+        #expect(urlOne != nil && urlTwo != nil, "both console urls expected")
+        #expect(urlOne != urlTwo, "sessions must not share a console url: \(urlOne ?? "?") vs \(urlTwo ?? "?")")
+        // Each url is scoped to its requesting session's server.
+        #expect(urlOne?.contains("srv-0001") == true, "one url should reference srv-0001: \(urlOne ?? "?")")
+        #expect(urlTwo?.contains("srv-0004") == true, "two url should reference srv-0004: \(urlTwo ?? "?")")
+    }
+}
+
+/// Thread-safe box for capturing two console urls across a @Sendable closure.
+private final class URLBox: @unchecked Sendable {
+    private let oneBox = NIOLockedValueBox(String?.none)
+    private let twoBox = NIOLockedValueBox(String?.none)
+    var one: String? {
+        get { oneBox.withLockedValue { $0 } }
+        set { oneBox.withLockedValue { $0 = newValue } }
+    }
+    var two: String? {
+        get { twoBox.withLockedValue { $0 } }
+        set { twoBox.withLockedValue { $0 = newValue } }
     }
 }
 

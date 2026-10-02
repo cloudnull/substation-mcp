@@ -253,6 +253,51 @@ public struct ComputeRegion: Sendable {
         return nil
     }
 
+    /// Request a console (vnc/spice/rdp) for a server. Unlike state-changing
+    /// actions, Nova returns 200 with a `{"console":{...}}` body; the url is
+    /// scoped to the requesting identity (Nova-side), so it is returned only to
+    /// the session that asked.
+    public func getConsole(_ vt: ValidatedToken, _ serverID: String, type: String) async throws -> Console {
+        let _ = try resolveRegion(vt)
+        let body = "{\"getVNCConsole\":{\"type\":\"\(type)\"}}".data(using: .utf8)!
+
+        let result = try await transport.request(
+            method: "POST",
+            service: "compute",
+            path: "\(basePath)/servers/\(serverID)/action",
+            body: body,
+            tokenOverride: vt.token.id
+        )
+
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct ConsoleResp: Decodable {
+            let console: Console
+        }
+        let decoded = try JSONDecoder().decode(ConsoleResp.self, from: result.body)
+        return decoded.console
+    }
+
+    /// Fetch serial console output (last `lines` lines) for a server.
+    public func getConsoleOutput(_ vt: ValidatedToken, _ serverID: String, lines: Int) async throws -> String {
+        let _ = try resolveRegion(vt)
+        let body = "{\"getConsoleOutput\":{\"length\":\(lines)}}".data(using: .utf8)!
+
+        let result = try await transport.request(
+            method: "POST",
+            service: "compute",
+            path: "\(basePath)/servers/\(serverID)/action",
+            body: body,
+            tokenOverride: vt.token.id
+        )
+
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct OutputResp: Decodable { let output: String }
+        let decoded = try JSONDecoder().decode(OutputResp.self, from: result.body)
+        return decoded.output
+    }
+
     // MARK: - Flavors
 
     public func listFlavors(_ vt: ValidatedToken) async throws -> [Flavor] {
