@@ -140,6 +140,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Manila shared-file-systems client (phase 2).
+    public func share(region: String? = nil) -> ShareRegion {
+        ShareService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

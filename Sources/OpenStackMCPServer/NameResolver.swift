@@ -295,6 +295,30 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "orchestration", status: 404, message: "Unknown orchestration resource: \(descriptor.name)")
             }
+        case .sharev2:
+            let r = await client.share(region: region)
+            switch descriptor.name {
+            case "share":
+                let s = try await r.getShare(vt, id: id)
+                return try Self.encodeObject(s)
+            case "share_access":
+                // Share access is share-scoped; the `id` here is the access id.
+                // Resolve by scanning the project's shares for one carrying it.
+                let shares = try await r.listShares(vt)
+                var found: ShareAccess? = nil
+                for sh in shares {
+                    if let a = try? await r.getShareAccess(vt, shareID: sh.id, id: id) {
+                        found = a
+                        break
+                    }
+                }
+                guard let a = found else {
+                    throw OpenStackError(service: "sharev2", status: 404, code: "itemNotFound", message: "Share access '\(id)' not found")
+                }
+                return try Self.encodeObject(a)
+            default:
+                throw OpenStackError(service: "sharev2", status: 404, message: "Unknown share resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -491,6 +515,35 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "orchestration", status: 404, message: "Unknown orchestration resource: \(descriptor.name)")
+            }
+        case .sharev2:
+            let r = await client.share(region: region)
+            switch descriptor.name {
+            case "share":
+                let items = try await r.listShares(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("share"); result["region"] = .string(region)
+                return result
+            case "share_access":
+                // Access rows are share-scoped. With a share_id filter, list
+                // that share's access; otherwise flatten access across all
+                // shares in the project (each tagged with its share id).
+                if let shareID = filters["share_id"] {
+                    let items = try await r.listShareAccess(vt, shareID: shareID, filters: filters, limit: limit, marker: filters["marker"])
+                    var result: [String: JSONValue] = try Self.encodeList(items)
+                    result["resource"] = .string("share_access"); result["region"] = .string(region)
+                    return result
+                }
+                let shares = try await r.listShares(vt, limit: limit)
+                var all: [ShareAccess] = []
+                for sh in shares {
+                    all.append(contentsOf: (try? await r.listShareAccess(vt, shareID: sh.id, limit: limit)) ?? [])
+                }
+                var result: [String: JSONValue] = try Self.encodeList(all)
+                result["resource"] = .string("share_access"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "sharev2", status: 404, message: "Unknown share resource: \(descriptor.name)")
             }
         }
     }
@@ -766,6 +819,35 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration create: \(descriptor.name)")
             }
+        case .sharev2:
+            let r = await client.share(region: region)
+            switch descriptor.name {
+            case "share":
+                guard let name = obj["name"]?.stringValue else {
+                    throw OpenStackError(service: "sharev2", status: 400, message: "share create requires a 'name'")
+                }
+                let spec = CreateShareSpec(
+                    name: name,
+                    share_size: obj["share_size"]?.intValue ?? 1,
+                    share_type: obj["share_type"]?.stringValue ?? "generic",
+                    description: obj["description"]?.stringValue,
+                    is_public: obj["is_public"]?.boolValue
+                )
+                return try Self.encodeObject(try await r.createShare(vt, spec))
+            case "share_access":
+                guard let shareID = obj["share_id"]?.stringValue, let accessTo = obj["access_to"]?.stringValue else {
+                    throw OpenStackError(service: "sharev2", status: 400, message: "share_access create requires 'share_id' and 'access_to'")
+                }
+                let spec = CreateShareAccessSpec(
+                    share_id: shareID,
+                    access_to: accessTo,
+                    access_type: obj["access_type"]?.stringValue ?? "ip",
+                    access_protocol: obj["access_protocol"]?.stringValue ?? "nfs"
+                )
+                return try Self.encodeObject(try await r.createShareAccess(vt, spec))
+            default:
+                throw OpenStackError(service: "sharev2", status: 400, message: "Unknown share create: \(descriptor.name)")
+            }
         }
     }
 
@@ -833,6 +915,9 @@ public actor NameResolver {
         case .orchestration:
             // Heat stacks are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "orchestration", status: 501, message: "Orchestration resources are not updatable (re-create instead)")
+        case .sharev2:
+            // Manila shares/access are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "sharev2", status: 501, message: "Share resources are not updatable (re-create instead)")
         }
     }
 
@@ -954,6 +1039,28 @@ public actor NameResolver {
                 try await r.deleteStack(vt, id: id)
             default:
                 throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration delete: \(descriptor.name)")
+            }
+        case .sharev2:
+            let r = await client.share(region: region)
+            switch descriptor.name {
+            case "share":
+                try await r.deleteShare(vt, id: id)
+            case "share_access":
+                // Access rows are share-scoped; resolve the owning share by scanning.
+                let shares = try await r.listShares(vt)
+                var ownedShareID: String? = nil
+                for sh in shares {
+                    if let a = try? await r.getShareAccess(vt, shareID: sh.id, id: id), a.id == id {
+                        ownedShareID = sh.id
+                        break
+                    }
+                }
+                guard let sid = ownedShareID else {
+                    throw OpenStackError(service: "sharev2", status: 404, code: "itemNotFound", message: "Share access '\(id)' not found")
+                }
+                try await r.deleteShareAccess(vt, shareID: sid, id: id)
+            default:
+                throw OpenStackError(service: "sharev2", status: 400, message: "Unknown share delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -1151,6 +1258,9 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration action resource: \(descriptor.name)")
             }
+        case .sharev2:
+            // Manila has no custom actions in phase 2.
+            throw OpenStackError(service: "sharev2", status: 501, message: "Share actions not supported")
         }
     }
 

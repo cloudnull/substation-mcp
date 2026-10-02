@@ -673,6 +673,52 @@ public actor FakeState {
     public private(set) var magnumClusters: [FakeMagnumCluster] = []
     public private(set) var magnumTemplates: [FakeMagnumTemplate] = []
     public private(set) var heatStacks: [FakeHeatStack] = []
+    public private(set) var shares: [FakeShare] = []
+    public private(set) var shareAccesses: [FakeShareAccess] = []
+
+    // MARK: - Manila (shared file systems) fake state
+
+    public struct FakeShare: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var shareSize: Int
+        public var shareType: String
+        public var description: String?
+        public var isPublic: Bool
+
+        public init(id: String, projectID: String, name: String, status: String = "available", shareSize: Int = 1, shareType: String = "generic", description: String? = nil, isPublic: Bool = false) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.shareSize = shareSize
+            self.shareType = shareType
+            self.description = description
+            self.isPublic = isPublic
+        }
+    }
+
+    public struct FakeShareAccess: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var shareID: String
+        public var accessTo: String
+        public var accessType: String
+        public var accessProtocol: String
+        public var state: String
+
+        public init(id: String, projectID: String, shareID: String, accessTo: String, accessType: String = "ip", accessProtocol: String = "nfs", state: String = "accessible") {
+            self.id = id
+            self.projectID = projectID
+            self.shareID = shareID
+            self.accessTo = accessTo
+            self.accessType = accessType
+            self.accessProtocol = accessProtocol
+            self.state = state
+        }
+    }
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -965,6 +1011,8 @@ public actor FakeState {
     private var magnumClusterIDCounter = 0
     private var magnumTemplateIDCounter = 0
     private var heatStackIDCounter = 0
+    private var shareIDCounter = 0
+    private var shareAccessIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -1240,6 +1288,12 @@ public actor FakeState {
             parameters: ["environment": "dev"],
             outputs: [FakeStackOutput(outputKey: "endpoint", outputValue: "http://10.0.0.50:8080", description: "Public endpoint")]
         ))
+
+        // Manila (shared file systems) seed: one available share + one access.
+        shareIDCounter = 1
+        shares.append(FakeShare(id: "share-1", projectID: "proj-one", name: "fake-share", status: "available", shareSize: 10, shareType: "generic", isPublic: false))
+        shareAccessIDCounter = 1
+        shareAccesses.append(FakeShareAccess(id: "sa-1", projectID: "proj-one", shareID: "share-1", accessTo: "10.0.0.0/24", accessType: "ip", accessProtocol: "nfs", state: "accessible"))
     }
 
     // MARK: - Token minting
@@ -2583,6 +2637,65 @@ public actor FakeState {
         let idx = heatStacks.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         heatStacks.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Manila (shared file systems) CRUD
+
+    public func listShares(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeShare] {
+        var result = shares.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getShare(id: String, projectID: String) -> FakeShare? {
+        shares.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createShare(projectID: String, name: String, shareSize: Int, shareType: String, description: String?, isPublic: Bool) -> FakeShare {
+        shareIDCounter += 1
+        let s = FakeShare(id: "share-\(shareIDCounter)", projectID: projectID, name: name, status: "available", shareSize: shareSize, shareType: shareType, description: description, isPublic: isPublic)
+        shares.append(s)
+        return s
+    }
+
+    public func deleteShare(id: String, projectID: String) -> Bool {
+        let idx = shares.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        // Cascade-delete any access rows on the removed share.
+        shareAccesses.removeAll { $0.shareID == id && $0.projectID == projectID }
+        shares.remove(at: idx)
+        return true
+    }
+
+    public func listShareAccess(shareID: String, projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeShareAccess] {
+        var result = shareAccesses.filter { $0.projectID == projectID && $0.shareID == shareID }
+        result.sort { $0.accessTo < $1.accessTo }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getShareAccess(id: String, shareID: String, projectID: String) -> FakeShareAccess? {
+        shareAccesses.first { $0.id == id && $0.shareID == shareID && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createShareAccess(projectID: String, shareID: String, accessTo: String, accessType: String, accessProtocol: String) -> FakeShareAccess {
+        shareAccessIDCounter += 1
+        let a = FakeShareAccess(id: "sa-\(shareAccessIDCounter)", projectID: projectID, shareID: shareID, accessTo: accessTo, accessType: accessType, accessProtocol: accessProtocol, state: "accessible")
+        shareAccesses.append(a)
+        return a
+    }
+
+    public func deleteShareAccess(id: String, shareID: String, projectID: String) -> Bool {
+        let idx = shareAccesses.firstIndex { $0.id == id && $0.shareID == shareID && $0.projectID == projectID }
+        guard let idx else { return false }
+        shareAccesses.remove(at: idx)
         return true
     }
 }

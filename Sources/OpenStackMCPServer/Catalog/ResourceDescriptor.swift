@@ -13,6 +13,7 @@ public enum Service: String, Sendable, CaseIterable, Codable {
     case dns
     case containerInfra
     case orchestration
+    case sharev2
 }
 
 /// The five resource verbs.

@@ -60,10 +60,12 @@ struct CatalogCompletenessTests {
             "cluster", "cluster_template",
             // Orchestration (1) — phase 2
             "stack",
+            // Shared file systems (2) — phase 2
+            "share", "share_access",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 49, "Expected 49 resources (10+10+9+5+1+2+2+5+2+2+1), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 51, "Expected 51 resources (10+10+9+5+1+2+2+5+2+2+1+2), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -398,6 +400,15 @@ struct CatalogCompletenessTests {
         #expect(d.statusField == "status")
         #expect(d.terminalStates.contains("CREATE_COMPLETE"))
         #expect(d.actions.contains { $0.name == "get_outputs" })
+    }
+
+    @Test("sharev2 has 2 resources and share is pollable")
+    func sharev2Count() {
+        #expect(catalog.resources(for: .sharev2).count == 2, "Expected 2 share resources, got \(catalog.resources(for: .sharev2).count)")
+        let d = catalog.descriptor("share")!
+        #expect(d.service == .sharev2)
+        #expect(d.statusField == "status")
+        #expect(d.terminalStates.contains("available"))
     }
 
     @Test("container + object descriptors are well-formed")
