@@ -1,0 +1,34 @@
+openstack-mcp {{ .Chart.AppVersion }} deployed to namespace {{ include "openstack-mcp.namespace" . }}.
+
+Service: {{ include "openstack-mcp.fullname" . }} (port {{ .Values.service.port }})
+
+{{- if .Values.gateway.enabled }}
+
+External URL: https://{{ .Values.gateway.fqdn }}
+
+Next steps:
+1. Ensure the Gateway has a TLS certificate for {{ .Values.gateway.fqdn }}
+   (cert-manager or a manually-created Secret named {{ .Values.gateway.gatewayName }}-tls).
+2. Run register-catalog to publish the MCP service in the Keystone catalog:
+
+     OS_CLOUD=mycloud REGION=RegionOne \
+     PUBLIC_URL=https://{{ .Values.gateway.fqdn }} \
+     ./deploy/register-catalog.sh
+
+3. Connect an MCP client:
+
+     claude mcp add --transport http openstack \
+       https://{{ .Values.gateway.fqdn }}/v1 \
+       --header "Authorization: Bearer <keystone-token>"
+
+{{- else }}
+
+The chart is deployed but external exposure (Gateway) is disabled.
+To expose the service, set gateway.enabled=true and gateway.fqdn=<your-domain>.
+
+In-cluster access:
+  kubectl -n {{ include "openstack-mcp.namespace" . }} port-forward \
+    svc/{{ include "openstack-mcp.fullname" . }} 8080:{{ .Values.service.port }}
+
+Then connect a client to http://127.0.0.1:8080/v1 with a Bearer token.
+{{- end }}

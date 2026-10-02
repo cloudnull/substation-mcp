@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# This is the overlay referenced by install-openstack-mcp.sh's
+# `--post-renderer-args openstack-mcp/overlay`. It applies Genestack
+# namespace + label conventions on top of the base.
+resources:
+  - ../base
+labels:
+  - pairs:
+      genestack.rackspace.com/service: openstack-mcp
+    includeSelectors: false
+    includeTemplates: true
+namePrefix: ""
+nameSuffix: ""
+namespace: openstack

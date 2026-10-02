@@ -1,0 +1,53 @@
+# Renders the openstack-mcp server YAML config + the OpenStack clouds.yaml.
+#
+# Two resources:
+#   <fullname>-config  (ConfigMap) → /etc/openstack-mcp/config.yaml  (server config, no secrets)
+#   <fullname>-clouds  (Secret)    → /etc/openstack/clouds.yaml      (may contain app-cred secret)
+#
+# The clouds.yaml is a Secret (not ConfigMap) because it may contain the
+# application-credential secret. The Deployment mounts both read-only.
+# The `checksum/config` pod annotation (in deployment.yaml) hashes the
+# config ConfigMap to trigger a rolling restart when the config changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openstack-mcp.fullname" . }}-config
+  namespace: {{ include "openstack-mcp.namespace" . }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- toYaml .Values.config | nindent 4 }}
+---
+# clouds.yaml Secret.
+#
+# The app-cred fields are populated from .Values.appCred when enabled,
+# otherwise they render as empty strings (the server relies on the Bearer
+# token each client presents).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "openstack-mcp.fullname" . }}-clouds
+  namespace: {{ include "openstack-mcp.namespace" . }}
+  labels:
+    {{- include "openstack-mcp.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  clouds.yaml: |
+    clouds:
+      {{- $appCredID := "" }}
+      {{- $appCredSecret := "" }}
+      {{- if .Values.appCred.enabled }}
+      {{- $appCredID = .Values.appCred.id }}
+      {{- $appCredSecret = .Values.appCred.secret }}
+      {{- end }}
+      {{- range $name, $cloud := .Values.clouds }}
+      {{ $name }}:
+        auth:
+          auth_url: {{ $cloud.auth.auth_url | quote }}
+          application_credential_id: {{ $appCredID | quote }}
+          application_credential_secret: {{ $appCredSecret | quote }}
+        region_name: {{ $cloud.region_name | default "RegionOne" | quote }}
+        interface: {{ $cloud.interface | default "public" | quote }}
+        verify: {{ $cloud.verify | default true }}
+      {{- end }}

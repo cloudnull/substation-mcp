@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: openstack
+# The `all.yaml` in this directory contains the rendered Helm output
+# (the operator runs install-openstack-mcp.sh which does `helm template`
+# and writes the result to all.yaml, OR the operator uses kustomize as a
+# post-renderer in the install script — see install-openstack-mcp.sh).
+resources:
+  - all.yaml
+# Common labels applied to all resources (Genestack convention).
+labels:
+  - pairs:
+      genestack.rackspace.com/managed-by: genestack
+      genestack.rackspace.com/component: openstack-mcp
+    includeSelectors: true
+    includeTemplates: true
