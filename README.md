@@ -370,6 +370,47 @@ sudo systemctl enable --now openstack-mcp
 See `deploy/caddy/Caddyfile` and `deploy/nginx/openstack-mcp.conf`. Both
 disable response buffering for `/v1` and `/mcp` (required for SSE).
 
+### Genestack (Kubernetes / OpenStack)
+
+For production deployment into a [Genestack](https://github.com/rackerlabs/genestack)
+cluster (Kubernetes-based OpenStack deployer), use the Helm chart + kustomize
+add-on under `deploy/genestack/`. This is the recommended path for
+pseudo-production and production OpenStack clouds.
+
+**Quick path:**
+
+```sh
+# 1. Build + push the image (amd64):
+docker build --platform linux/amd64 -f deploy/Dockerfile \
+  -t <registry>/openstack/openstack-mcp:<tag> .
+docker push <registry>/openstack/openstack-mcp:<tag>
+
+# 2. Install the chart into the Genestack cluster (on the controller node):
+./deploy/genestack/install-openstack-mcp.sh \
+  --set image.repository=<registry>/openstack/openstack-mcp \
+  --set image.tag=<tag>
+
+# 3. Register the MCP service in Keystone (one-time, as admin):
+OS_CLOUD=mycloud REGION=RegionOne \
+PUBLIC_URL=https://openstack-mcp.<domain.tld> \
+./deploy/register-catalog.sh
+
+# 4. Connect a client:
+claude mcp add --transport http openstack \
+  https://openstack-mcp.<domain.tld>/v1 \
+  --header "Authorization: Bearer <keystone-token>"
+```
+
+The full walkthrough — image build, chart configuration, Gateway API
+exposure, `register-catalog`, verification (`check` + `conformance`),
+upgrading, troubleshooting — lives in
+[`deploy/genestack/README.md`](deploy/genestack/README.md).
+
+> **Note:** the Docker and systemd paths above are for non-Kubernetes hosts.
+> Genestack is Kubernetes and consumes the container image, not the native
+> UBI10 rootfs tarball (`scripts/build-image.sh`) or the systemd unit
+> (`deploy/openstack-mcp.service`).
+
 ## Development
 
 ### Fake OpenStack
