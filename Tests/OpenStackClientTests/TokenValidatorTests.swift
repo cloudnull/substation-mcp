@@ -31,6 +31,71 @@ struct TokenValidatorTests {
         """
     }
 
+    // Real Keystone v3 clouds (e.g. sat0) return a token body that differs from
+    // the minimal fixture above in several ways: no top-level `id`, no top-level
+    // `domain` (project-scoped tokens only carry `user.domain`), and `roles` as
+    // objects {"id","name"} rather than strings. `Token.decode` must accept all
+    // of these standard shapes, or serve-path validation 500s on live clouds.
+    @Test func decodeRealKeystoneV3Shape() async throws {
+        let body = """
+        {
+          "token": {
+            "expires_at": "2026-10-02T13:03:34.000000Z",
+            "issued_at": "2026-10-02T01:03:34.000000Z",
+            "methods": ["password"],
+            "is_domain": false,
+            "user": {"id": "user-1", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "project": {"id": "proj-one", "name": "admin", "domain": {"id": "default", "name": "Default"}},
+            "roles": [
+              {"id": "role-1", "name": "reader"},
+              {"id": "role-2", "name": "admin"}
+            ],
+            "catalog": [
+              {
+                "type": "compute",
+                "name": "nova",
+                "endpoints": [
+                  {"region": "SAT0", "interface": "public", "url": "https://nova.api.example.com/v2.1"}
+                ]
+              }
+            ]
+          }
+        }
+        """
+        let token = try Token.decode(from: Data(body.utf8))
+        // No `id` in the body: decoded to a placeholder, not a throw.
+        #expect(!token.id.isEmpty)
+        #expect(token.project.id == "proj-one")
+        #expect(token.project.name == "admin")
+        #expect(token.user.name == "admin")
+        // Role objects collapse to their names.
+        #expect(token.roles.contains("reader"))
+        #expect(token.roles.contains("admin"))
+        #expect(token.catalog.count == 1)
+        #expect(token.catalog.first?.endpoints.first?.region == "SAT0")
+    }
+
+    // A token may carry roles as plain strings (the legacy/fixture shape) or as
+    // objects. Both must decode; mixed lists are legal too.
+    @Test func decodeRolesAsStringsAndObjects() async throws {
+        let body = """
+        {
+          "token": {
+            "id": "tok-x",
+            "expires_at": "2026-10-02T13:03:34.000000Z",
+            "project": {"id": "p", "name": "p", "domain": {"id": "d", "name": "D"}},
+            "domain": {"id": "d", "name": "D"},
+            "user": {"id": "u", "name": "u", "domain": {"id": "d", "name": "D"}},
+            "roles": ["member", {"id": "r", "name": "admin"}],
+            "catalog": []
+          }
+        }
+        """
+        let token = try Token.decode(from: Data(body.utf8))
+        #expect(token.roles.contains("member"))
+        #expect(token.roles.contains("admin"))
+    }
+
     @Test func validateHappyPath_readScope() async throws {
         let server = TestServer()
         try server.start()

@@ -226,16 +226,37 @@ extension Token {
             let name: String?
             let endpoints: [RawCatalogEndpoint]?
         }
-        struct RawToken: Codable {
+        // Keystone v3 may express a role either as a plain string ("admin") or as
+        // an object {"id","name"} (the default for live clouds). Accept both.
+        struct RawRoleObject: Decodable {
+            let id: String?
+            let name: String?
+        }
+        struct RawRole: Decodable {
+            let id: String?
+            let name: String?
+            init(from decoder: Decoder) throws {
+                let container = try decoder.singleValueContainer()
+                if let str = try? container.decode(String.self) {
+                    name = str
+                    id = nil
+                } else {
+                    let obj = try container.decode(RawRoleObject.self)
+                    name = obj.name
+                    id = obj.id
+                }
+            }
+        }
+        struct RawToken: Decodable {
             let id: String?
             let expires_at: String?
             let project: RawIdentityRef?
             let domain: RawIdentityRef?
             let user: RawIdentityRef?
-            let roles: [String]?
+            let roles: [RawRole]?
             let catalog: [RawCatalogEntry]?
         }
-        struct RawTokenResponse: Codable {
+        struct RawTokenResponse: Decodable {
             let token: RawToken
         }
 
@@ -252,11 +273,9 @@ extension Token {
             )
         }
 
-        guard let id = raw.id,
-              let expiresStr = raw.expires_at,
+        guard let expiresStr = raw.expires_at,
               let expires = Self.parseISO8601(expiresStr),
               let project = raw.project,
-              let domain = raw.domain,
               let user = raw.user else {
             throw OpenStackError(
                 service: "keystone",
@@ -264,6 +283,14 @@ extension Token {
                 message: "Missing required fields in token"
             )
         }
+
+        // Keystone omits the token `id` from the whoami body (it is the request
+        // token, not a field in the response) and omits a top-level `domain` on
+        // project-scoped tokens. Synthesize sensible values for both.
+        let id = raw.id ?? "unknown"
+        let domain = raw.domain
+            .map { IdentityRef(id: $0.id, name: $0.name) }
+            ?? IdentityRef(id: user.domain?.id ?? "default", name: user.domain?.name)
 
         let catalogEntries: [CatalogEntry] = (raw.catalog ?? []).compactMap { entry in
             let endpoints: [CatalogEndpoint] = (entry.endpoints ?? []).compactMap { ep in
@@ -285,9 +312,9 @@ extension Token {
             id: id,
             expiresAt: expires,
             project: IdentityRef(id: project.id, name: project.name, domain: project.domain?.name),
-            domain: IdentityRef(id: domain.id, name: domain.name),
+            domain: domain,
             user: IdentityRef(id: user.id, name: user.name, domain: user.domain?.name),
-            roles: raw.roles ?? [],
+            roles: (raw.roles ?? []).compactMap { $0.name },
             catalog: catalogEntries
         )
     }
