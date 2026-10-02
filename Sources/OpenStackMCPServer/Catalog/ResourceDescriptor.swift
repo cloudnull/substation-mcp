@@ -9,6 +9,7 @@ public enum Service: String, Sendable, CaseIterable, Codable {
     case image
     case objectStorage
     case keyManager
+    case loadBalancer
 }
 
 /// The five resource verbs.

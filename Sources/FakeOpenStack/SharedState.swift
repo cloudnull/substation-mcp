@@ -451,9 +451,118 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Octavia (load balancer) fake state
+
+    public struct FakeLoadBalancer: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var status: String
+        public var provisioningStatus: String
+        public var vipAddress: String?
+
+        public init(id: String, projectID: String, name: String? = nil, status: String = "ACTIVE", provisioningStatus: String = "ACTIVE", vipAddress: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.provisioningStatus = provisioningStatus
+            self.vipAddress = vipAddress
+        }
+    }
+
+    public struct FakeListener: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var protocolName: String
+        public var protocolPort: Int
+        public var loadBalancerID: String?
+
+        public init(id: String, projectID: String, name: String? = nil, protocolName: String = "HTTP", protocolPort: Int = 80, loadBalancerID: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.protocolName = protocolName
+            self.protocolPort = protocolPort
+            self.loadBalancerID = loadBalancerID
+        }
+    }
+
+    public struct FakePool: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var protocolName: String
+        public var lbAlgorithm: String
+        public var loadBalancerID: String?
+        public var healthMonitorID: String?
+
+        public init(id: String, projectID: String, name: String? = nil, protocolName: String = "HTTP", lbAlgorithm: String = "ROUND_ROBIN", loadBalancerID: String? = nil, healthMonitorID: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.protocolName = protocolName
+            self.lbAlgorithm = lbAlgorithm
+            self.loadBalancerID = loadBalancerID
+            self.healthMonitorID = healthMonitorID
+        }
+    }
+
+    public struct FakeMember: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var protocolAddress: String
+        public var protocolPort: Int
+        public var weight: Int?
+        public var adminStateUp: Bool?
+        public var poolID: String?
+        public var status: String?
+
+        public init(id: String, projectID: String, name: String? = nil, protocolAddress: String, protocolPort: Int, weight: Int? = 1, adminStateUp: Bool? = true, poolID: String? = nil, status: String? = "ONLINE") {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.protocolAddress = protocolAddress
+            self.protocolPort = protocolPort
+            self.weight = weight
+            self.adminStateUp = adminStateUp
+            self.poolID = poolID
+            self.status = status
+        }
+    }
+
+    public struct FakeHealthMonitor: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var type: String
+        public var delay: Int?
+        public var timeout: Int?
+        public var maxRetries: Int?
+        public var poolID: String?
+
+        public init(id: String, projectID: String, name: String? = nil, type: String = "PING", delay: Int? = 10, timeout: Int? = 5, maxRetries: Int? = 3, poolID: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.type = type
+            self.delay = delay
+            self.timeout = timeout
+            self.maxRetries = maxRetries
+            self.poolID = poolID
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
+    public private(set) var loadBalancers: [FakeLoadBalancer] = []
+    public private(set) var listeners: [FakeListener] = []
+    public private(set) var pools: [FakePool] = []
+    public private(set) var members: [FakeMember] = []
+    public private(set) var healthMonitors: [FakeHealthMonitor] = []
     public private(set) var secrets: [FakeSecret] = []
     public private(set) var secretContainers: [FakeSecretContainer] = []
     public private(set) var tokens: [String: FakeToken] = [:]
@@ -731,6 +840,11 @@ public actor FakeState {
     private var objectIDCounter = 0
     private var secretIDCounter = 0
     private var secretContainerIDCounter = 0
+    private var lbIDCounter = 0
+    private var listenerIDCounter = 0
+    private var poolIDCounter = 0
+    private var memberIDCounter = 0
+    private var healthMonitorIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -975,6 +1089,14 @@ public actor FakeState {
         ))
         secretContainerIDCounter = 1
         secretContainers.append(FakeSecretContainer(id: "sct-1", projectID: "proj-one", name: "fake-key-container", type: "generic", secretRefs: ["sec-1"]))
+
+        // Octavia (load balancer) seed: one active LB + a pool + a member.
+        lbIDCounter = 1
+        loadBalancers.append(FakeLoadBalancer(id: "lb-1", projectID: "proj-one", name: "fake-lb", status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: "10.0.0.10"))
+        poolIDCounter = 1
+        pools.append(FakePool(id: "pool-1", projectID: "proj-one", name: "fake-pool", protocolName: "HTTP", lbAlgorithm: "ROUND_ROBIN", loadBalancerID: "lb-1"))
+        memberIDCounter = 1
+        members.append(FakeMember(id: "member-1", projectID: "proj-one", name: "fake-member", protocolAddress: "10.0.0.20", protocolPort: 80, poolID: "pool-1", status: "ONLINE"))
     }
 
     // MARK: - Token minting
@@ -2037,6 +2159,140 @@ public actor FakeState {
         let idx = secretContainers.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         secretContainers.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Octavia (load balancer) CRUD
+
+    public func listLoadBalancers(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeLoadBalancer] {
+        var result = loadBalancers.filter { $0.projectID == projectID }
+        if let name { result = result.filter { ($0.name ?? "").contains(name) } }
+        result.sort { ($0.name ?? "") < ($1.name ?? "") }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getLoadBalancer(id: String, projectID: String) -> FakeLoadBalancer? {
+        loadBalancers.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createLoadBalancer(projectID: String, name: String? = nil, vipAddress: String? = nil) -> FakeLoadBalancer {
+        lbIDCounter += 1
+        let lb = FakeLoadBalancer(id: "lb-\(lbIDCounter)", projectID: projectID, name: name, status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: vipAddress ?? "10.0.0.\(lbIDCounter + 9)")
+        loadBalancers.append(lb)
+        return lb
+    }
+
+    public func deleteLoadBalancer(id: String, projectID: String) -> Bool {
+        let idx = loadBalancers.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        loadBalancers.remove(at: idx)
+        return true
+    }
+
+    public func listListeners(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeListener] {
+        var result = listeners.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getListener(id: String, projectID: String) -> FakeListener? {
+        listeners.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createListener(projectID: String, name: String?, protocolName: String, protocolPort: Int, loadBalancerID: String?) -> FakeListener {
+        listenerIDCounter += 1
+        let l = FakeListener(id: "listener-\(listenerIDCounter)", projectID: projectID, name: name, protocolName: protocolName, protocolPort: protocolPort, loadBalancerID: loadBalancerID)
+        listeners.append(l)
+        return l
+    }
+
+    public func deleteListener(id: String, projectID: String) -> Bool {
+        let idx = listeners.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        listeners.remove(at: idx)
+        return true
+    }
+
+    public func listPools(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakePool] {
+        var result = pools.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getPool(id: String, projectID: String) -> FakePool? {
+        pools.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createPool(projectID: String, name: String?, protocolName: String, lbAlgorithm: String, loadBalancerID: String?, healthMonitorID: String?) -> FakePool {
+        poolIDCounter += 1
+        let p = FakePool(id: "pool-\(poolIDCounter)", projectID: projectID, name: name, protocolName: protocolName, lbAlgorithm: lbAlgorithm, loadBalancerID: loadBalancerID, healthMonitorID: healthMonitorID)
+        pools.append(p)
+        return p
+    }
+
+    public func deletePool(id: String, projectID: String) -> Bool {
+        let idx = pools.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        pools.remove(at: idx)
+        return true
+    }
+
+    public func listMembers(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeMember] {
+        var result = members.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getMember(id: String, projectID: String) -> FakeMember? {
+        members.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createMember(projectID: String, name: String?, protocolAddress: String, protocolPort: Int, weight: Int?, adminStateUp: Bool?, poolID: String?) -> FakeMember {
+        memberIDCounter += 1
+        let m = FakeMember(id: "member-\(memberIDCounter)", projectID: projectID, name: name, protocolAddress: protocolAddress, protocolPort: protocolPort, weight: weight, adminStateUp: adminStateUp, poolID: poolID, status: "ONLINE")
+        members.append(m)
+        return m
+    }
+
+    public func deleteMember(id: String, projectID: String) -> Bool {
+        let idx = members.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        members.remove(at: idx)
+        return true
+    }
+
+    public func listHealthMonitors(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeHealthMonitor] {
+        var result = healthMonitors.filter { $0.projectID == projectID }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getHealthMonitor(id: String, projectID: String) -> FakeHealthMonitor? {
+        healthMonitors.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createHealthMonitor(projectID: String, name: String?, type: String, delay: Int?, timeout: Int?, maxRetries: Int?, poolID: String?) -> FakeHealthMonitor {
+        healthMonitorIDCounter += 1
+        let h = FakeHealthMonitor(id: "hm-\(healthMonitorIDCounter)", projectID: projectID, name: name, type: type, delay: delay, timeout: timeout, maxRetries: maxRetries, poolID: poolID)
+        healthMonitors.append(h)
+        return h
+    }
+
+    public func deleteHealthMonitor(id: String, projectID: String) -> Bool {
+        let idx = healthMonitors.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        healthMonitors.remove(at: idx)
         return true
     }
 }

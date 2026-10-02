@@ -171,6 +171,7 @@ public struct Waiter: Sendable {
         case .identity: return false
         case .objectStorage: return false
         case .keyManager: return descriptor.name == "secret"
+        case .loadBalancer: return descriptor.name == "load_balancer"
         }
     }
 
@@ -251,6 +252,13 @@ public struct Waiter: Sendable {
                 let r = await client.keyManager(region: region)
                 let s = try await r.getSecret(vt, id: id)
                 return ["status": .string(s.status)]
+            }
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
+        case .loadBalancer:
+            if descriptor.name == "load_balancer" {
+                let r = await client.loadBalancer(region: region)
+                let lb = try await r.getLoadBalancer(vt, id: id)
+                return ["status": .string(lb.provisioning_status)]
             }
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
         }

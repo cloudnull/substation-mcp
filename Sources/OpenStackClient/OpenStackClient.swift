@@ -116,6 +116,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Octavia load-balancer client (phase 2).
+    public func loadBalancer(region: String? = nil) -> LoadBalancerRegion {
+        LoadBalancerService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

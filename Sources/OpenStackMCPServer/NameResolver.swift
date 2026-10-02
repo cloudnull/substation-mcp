@@ -241,6 +241,27 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "key-manager", status: 404, message: "Unknown key-manager resource: \(descriptor.name)")
             }
+        case .loadBalancer:
+            let r = await client.loadBalancer(region: region)
+            switch descriptor.name {
+            case "load_balancer":
+                let lb = try await r.getLoadBalancer(vt, id: id)
+                return try Self.encodeObject(lb)
+            case "listener":
+                let l = try await r.getListener(vt, id: id)
+                return try Self.encodeObject(l)
+            case "pool":
+                let p = try await r.getPool(vt, id: id)
+                return try Self.encodeObject(p)
+            case "member":
+                let m = try await r.getMember(vt, id: id)
+                return try Self.encodeObject(m)
+            case "health_monitor":
+                let h = try await r.getHealthMonitor(vt, id: id)
+                return try Self.encodeObject(h)
+            default:
+                throw OpenStackError(service: "loadbalancer", status: 404, message: "Unknown load-balancer resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -363,6 +384,37 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "key-manager", status: 404, message: "Unknown key-manager resource: \(descriptor.name)")
+            }
+        case .loadBalancer:
+            let r = await client.loadBalancer(region: region)
+            switch descriptor.name {
+            case "load_balancer":
+                let items = try await r.listLoadBalancers(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("load_balancer"); result["region"] = .string(region)
+                return result
+            case "listener":
+                let items = try await r.listListeners(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("listener"); result["region"] = .string(region)
+                return result
+            case "pool":
+                let items = try await r.listPools(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("pool"); result["region"] = .string(region)
+                return result
+            case "member":
+                let items = try await r.listMembers(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("member"); result["region"] = .string(region)
+                return result
+            case "health_monitor":
+                let items = try await r.listHealthMonitors(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("health_monitor"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "loadbalancer", status: 404, message: "Unknown load-balancer resource: \(descriptor.name)")
             }
         }
     }
@@ -520,6 +572,62 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager create: \(descriptor.name)")
             }
+        case .loadBalancer:
+            let r = await client.loadBalancer(region: region)
+            switch descriptor.name {
+            case "load_balancer":
+                let spec = CreateLoadBalancerSpec(
+                    name: obj["name"]?.stringValue,
+                    vip_subnet_id: obj["vip_subnet_id"]?.stringValue,
+                    vip_address: obj["vip_address"]?.stringValue,
+                    description: obj["description"]?.stringValue,
+                    flavor_id: obj["flavor_id"]?.stringValue
+                )
+                return try Self.encodeObject(try await r.createLoadBalancer(vt, spec))
+            case "listener":
+                let spec = CreateListenerSpec(
+                    name: obj["name"]?.stringValue,
+                    protocolName: obj["protocol"]?.stringValue ?? "HTTP",
+                    protocol_port: obj["protocol_port"]?.intValue ?? 80,
+                    load_balancer_id: obj["load_balancer_id"]?.stringValue,
+                    connection_limit: obj["connection_limit"]?.intValue
+                )
+                return try Self.encodeObject(try await r.createListener(vt, spec))
+            case "pool":
+                let spec = CreatePoolSpec(
+                    name: obj["name"]?.stringValue,
+                    protocolName: obj["protocol"]?.stringValue ?? "HTTP",
+                    lb_algorithm: obj["lb_algorithm"]?.stringValue ?? "ROUND_ROBIN",
+                    load_balancer_id: obj["load_balancer_id"]?.stringValue,
+                    health_monitor_id: obj["health_monitor_id"]?.stringValue
+                )
+                return try Self.encodeObject(try await r.createPool(vt, spec))
+            case "member":
+                guard let addr = obj["protocol_address"]?.stringValue, let port = obj["protocol_port"]?.intValue else {
+                    throw OpenStackError(service: "loadbalancer", status: 400, message: "member create requires protocol_address and protocol_port")
+                }
+                let spec = CreateMemberSpec(
+                    name: obj["name"]?.stringValue,
+                    protocol_address: addr,
+                    protocol_port: port,
+                    weight: obj["weight"]?.intValue,
+                    admin_state_up: obj["admin_state_up"]?.boolValue,
+                    pool_id: obj["pool_id"]?.stringValue
+                )
+                return try Self.encodeObject(try await r.createMember(vt, spec))
+            case "health_monitor":
+                let spec = CreateHealthMonitorSpec(
+                    name: obj["name"]?.stringValue,
+                    type: obj["type"]?.stringValue ?? "PING",
+                    delay: obj["delay"]?.intValue,
+                    timeout: obj["timeout"]?.intValue,
+                    max_retries: obj["max_retries"]?.intValue,
+                    pool_id: obj["pool_id"]?.stringValue
+                )
+                return try Self.encodeObject(try await r.createHealthMonitor(vt, spec))
+            default:
+                throw OpenStackError(service: "loadbalancer", status: 400, message: "Unknown load-balancer create: \(descriptor.name)")
+            }
         }
     }
 
@@ -575,6 +683,9 @@ public actor NameResolver {
         case .keyManager:
             // Barbican secrets/containers are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "key-manager", status: 501, message: "Key-manager resources are not updatable (re-create instead)")
+        case .loadBalancer:
+            // Octavia resources are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "loadbalancer", status: 501, message: "Load-balancer resources are not updatable (re-create instead)")
         }
     }
 
@@ -652,6 +763,22 @@ public actor NameResolver {
                 try await r.deleteContainer(vt, id: id)
             default:
                 throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager delete: \(descriptor.name)")
+            }
+        case .loadBalancer:
+            let r = await client.loadBalancer(region: region)
+            switch descriptor.name {
+            case "load_balancer":
+                try await r.deleteLoadBalancer(vt, id: id)
+            case "listener":
+                try await r.deleteListener(vt, id: id)
+            case "pool":
+                try await r.deletePool(vt, id: id)
+            case "member":
+                try await r.deleteMember(vt, id: id)
+            case "health_monitor":
+                try await r.deleteHealthMonitor(vt, id: id)
+            default:
+                throw OpenStackError(service: "loadbalancer", status: 400, message: "Unknown load-balancer delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -822,6 +949,9 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "key-manager", status: 400, message: "Unknown key-manager action resource: \(descriptor.name)")
             }
+        case .loadBalancer:
+            // Octavia has no custom actions in phase 2.
+            throw OpenStackError(service: "loadbalancer", status: 501, message: "Load-balancer actions not supported")
         }
     }
 
