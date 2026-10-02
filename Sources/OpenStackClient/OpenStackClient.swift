@@ -134,6 +134,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Heat orchestration client (phase 2).
+    public func orchestration(region: String? = nil) -> OrchestrationRegion {
+        OrchestrationService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

@@ -633,6 +633,38 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Heat (orchestration) fake state
+
+    public struct FakeHeatStack: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var parameters: [String: String]
+        public var outputs: [FakeStackOutput]
+
+        public init(id: String, projectID: String, name: String, status: String = "CREATE_COMPLETE", parameters: [String: String] = [:], outputs: [FakeStackOutput] = []) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.parameters = parameters
+            self.outputs = outputs
+        }
+    }
+
+    public struct FakeStackOutput: Sendable {
+        public var outputKey: String
+        public var outputValue: String
+        public var description: String?
+
+        public init(outputKey: String, outputValue: String, description: String? = nil) {
+            self.outputKey = outputKey
+            self.outputValue = outputValue
+            self.description = description
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
@@ -640,6 +672,7 @@ public actor FakeState {
     public private(set) var recordSets: [FakeRecordSet] = []
     public private(set) var magnumClusters: [FakeMagnumCluster] = []
     public private(set) var magnumTemplates: [FakeMagnumTemplate] = []
+    public private(set) var heatStacks: [FakeHeatStack] = []
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -931,6 +964,7 @@ public actor FakeState {
     private var recordSetIDCounter = 0
     private var magnumClusterIDCounter = 0
     private var magnumTemplateIDCounter = 0
+    private var heatStackIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -1195,6 +1229,17 @@ public actor FakeState {
         magnumTemplates.append(FakeMagnumTemplate(id: "ct-1", projectID: "proj-one", name: "fake-k8s-template", masterCount: 1, nodeCount: 3))
         magnumClusterIDCounter = 1
         magnumClusters.append(FakeMagnumCluster(id: "cluster-1", projectID: "proj-one", name: "fake-k8s-cluster", status: "ACTIVE", masterCount: 1, nodeCount: 3, clusterTemplateID: "ct-1"))
+
+        // Heat (orchestration) seed: one CREATE_COMPLETE stack with an output.
+        heatStackIDCounter = 1
+        heatStacks.append(FakeHeatStack(
+            id: "stack-1",
+            projectID: "proj-one",
+            name: "fake-stack",
+            status: "CREATE_COMPLETE",
+            parameters: ["environment": "dev"],
+            outputs: [FakeStackOutput(outputKey: "endpoint", outputValue: "http://10.0.0.50:8080", description: "Public endpoint")]
+        ))
     }
 
     // MARK: - Token minting
@@ -2508,6 +2553,36 @@ public actor FakeState {
         let idx = magnumTemplates.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         magnumTemplates.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Heat (orchestration) CRUD
+
+    public func listHeatStacks(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeHeatStack] {
+        var result = heatStacks.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getHeatStack(id: String, projectID: String) -> FakeHeatStack? {
+        heatStacks.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createHeatStack(projectID: String, name: String, parameters: [String: String]) -> FakeHeatStack {
+        heatStackIDCounter += 1
+        let s = FakeHeatStack(id: "stack-\(heatStackIDCounter)", projectID: projectID, name: name, status: "CREATE_COMPLETE", parameters: parameters)
+        heatStacks.append(s)
+        return s
+    }
+
+    public func deleteHeatStack(id: String, projectID: String) -> Bool {
+        let idx = heatStacks.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        heatStacks.remove(at: idx)
         return true
     }
 }

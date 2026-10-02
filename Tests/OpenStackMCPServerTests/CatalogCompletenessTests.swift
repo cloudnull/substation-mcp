@@ -58,10 +58,12 @@ struct CatalogCompletenessTests {
             "zone", "recordset",
             // Container infrastructure (2) — phase 2
             "cluster", "cluster_template",
+            // Orchestration (1) — phase 2
+            "stack",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 48, "Expected 48 resources (10+10+9+5+1+2+2+5+2+2), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 49, "Expected 49 resources (10+10+9+5+1+2+2+5+2+2+1), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -386,6 +388,16 @@ struct CatalogCompletenessTests {
         #expect(d.service == .containerInfra)
         #expect(d.statusField == "status")
         #expect(d.terminalStates.contains("ACTIVE"))
+    }
+
+    @Test("orchestration has 1 resource and stack is pollable with get_outputs action")
+    func orchestrationCount() {
+        #expect(catalog.resources(for: .orchestration).count == 1, "Expected 1 orchestration resource, got \(catalog.resources(for: .orchestration).count)")
+        let d = catalog.descriptor("stack")!
+        #expect(d.service == .orchestration)
+        #expect(d.statusField == "status")
+        #expect(d.terminalStates.contains("CREATE_COMPLETE"))
+        #expect(d.actions.contains { $0.name == "get_outputs" })
     }
 
     @Test("container + object descriptors are well-formed")

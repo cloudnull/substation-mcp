@@ -286,6 +286,15 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "container", status: 404, message: "Unknown container resource: \(descriptor.name)")
             }
+        case .orchestration:
+            let r = await client.orchestration(region: region)
+            switch descriptor.name {
+            case "stack":
+                let s = try await r.getStack(vt, id: id)
+                return try Self.encodeObject(s)
+            default:
+                throw OpenStackError(service: "orchestration", status: 404, message: "Unknown orchestration resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -471,6 +480,17 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "container", status: 404, message: "Unknown container resource: \(descriptor.name)")
+            }
+        case .orchestration:
+            let r = await client.orchestration(region: region)
+            switch descriptor.name {
+            case "stack":
+                let items = try await r.listStacks(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("stack"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "orchestration", status: 404, message: "Unknown orchestration resource: \(descriptor.name)")
             }
         }
     }
@@ -731,6 +751,21 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "container", status: 400, message: "Unknown container create: \(descriptor.name)")
             }
+        case .orchestration:
+            let r = await client.orchestration(region: region)
+            switch descriptor.name {
+            case "stack":
+                guard let name = obj["name"]?.stringValue, let template = obj["template"]?.stringValue else {
+                    throw OpenStackError(service: "orchestration", status: 400, message: "stack create requires 'name' and 'template'")
+                }
+                let parameters = obj["parameters"]?.objectValue?.reduce(into: [String: String]()) { acc, kv in
+                    acc[kv.key] = kv.value.stringValue ?? ""
+                } ?? [:]
+                let spec = CreateStackSpec(name: name, template: template, parameters: parameters, description: obj["description"]?.stringValue)
+                return try Self.encodeObject(try await r.createStack(vt, spec))
+            default:
+                throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration create: \(descriptor.name)")
+            }
         }
     }
 
@@ -795,6 +830,9 @@ public actor NameResolver {
         case .containerInfra:
             // Magnum clusters/templates are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "container", status: 501, message: "Container resources are not updatable (re-create instead)")
+        case .orchestration:
+            // Heat stacks are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "orchestration", status: 501, message: "Orchestration resources are not updatable (re-create instead)")
         }
     }
 
@@ -908,6 +946,14 @@ public actor NameResolver {
                 try await r.deleteClusterTemplate(vt, id: id)
             default:
                 throw OpenStackError(service: "container", status: 400, message: "Unknown container delete: \(descriptor.name)")
+            }
+        case .orchestration:
+            let r = await client.orchestration(region: region)
+            switch descriptor.name {
+            case "stack":
+                try await r.deleteStack(vt, id: id)
+            default:
+                throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -1087,6 +1133,24 @@ public actor NameResolver {
         case .containerInfra:
             // Magnum has no custom actions in phase 2.
             throw OpenStackError(service: "container", status: 501, message: "Container actions not supported")
+        case .orchestration:
+            let r = await client.orchestration(region: region)
+            switch descriptor.name {
+            case "stack":
+                switch action {
+                case "get_outputs":
+                    let outputs = try await r.getStackOutputs(vt, id: id)
+                    let encoded = try Self.encodeList(outputs)
+                    var result: [String: JSONValue] = ["resource": .string("stack")]
+                    result["outputs"] = encoded["items"] ?? .array([])
+                    result["count"] = encoded["count"] ?? .integer(0)
+                    return result
+                default:
+                    throw OpenStackError(service: "orchestration", status: 400, message: "Unknown stack action: \(action)")
+                }
+            default:
+                throw OpenStackError(service: "orchestration", status: 400, message: "Unknown orchestration action resource: \(descriptor.name)")
+            }
         }
     }
 

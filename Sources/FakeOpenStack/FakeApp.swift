@@ -28,6 +28,7 @@ public enum FakeApp {
         OctaviaFake.registerRoutes(router, state: state)
         DesignateFake.registerRoutes(router, state: state)
         MagnumFake.registerRoutes(router, state: state)
+        OrchestrationFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()
