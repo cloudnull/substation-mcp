@@ -32,6 +32,7 @@ struct OpenStackMCP: AsyncParsableCommand {
 
 struct ServeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
+        commandName: "serve",
         abstract: "Run the HTTP (Streamable-HTTP) MCP server."
     )
 
@@ -73,6 +74,7 @@ struct ServeCommand: AsyncParsableCommand {
 
 struct StdioCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
+        commandName: "stdio",
         abstract: "Run the MCP server over stdio (single cloud, single token)."
     )
 
@@ -124,7 +126,7 @@ struct StdioCommand: AsyncParsableCommand {
 // MARK: - healthz (spec §11.3)
 
 struct HealthzCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Print liveness JSON and exit 0.")
+    static let configuration = CommandConfiguration(commandName: "healthz", abstract: "Print liveness JSON and exit 0.")
 
     func run() throws {
         print(#"{"alive":true}"#)
@@ -139,7 +141,7 @@ struct CLIError: Error, CustomStringConvertible {
 // MARK: - check (spec §11.3)
 
 struct CheckCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Validate a token and print identity, scopes, regions, versions, and access-rule gaps.")
+    static let configuration = CommandConfiguration(commandName: "check", abstract: "Validate a token and print identity, scopes, regions, versions, and access-rule gaps.")
 
     @Option(name: .long, help: "Config file (YAML).") var config: String?
     @Option(name: .long, help: "Cloud name (from clouds.yaml).") var cloud: String?
@@ -231,7 +233,7 @@ struct CLIExit: Error, CustomStringConvertible {
 // MARK: - access-rules (spec §11.3)
 
 struct AccessRulesCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Emit the Keystone access-rule JSON for a mode/service/resource subset.")
+    static let configuration = CommandConfiguration(commandName: "access-rules", abstract: "Emit the Keystone access-rule JSON for a mode/service/resource subset.")
 
     @Option(name: .long, help: "Mode: read-only (GET only) or operator (all methods).") var mode: String = "operator"
     @Option(name: .long, help: "Comma-separated services to include (e.g. compute,network).") var services: String?
@@ -264,7 +266,7 @@ struct AccessRulesCommand: AsyncParsableCommand {
 // MARK: - tools (spec §11.3)
 
 struct ToolsCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Dump the tool list (name, description, annotations, inputSchema) for the effective policy.")
+    static let configuration = CommandConfiguration(commandName: "tools", abstract: "Dump the tool list (name, description, annotations, inputSchema) for the effective policy.")
 
     @Flag(name: .long, help: "Machine-readable JSON output.") var json: Bool = false
     @Flag(name: .long, help: "Read-only policy (9 tools) instead of the full set (15).") var readOnly: Bool = false
@@ -287,7 +289,7 @@ struct ToolsCommand: AsyncParsableCommand {
 // MARK: - register-catalog (spec §6.5)
 
 struct RegisterCatalogCommand: AsyncParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Install the MCP service + public/internal/admin endpoints in the Keystone catalog (idempotent).")
+    static let configuration = CommandConfiguration(commandName: "register-catalog", abstract: "Install the MCP service + public/internal/admin endpoints in the Keystone catalog (idempotent).")
 
     @Option(name: .long, help: "Config file (YAML).") var config: String?
     @Option(name: .long, help: "Cloud name (from clouds.yaml).") var cloud: String?
