@@ -2,12 +2,21 @@
 
 ## Current State
 
-- **Phase 1 is complete.** All 22 tasks merged to main.
+- **Phase 1 is complete.** All 22 tasks merged to main. The one dropped §12 item (`console_url`, session-scoped) is now also implemented.
 - **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Latest commit**: Task 22: hardening sweep, opt-in integration target, conformance smoke script (b9f5340)
-- **Tests**: 364 tests, all green across 5 targets (36 OpenStackMCP / 134 server / 149 client / 43 HummingbirdMCP / 2 integration self-skip)
+- **Latest commit**: `console_url` end-to-end + session-scoped console urls (b723462)
+- **Tests**: 367 tests, all green across 5 targets (36 OpenStackMCP / 134 server / 151 client / 44 HummingbirdMCP / 2 integration self-skip)
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
 - **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance` subcommand)
+
+## Post-completion gap closure: `console_url` (b723462)
+
+The single spec §12 hardening item that had been explicitly dropped — *"console URLs returned only to the requesting session"* — is now implemented end-to-end (it was the only in-scope phase-1 gap; everything else is phase 2+).
+
+- **Client** (`OpenStackClient`): new `Console` model (`{type,url}`) + `ComputeService.getConsole` / `getConsoleOutput`. These decode the `{"console":{...}}` / `{"output":...}` bodies; the generic `action()` decoded a `Server` and previously dropped the console payload.
+- **Dispatch** (`NameResolver.actionPublic`): `console_url` / `console_output` route through the dedicated client paths and return the console object / output string; every other action is unchanged.
+- **Fake** (`FakeOpenStack`): `NovaFake` action route handles `getVNCConsole` (200 `{"console":{...}}`) and `getConsoleOutput`; `FakeState.consoles` is a per-token map so the url is derived from the token's project + server + UUID. Each MCP session sees only the url it requested (stable on re-read, distinct across sessions) — the §12 property.
+- **Tests** (+3 → 367): `ComputeServiceTests` (client-level: type+url present, token-scoped, distinct across projects) + `HardeningTests` (MCP-level `os_action` §12 assertion: two sessions' console urls differ, each references its own server).
 
 ## Task 22 Implementation Notes (new — FINAL TASK)
 
