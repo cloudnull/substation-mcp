@@ -1,0 +1,76 @@
+# Baseline Helm overrides for openstack-mcp (Genestack add-on).
+#
+# Copy this file to:
+#   /opt/genestack/base-helm-configs/openstack-mcp/openstack-mcp-helm-overrides.yaml
+#
+# Then adjust values for your environment. The install script picks up
+# every *.yaml in this directory (in addition to global_overrides and
+# the operator's custom overrides).
+
+# ── Image ──────────────────────────────────────────────────────────────────────
+image:
+  # Replace with your cluster registry path + the tag you pushed.
+  repository: registry.example.com/openstack/openstack-mcp
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# ── Server config ──────────────────────────────────────────────────────────────
+# Full config reference: deploy/genestack/helm/openstack-mcp/values.yaml
+# Only set the keys you want to override; the chart's defaults apply for
+# everything else.
+
+config:
+  server:
+    # Public URL (must match the Gateway FQDN + register-catalog PUBLIC_URL).
+    publicUrl: https://openstack-mcp.example.com
+    # Gate /metrics with a bearer token (recommended for production).
+    metricsToken: "change-me"
+  auth:
+    # keystone_token profile (P1, default). Set keystoneUrl if your Keystone
+    # is not discoverable via the catalog.
+    profile: keystone_token
+    keystoneUrl: ""
+  clouds:
+    # Default cloud name (must match a key under clouds.cloud_name in cloudsClouds).
+    default: mycloud
+  policy:
+    # Set read_only: true to expose only the 9 read-only tools.
+    read_only: false
+
+# ── clouds.yaml (OpenStack cloud definition) ───────────────────────────────────
+# Fill in your cloud's auth details. The `auth` block must match the
+# clouds.yaml format: https://docs.openstack.org/cli-reference/project/clouds-yaml.html
+#
+# If you use an application credential for the login page (appCred),
+# set user_id/secret to empty and enable appCred below — the chart will
+# inject them from the Secret into the pod's env.
+cloudsClouds:
+  cloud_name:
+    mycloud:
+      auth_type: application_credential
+      auth:
+        user_id: ""
+        secret: ""
+        auth_url: "https://keystone.example.com/v3"
+        region_name: "RegionOne"
+      interface: public
+      identity_interface: admin
+      verify: true
+
+# ── Application credential (optional) ──────────────────────────────────────────
+# Enable if you want the /v1/login URL-mode elicitation page.
+# The id+secret are stored in a Secret and injected as env vars.
+appCred:
+  enabled: false
+  id: ""
+  secret: ""
+
+# ── Gateway (external exposure) ────────────────────────────────────────────────
+# Enable to render the HTTPRoute (+ optionally a Gateway). Set fqdn to
+# the FQDN that will be exposed via MetalLB VIP + Gateway API.
+gateway:
+  enabled: true
+  createGateway: false    # true only if you have NOT created a Gateway yet
+  fqdn: openstack-mcp.example.com
+  gatewayClassName: envoy-gateway
+  useExistingListener: true   # reuse the operator's existing Gateway listener
