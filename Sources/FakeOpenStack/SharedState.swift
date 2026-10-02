@@ -555,9 +555,51 @@ public actor FakeState {
         }
     }
 
+    // MARK: - Designate (DNS) fake state
+
+    public struct FakeZone: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var email: String?
+        public var status: String
+        public var ttl: Int?
+
+        public init(id: String, projectID: String, name: String, email: String? = nil, status: String = "active", ttl: Int? = 3600) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.email = email
+            self.status = status
+            self.ttl = ttl
+        }
+    }
+
+    public struct FakeRecordSet: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var type: String
+        public var ttl: Int?
+        public var records: [String]
+        public var zoneID: String?
+
+        public init(id: String, projectID: String, name: String, type: String, ttl: Int? = nil, records: [String] = [], zoneID: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.type = type
+            self.ttl = ttl
+            self.records = records
+            self.zoneID = zoneID
+        }
+    }
+
     // MARK: - Storage
 
     public private(set) var credentials: [FakeCredential] = []
+    public private(set) var zones: [FakeZone] = []
+    public private(set) var recordSets: [FakeRecordSet] = []
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -845,6 +887,8 @@ public actor FakeState {
     private var poolIDCounter = 0
     private var memberIDCounter = 0
     private var healthMonitorIDCounter = 0
+    private var zoneIDCounter = 0
+    private var recordSetIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -1097,6 +1141,12 @@ public actor FakeState {
         pools.append(FakePool(id: "pool-1", projectID: "proj-one", name: "fake-pool", protocolName: "HTTP", lbAlgorithm: "ROUND_ROBIN", loadBalancerID: "lb-1"))
         memberIDCounter = 1
         members.append(FakeMember(id: "member-1", projectID: "proj-one", name: "fake-member", protocolAddress: "10.0.0.20", protocolPort: 80, poolID: "pool-1", status: "ONLINE"))
+
+        // Designate (DNS) seed: one active zone + one record set.
+        zoneIDCounter = 1
+        zones.append(FakeZone(id: "zone-1", projectID: "proj-one", name: "example.com.", email: "admin@example.com", status: "active", ttl: 3600))
+        recordSetIDCounter = 1
+        recordSets.append(FakeRecordSet(id: "rs-1", projectID: "proj-one", name: "www.example.com.", type: "A", ttl: 3600, records: ["10.0.0.1"], zoneID: "zone-1"))
     }
 
     // MARK: - Token minting
@@ -2293,6 +2343,65 @@ public actor FakeState {
         let idx = healthMonitors.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         healthMonitors.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Designate (DNS) CRUD
+
+    public func listZones(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeZone] {
+        var result = zones.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getZone(id: String, projectID: String) -> FakeZone? {
+        zones.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createZone(projectID: String, name: String, email: String?, ttl: Int?) -> FakeZone {
+        zoneIDCounter += 1
+        let z = FakeZone(id: "zone-\(zoneIDCounter)", projectID: projectID, name: name, email: email, status: "active", ttl: ttl)
+        zones.append(z)
+        return z
+    }
+
+    public func deleteZone(id: String, projectID: String) -> Bool {
+        let idx = zones.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        zones.remove(at: idx)
+        return true
+    }
+
+    public func listRecordSets(projectID: String, name: String? = nil, zoneID: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeRecordSet] {
+        var result = recordSets.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name.contains(name) } }
+        if let zoneID { result = result.filter { $0.zoneID == zoneID } }
+        result.sort { $0.name < $1.name }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getRecordSet(id: String, projectID: String) -> FakeRecordSet? {
+        recordSets.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    @discardableResult
+    public func createRecordSet(projectID: String, name: String, type: String, ttl: Int?, records: [String], zoneID: String?) -> FakeRecordSet {
+        recordSetIDCounter += 1
+        let rs = FakeRecordSet(id: "rs-\(recordSetIDCounter)", projectID: projectID, name: name, type: type, ttl: ttl, records: records, zoneID: zoneID)
+        recordSets.append(rs)
+        return rs
+    }
+
+    public func deleteRecordSet(id: String, projectID: String) -> Bool {
+        let idx = recordSets.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        recordSets.remove(at: idx)
         return true
     }
 }

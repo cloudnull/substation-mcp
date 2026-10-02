@@ -23,6 +23,7 @@ public struct ResourceCatalog: Sendable {
             ObjectStorageEntries.all,
             KeyManagerEntries.all,
             LoadBalancerEntries.all,
+            DNSEntries.all,
         ].flatMap { $0 }
         return ResourceCatalog(resources: all)
     }

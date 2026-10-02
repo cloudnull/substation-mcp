@@ -122,6 +122,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Designate DNS client (phase 2).
+    public func dns(region: String? = nil) -> DNSRegion {
+        DNSService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

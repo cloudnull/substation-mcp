@@ -262,6 +262,18 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "loadbalancer", status: 404, message: "Unknown load-balancer resource: \(descriptor.name)")
             }
+        case .dns:
+            let r = await client.dns(region: region)
+            switch descriptor.name {
+            case "zone":
+                let z = try await r.getZone(vt, id: id)
+                return try Self.encodeObject(z)
+            case "recordset":
+                let rs = try await r.getRecordSet(vt, id: id)
+                return try Self.encodeObject(rs)
+            default:
+                throw OpenStackError(service: "dns", status: 404, message: "Unknown dns resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -415,6 +427,22 @@ public actor NameResolver {
                 return result
             default:
                 throw OpenStackError(service: "loadbalancer", status: 404, message: "Unknown load-balancer resource: \(descriptor.name)")
+            }
+        case .dns:
+            let r = await client.dns(region: region)
+            switch descriptor.name {
+            case "zone":
+                let items = try await r.listZones(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("zone"); result["region"] = .string(region)
+                return result
+            case "recordset":
+                let items = try await r.listRecordSets(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("recordset"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "dns", status: 404, message: "Unknown dns resource: \(descriptor.name)")
             }
         }
     }
@@ -628,6 +656,25 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "loadbalancer", status: 400, message: "Unknown load-balancer create: \(descriptor.name)")
             }
+        case .dns:
+            let r = await client.dns(region: region)
+            switch descriptor.name {
+            case "zone":
+                guard let name = obj["name"]?.stringValue else {
+                    throw OpenStackError(service: "dns", status: 400, message: "zone create requires a 'name'")
+                }
+                let spec = CreateZoneSpec(name: name, email: obj["email"]?.stringValue, ttl: obj["ttl"]?.intValue)
+                return try Self.encodeObject(try await r.createZone(vt, spec))
+            case "recordset":
+                guard let name = obj["name"]?.stringValue, let type = obj["type"]?.stringValue else {
+                    throw OpenStackError(service: "dns", status: 400, message: "recordset create requires 'name' and 'type'")
+                }
+                let records = obj["records"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                let spec = CreateRecordSetSpec(zone_id: obj["zone_id"]?.stringValue, name: name, type: type, ttl: obj["ttl"]?.intValue, records: records)
+                return try Self.encodeObject(try await r.createRecordSet(vt, spec))
+            default:
+                throw OpenStackError(service: "dns", status: 400, message: "Unknown dns create: \(descriptor.name)")
+            }
         }
     }
 
@@ -686,6 +733,9 @@ public actor NameResolver {
         case .loadBalancer:
             // Octavia resources are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "loadbalancer", status: 501, message: "Load-balancer resources are not updatable (re-create instead)")
+        case .dns:
+            // Designate zones/recordsets are immutable in phase 2 (re-create instead).
+            throw OpenStackError(service: "dns", status: 501, message: "DNS resources are not updatable (re-create instead)")
         }
     }
 
@@ -779,6 +829,16 @@ public actor NameResolver {
                 try await r.deleteHealthMonitor(vt, id: id)
             default:
                 throw OpenStackError(service: "loadbalancer", status: 400, message: "Unknown load-balancer delete: \(descriptor.name)")
+            }
+        case .dns:
+            let r = await client.dns(region: region)
+            switch descriptor.name {
+            case "zone":
+                try await r.deleteZone(vt, id: id)
+            case "recordset":
+                try await r.deleteRecordSet(vt, id: id)
+            default:
+                throw OpenStackError(service: "dns", status: 400, message: "Unknown dns delete: \(descriptor.name)")
             }
         }
         return ["deleted": .bool(true), "id": .string(id)]
@@ -952,6 +1012,9 @@ public actor NameResolver {
         case .loadBalancer:
             // Octavia has no custom actions in phase 2.
             throw OpenStackError(service: "loadbalancer", status: 501, message: "Load-balancer actions not supported")
+        case .dns:
+            // Designate has no custom actions in phase 2.
+            throw OpenStackError(service: "dns", status: 501, message: "DNS actions not supported")
         }
     }
 

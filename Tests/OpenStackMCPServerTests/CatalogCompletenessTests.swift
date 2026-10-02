@@ -54,10 +54,12 @@ struct CatalogCompletenessTests {
             "secret", "secret_container",
             // Load balancer (5) — phase 2
             "load_balancer", "listener", "pool", "member", "health_monitor",
+            // DNS (2) — phase 2
+            "zone", "recordset",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 44, "Expected 44 resources (10+10+9+5+1+2+2+5), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 46, "Expected 46 resources (10+10+9+5+1+2+2+5+2), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -364,6 +366,15 @@ struct CatalogCompletenessTests {
         #expect(d.service == .loadBalancer)
         #expect(d.statusField == "provisioning_status")
         #expect(d.terminalStates.contains("ACTIVE"))
+    }
+
+    @Test("dns has 2 resources and zone is pollable")
+    func dnsCount() {
+        #expect(catalog.resources(for: .dns).count == 2, "Expected 2 dns resources, got \(catalog.resources(for: .dns).count)")
+        let d = catalog.descriptor("zone")!
+        #expect(d.service == .dns)
+        #expect(d.statusField == "status")
+        #expect(d.terminalStates.contains("active"))
     }
 
     @Test("container + object descriptors are well-formed")
