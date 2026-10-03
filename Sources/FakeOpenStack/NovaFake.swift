@@ -7,9 +7,12 @@ import NIOCore
 /// Fake Nova v2.1 implementation.
 public struct NovaFake {
     public static func registerRoutes(_ router: Router<BasicRequestContext>, state: FakeState) {
+        // Real Nova returns the version list at GET / (root) or /nova, in the
+        // {"versions":[...]} form, with the CURRENT entry carrying the max.
+        // We serve it at /nova (the fake's version-doc path) in the real form.
         router.get("/nova") { _, _ in
             Self.jsonResponse(status: .ok, body: """
-            {"version":{"id":"v2.1","status":"stable","max_version":"2.104","min_version":"2.1","updated":"2024-01-01T00:00:00Z","endpoints":[{"region":"RegionOne","publicURL":"/nova"}]}}
+            {"versions":[{"id":"v2.0","status":"SUPPORTED","min_version":"2.1","endpoints":[{"region":"RegionOne","publicURL":"/nova"}]},{"id":"v2.1","status":"CURRENT","version":"2.104","min_version":"2.1","updated":"2024-01-01T00:00:00Z","endpoints":[{"region":"RegionOne","publicURL":"/nova"}]}]}
             """)
         }
 
@@ -25,7 +28,11 @@ public struct NovaFake {
             let marker = Self.queryParam("marker", from: req)
 
             let servers = await state.listServers(projectID: token.projectID, name: name, status: status, limit: limit, marker: marker)
-            return Self.jsonResponse(status: .ok, body: Self.serversListJSON(servers: servers))
+            // Mirror real nova: the non-detail /servers list returns ONLY
+            // id/name/links (no status/flavor/addresses). Those fields appear
+            // only in /servers/detail. This keeps the fake faithful so the
+            // client is forced to use the detail view for a full list.
+            return Self.jsonResponse(status: .ok, body: Self.serversListJSONMinimal(servers: servers))
         }
 
         router.get("/nova/servers/detail") { req, _ in
@@ -33,7 +40,13 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            let servers = await state.listServers(projectID: token.projectID)
+            // Real nova /servers/detail supports the same name/status/limit/marker
+            // filters as /servers.
+            let name = Self.queryParam("name", from: req)
+            let status = Self.queryParam("status", from: req)
+            let limit = Self.queryParam("limit", from: req).flatMap { Int($0) }
+            let marker = Self.queryParam("marker", from: req)
+            let servers = await state.listServers(projectID: token.projectID, name: name, status: status, limit: limit, marker: marker)
             return Self.jsonResponse(status: .ok, body: Self.serversListJSON(servers: servers, detail: true))
         }
 
@@ -415,6 +428,14 @@ public struct NovaFake {
             return String(rest[rest.startIndex..<close])
         }
         return nil
+    }
+
+    /// The real-nova non-detail list shape: only id/name/links per server.
+    static func serversListJSONMinimal(servers: [FakeState.FakeServer]) -> String {
+        let items = servers.map { server -> String in
+            "{\"id\":\"\(server.id)\",\"name\":\"\(server.name)\",\"links\":[{\"rel\":\"self\",\"href\":\"/nova/servers/\(server.id)\"},{\"rel\":\"bookmark\",\"href\":\"/nova/servers\"}]}"
+        }
+        return "{\"servers\":[\(items.joined(separator: ","))]}"
     }
 
     static func serversListJSON(servers: [FakeState.FakeServer], detail: Bool = false) -> String {

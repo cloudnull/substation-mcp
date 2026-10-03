@@ -81,7 +81,10 @@ struct FakeSmokeTests {
 
         let tokenID = try await Self.mintToken(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
 
-        var listRequest = URLRequest(url: handle.url.appendingPathComponent("nova/servers"))
+        // Use the detail view: the non-detail /nova/servers list returns only
+        // id/name/links (faithful to real nova); status/flavor/addresses appear
+        // only in /nova/servers/detail.
+        var listRequest = URLRequest(url: handle.url.appendingPathComponent("nova/servers/detail"))
         listRequest.httpMethod = "GET"
         listRequest.setValue(tokenID, forHTTPHeaderField: "X-Auth-Token")
 

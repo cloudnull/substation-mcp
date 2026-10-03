@@ -18,7 +18,7 @@ public struct BlockStorageRegion: Sendable {
     /// The version root the catalog URL should carry (empty = the catalog URL is
     /// always the authoritative base; non-empty = verify the catalog path ends
     /// with it, else use the catalog host + this root).
-    private let serviceRoot: String = ""
+    private let serviceRoot: String = "v3"
     /// The Keystone catalog service type (may differ from the transport label,
     /// e.g. magnum is catalog type `container-infra` but labeled `container`).
     private let catalogType: String = "volumev3"

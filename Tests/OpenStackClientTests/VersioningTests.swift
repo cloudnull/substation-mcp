@@ -217,6 +217,65 @@ struct EndpointResolverTests {
         #expect(dns.base.absoluteString == "https://keystone.api.sjc3.example.com")
         #expect(dns.pathPrefix == "designate/v3")
     }
+
+    /// A Rackspace catalog where glance/barbican/octavia endpoints omit the
+    /// version root (Rackspace advertises them at the bare host). The resolver
+    /// must append the service's version root so the request reaches the real
+    /// API (e.g. glance at /v2, barbican/octavia at /v1).
+    private func makeRackspaceNoVersionCatalog() -> ServiceCatalog {
+        ServiceCatalog(entries: [
+            CatalogEntry(type: "image", name: "glance", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://glance.api.sjc3.example.com")!)
+            ]),
+            CatalogEntry(type: "key-manager", name: "barbican", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://barbican.api.sjc3.example.com")!)
+            ]),
+            CatalogEntry(type: "load-balancer", name: "octavia", endpoints: [
+                CatalogEndpoint(region: "SJC3", interface: "public", url: URL(string: "https://octavia.api.sjc3.example.com")!)
+            ])
+        ])
+    }
+
+    @Test func rackspaceGlanceBarbicanOctavia_omitVersion_useHostAndServiceRoot() throws {
+        let r = EndpointResolver(catalog: makeRackspaceNoVersionCatalog(), preferredInterface: "public")
+        let fb = URL(string: "https://keystone.api.sjc3.example.com")!
+
+        let glance = try r.resolveEndpoint(serviceType: "image", region: "SJC3", basePath: "glance/v2", serviceRoot: "v2", fallbackBase: fb)
+        #expect(glance.base.absoluteString == "https://glance.api.sjc3.example.com")
+        #expect(glance.pathPrefix == "v2")
+
+        let barbican = try r.resolveEndpoint(serviceType: "key-manager", region: "SJC3", basePath: "barbican/v1", serviceRoot: "v1", fallbackBase: fb)
+        #expect(barbican.base.absoluteString == "https://barbican.api.sjc3.example.com")
+        #expect(barbican.pathPrefix == "v1")
+
+        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "SJC3", basePath: "loadbalancer/v1", serviceRoot: "v1", fallbackBase: fb)
+        #expect(octavia.base.absoluteString == "https://octavia.api.sjc3.example.com")
+        #expect(octavia.pathPrefix == "v1")
+    }
+
+    /// The same services in a conventional (fake) catalog where the version root
+    /// IS present: the resolver uses the catalog URL in full (strips basePath).
+    @Test func conventionalGlanceBarbicanOctavia_catalogCarriesVersion() throws {
+        let r = EndpointResolver(catalog: ServiceCatalog(entries: [
+            CatalogEntry(type: "image", name: "glance", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/glance/v2")!)
+            ]),
+            CatalogEntry(type: "key-manager", name: "barbican", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/barbican/v1")!)
+            ]),
+            CatalogEntry(type: "load-balancer", name: "octavia", endpoints: [
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/loadbalancer/v1")!)
+            ])
+        ]), preferredInterface: "public")
+
+        let glance = try r.resolveEndpoint(serviceType: "image", region: "R1", basePath: "glance/v2", serviceRoot: "v2", fallbackBase: URL(string: "http://k.local")!)
+        #expect(glance.base.absoluteString == "http://k.local/glance/v2")
+        #expect(glance.pathPrefix == "")
+
+        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "R1", basePath: "loadbalancer/v1", serviceRoot: "v1", fallbackBase: URL(string: "http://k.local")!)
+        #expect(octavia.base.absoluteString == "http://k.local/loadbalancer/v1")
+        #expect(octavia.pathPrefix == "")
+    }
 }
 
 @Suite("NeutronExtensions")
@@ -230,7 +289,20 @@ struct NeutronExtensionsTests {
 
 @Suite("VersionNegotiator")
 struct VersionNegotiatorTests {
-    private func makeNovaVersionDoc(maxVersion: String) -> String {
+    /// The real nova/cinder version-doc format: {"versions":[{...}]}.
+    private func makeRealVersionDoc(maxVersion: String, status: String = "CURRENT") -> String {
+        """
+        {
+          "versions": [
+            {"id": "v2.0", "status": "SUPPORTED", "min_version": "2.1"},
+            {"id": "v2.1", "status": "\(status)", "version": "\(maxVersion)", "min_version": "2.1"}
+          ]
+        }
+        """
+    }
+
+    /// The legacy object form (used by the fake): {"version":{"max_version":...}}.
+    private func makeLegacyVersionDoc(maxVersion: String) -> String {
         """
         {
           "version": {
@@ -243,6 +315,16 @@ struct VersionNegotiatorTests {
         """
     }
 
+    private func novaProfile() -> ServiceVersionProfile {
+        ServiceVersionProfile(
+            serviceType: "compute",
+            hasMicroversion: true,
+            headerName: "X-OpenStack-Nova-API-Version",
+            clientMax: Microversion(major: 2, minor: 104),
+            floor: Microversion(major: 2, minor: 79)
+        )
+    }
+
     @Test func negotiatesToServerMax() async throws {
         let server = TestServer()
         try server.start()
@@ -251,7 +333,7 @@ struct VersionNegotiatorTests {
         let counter = ManagedAtomic(0)
         server.addHandler("/") { _ in
             counter.wrappingIncrement(by: 1, ordering: .relaxed)
-            return (200, makeNovaVersionDoc(maxVersion: "2.104"), [("Content-Type", "application/json")])
+            return (200, makeLegacyVersionDoc(maxVersion: "2.104"), [("Content-Type", "application/json")])
         }
 
         let cloud = CloudEntry(name: "test", authURL: server.baseURL)
@@ -265,22 +347,69 @@ struct VersionNegotiatorTests {
         defer { transport.syncShutdown() }
 
         let cache = Cache(maxEntries: 100)
-        let negotiator = VersionNegotiator(
-            transport: transport,
-            cache: cache,
-            serviceType: "nova",
-            clientMax: Microversion(major: 2, minor: 104),
-            floor: Microversion(major: 2, minor: 79)
-        )
+        let negotiator = VersionNegotiator(transport: transport, cache: cache, profile: novaProfile())
 
         let v = try await negotiator.negotiate(region: "RegionOne")
-        #expect(v == Microversion(major: 2, minor: 104))
+        #expect(v.version == Microversion(major: 2, minor: 104))
         #expect(counter.load(ordering: .relaxed) == 1)
 
         // Second call should be cached
         let v2 = try await negotiator.negotiate(region: "RegionOne")
-        #expect(v2 == v)
+        #expect(v2.version == v.version)
         #expect(counter.load(ordering: .relaxed) == 1, "Second call should hit cache")
+    }
+
+    /// The real nova version-doc format ({"versions":[...]}) with HTTP 200.
+    @Test func parsesRealNovaVersionDoc() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        server.addHandler("/") { _ in
+            (200, makeRealVersionDoc(maxVersion: "2.100"), [("Content-Type", "application/json")])
+        }
+        let transport = Transport(cloud: CloudEntry(name: "t", authURL: server.baseURL),
+            tokenSource: { "tok" }, logger: Logger(label: "test"))
+        defer { transport.syncShutdown() }
+        let negotiator = VersionNegotiator(transport: transport, cache: Cache(maxEntries: 100), profile: novaProfile())
+        let v = try await negotiator.negotiate(region: "RegionOne")
+        // Server max 2.100 < client max 2.104 -> negotiates to 2.100, and the
+        // microversion header is populated.
+        #expect(v.version == Microversion(major: 2, minor: 100))
+        #expect(v.headerName == "X-OpenStack-Nova-API-Version")
+        #expect(v.headerValue == "2.100")
+    }
+
+    /// Cinder's version doc returns HTTP 300 (Multiple Choices), not 200, and
+    /// the header is `OpenStack-API-Version: volume 3.x`.
+    @Test func cinderVersionDocAccepts300AndFormatsHeader() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        // Real cinder version doc: 300, {"versions":[{id:v3.0, status:CURRENT, version:"3.71"}]}
+        let cinderDoc = """
+        {"versions":[{"id":"v3.0","status":"CURRENT","version":"3.71","min_version":"3.0"}]}
+        """
+        server.addHandler("/") { _ in
+            (300, cinderDoc, [("Content-Type", "application/json")])
+        }
+        let transport = Transport(cloud: CloudEntry(name: "t", authURL: server.baseURL),
+            tokenSource: { "tok" }, logger: Logger(label: "test"))
+        defer { transport.syncShutdown() }
+        let profile = ServiceVersionProfile(
+            serviceType: "volumev3",
+            hasMicroversion: true,
+            headerName: "OpenStack-API-Version",
+            clientMax: Microversion(major: 3, minor: 70),
+            headerValue: { "volume \($0.major).\($0.minor)" }
+        )
+        let negotiator = VersionNegotiator(transport: transport, cache: Cache(maxEntries: 100), profile: profile)
+        let v = try await negotiator.negotiate(region: "RegionOne")
+        // Server max 3.71 > client max 3.70 -> caps at 3.70, header "volume 3.70".
+        #expect(v.version == Microversion(major: 3, minor: 70))
+        #expect(v.headerName == "OpenStack-API-Version")
+        #expect(v.headerValue == "volume 3.70")
     }
 
     @Test func belowFloor_throws() async throws {
@@ -289,7 +418,7 @@ struct VersionNegotiatorTests {
         defer { server.stop() }
 
         server.addHandler("/") { _ in
-            (200, makeNovaVersionDoc(maxVersion: "2.78"), [("Content-Type", "application/json")])
+            (200, makeLegacyVersionDoc(maxVersion: "2.78"), [("Content-Type", "application/json")])
         }
 
         let cloud = CloudEntry(name: "test", authURL: server.baseURL)
@@ -303,13 +432,7 @@ struct VersionNegotiatorTests {
         defer { transport.syncShutdown() }
 
         let cache = Cache(maxEntries: 100)
-        let negotiator = VersionNegotiator(
-            transport: transport,
-            cache: cache,
-            serviceType: "nova",
-            clientMax: Microversion(major: 2, minor: 104),
-            floor: Microversion(major: 2, minor: 79)
-        )
+        let negotiator = VersionNegotiator(transport: transport, cache: cache, profile: novaProfile())
 
         do {
             _ = try await negotiator.negotiate(region: "RegionOne")
@@ -328,7 +451,7 @@ struct VersionNegotiatorTests {
         defer { server.stop() }
 
         server.addHandler("/") { _ in
-            (200, makeNovaVersionDoc(maxVersion: "2.200"), [("Content-Type", "application/json")])
+            (200, makeLegacyVersionDoc(maxVersion: "2.200"), [("Content-Type", "application/json")])
         }
 
         let cloud = CloudEntry(name: "test", authURL: server.baseURL)
@@ -342,15 +465,9 @@ struct VersionNegotiatorTests {
         defer { transport.syncShutdown() }
 
         let cache = Cache(maxEntries: 100)
-        let negotiator = VersionNegotiator(
-            transport: transport,
-            cache: cache,
-            serviceType: "nova",
-            clientMax: Microversion(major: 2, minor: 104),
-            floor: Microversion(major: 2, minor: 79)
-        )
+        let negotiator = VersionNegotiator(transport: transport, cache: cache, profile: novaProfile())
 
         let v = try await negotiator.negotiate(region: "RegionOne")
-        #expect(v == Microversion(major: 2, minor: 104), "Should cap at clientMax")
+        #expect(v.version == Microversion(major: 2, minor: 104), "Should cap at clientMax")
     }
 }

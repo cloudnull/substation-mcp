@@ -1,114 +1,164 @@
 import Foundation
 import Logging
 
-/// Negotiates the API microversion for a service by querying its version
-/// document, caching the result, and picking min(serverMax, clientMax).
-/// Throws if the negotiated version is below the floor.
+/// The result of negotiating a service's API version: the negotiated
+/// microversion and the header (name + value) to send on requests, when the
+/// service uses a microversion header.
+public struct NegotiatedVersion: Sendable, Equatable {
+    public let version: Microversion
+    /// The header name to send, or nil when the service has no microversion.
+    public let headerName: String?
+    /// The header value to send (the formatted microversion).
+    public let headerValue: String?
+
+    /// The header pair to forward to a request, or empty when there is none.
+    public var header: (String, String)? {
+        guard let headerName, let headerValue else { return nil }
+        return (headerName, headerValue)
+    }
+}
+
+/// Negotiates the API version for a service by querying its version document,
+/// caching the result, and picking min(serverMax, clientMax). Throws if the
+/// negotiated version is below the floor.
+///
+/// The version document is fetched from the service endpoint root. Real clouds
+/// (nova, cinder) return `{"versions":[{...}]}` — a list where the `CURRENT`
+/// entry carries `version`/`max_version`; some clouds (cinder) return this with
+/// HTTP 300 (Multiple Choices), not 200. The legacy `{"version":{"max_version"}}`
+/// object form (used by the fake) is also accepted.
 public actor VersionNegotiator {
     private let transport: Transport
     private let cache: Cache
-    private let serviceType: String
-    private let clientMax: Microversion
-    private let floor: Microversion?
+    private let profile: ServiceVersionProfile
+    /// The base URL to fetch the version doc from (the service endpoint). When
+    /// nil the request goes under the cloud authURL with the versionDocPath.
+    private let endpointBase: @Sendable () async -> URL?
     private let logger: Logger
 
     public init(
         transport: Transport,
         cache: Cache,
-        serviceType: String,
-        clientMax: Microversion,
-        floor: Microversion? = nil,
+        profile: ServiceVersionProfile,
+        endpointBase: @escaping @Sendable () async -> URL? = { nil },
         logger: Logger = Logger(label: "version-negotiator")
     ) {
         self.transport = transport
         self.cache = cache
-        self.serviceType = serviceType
-        self.clientMax = clientMax
-        self.floor = floor
+        self.profile = profile
+        self.endpointBase = endpointBase
         self.logger = logger
     }
 
-    /// Negotiate the microversion for a region. Cached per region.
-    public func negotiate(region: String) async throws -> Microversion {
+    /// Negotiate the version for a region. Cached per region.
+    ///
+    /// - Parameter versionDocPath: the path (under the endpoint base) to GET
+    ///   for the version document. Defaults to the profile's `versionDocPath`.
+    ///   Callers pass the service's root path here: e.g. `"nova"` when the
+    ///   fake serves the version list at `/nova`, or `""` when the real service
+    ///   serves it at the endpoint root.
+    public func negotiate(
+        region: String,
+        versionDocPath: String? = nil
+    ) async throws -> NegotiatedVersion {
+        let docPath = versionDocPath ?? profile.versionDocPath
         let key = CacheKey(
             tokenID: "_version_docs_",
             region: region,
-            resource: "__versions__/\(serviceType)",
-            suffix: ""
+            resource: "__versions__/\(profile.serviceType)",
+            suffix: docPath
         )
 
         if let cached = await cache.get(key, ttl: .seconds(1800), as: Microversion.self) {
-            return cached
+            return makeResult(cached)
         }
 
+        let path = docPath.isEmpty ? "/" : docPath
+        let base = await endpointBase()
         let (status, body, _) = try await transport.request(
             method: "GET",
-            service: serviceType,
-            path: "/"
+            service: profile.serviceType,
+            path: path,
+            overrideBase: base,
+            tolerate3xx: true
         )
 
-        guard status == 200 else {
+        // Real service version docs may be 200 (nova) or 300 (cinder/glance).
+        guard status == 200 || status == 300 else {
             throw OpenStackError.normalize(
                 body: body,
                 status: status,
-                service: serviceType,
+                service: profile.serviceType,
                 requestID: nil,
                 hasAccessRules: false
             )
         }
 
-        let serverMax = try Self.parseServerMax(from: body, serviceType: serviceType)
-        let negotiated = min(serverMax, clientMax)
+        let serverMax = try Self.parseServerMax(from: body, serviceType: profile.serviceType)
+        let negotiated = min(serverMax, profile.clientMax)
 
-        if let floor, negotiated < floor {
+        if let floor = profile.floor, negotiated < floor {
             throw OpenStackError(
-                service: serviceType,
+                service: profile.serviceType,
                 status: 0,
                 code: "below-floor",
-                message: "cloud advertises \(serviceType) max \(serverMax.stringValue); floor is \(floor.stringValue)",
+                message: "cloud advertises \(profile.serviceType) max \(serverMax.stringValue); floor is \(floor.stringValue)",
                 hint: "the cloud's API version is too old for the required features"
             )
         }
 
         await cache.put(key, ttl: .seconds(1800), value: negotiated)
-        return negotiated
+        return makeResult(negotiated)
+    }
+
+    private func makeResult(_ version: Microversion) -> NegotiatedVersion {
+        if profile.hasMicroversion {
+            return NegotiatedVersion(version: version, headerName: profile.headerName, headerValue: profile.headerValue(version))
+        }
+        return NegotiatedVersion(version: version, headerName: nil, headerValue: nil)
     }
 
     /// Parse the server's max version from a version document response.
-    /// Handles Nova (`{"version":{"max_version":"2.104"}}`),
-    /// Cinder (`{"version":{"max_version":"3.x"}}`),
-    /// and Glance (`{"versions":[...]}`).
+    /// Handles the real `{"versions":[{...}]}` list form (nova, cinder) and the
+    /// legacy `{"version":{"max_version"}}` object form (the fake).
     static func parseServerMax(from body: Data, serviceType: String) throws -> Microversion {
+        // Real form: {"versions":[{"id":"v2.1","status":"CURRENT","version":"2.100"}]}
+        struct VersionsList: Codable {
+            struct Entry: Codable {
+                let status: String?
+                let version: String?
+                let max_version: String?
+            }
+            let versions: [Entry]
+        }
+        if let list = try? JSONDecoder().decode(VersionsList.self, from: body) {
+            // Prefer the CURRENT entry; else the entry with the highest version.
+            let current = list.versions.first(where: { $0.status?.uppercased() == "CURRENT" })
+            let candidates: [VersionsList.Entry] = current != nil ? [current!] : list.versions
+            var best: Microversion?
+            for entry in candidates {
+                let v = entry.max_version.flatMap { Microversion($0) }
+                    ?? entry.version.flatMap { Microversion($0) }
+                if let v, best == nil || v > best! {
+                    best = v
+                }
+            }
+            if let best {
+                return best
+            }
+        }
+
+        // Legacy object form: {"version":{"max_version":"2.104"}}
         struct VersionDoc: Codable {
             struct Version: Codable {
-                let max_version: String
-                let min_version: String?
+                let max_version: String?
+                let version: String?
             }
             let version: Version
         }
-
-        struct GlanceVersions: Codable {
-            struct VersionEntry: Codable {
-                let id: String
-                let status: String?
-                let min_version: String?
-                let max_version: String?
-            }
-            let versions: [VersionEntry]
-        }
-
-        // Try Nova/Cinder style first: {"version": {"max_version": "2.104"}}
-        if let doc = try? JSONDecoder().decode(VersionDoc.self, from: body),
-           let maxV = Microversion(doc.version.max_version) {
-            return maxV
-        }
-
-        // Try Glance style: {"versions": [{"id": "v2", "max_version": "2.x"}]}
-        if let glance = try? JSONDecoder().decode(GlanceVersions.self, from: body),
-           let entry = glance.versions.first(where: { $0.status == "CURRENT" }) ?? glance.versions.last,
-           let maxStr = entry.max_version,
-           let maxV = Microversion(maxStr) {
-            return maxV
+        if let doc = try? JSONDecoder().decode(VersionDoc.self, from: body) {
+            if let m = doc.version.max_version, let mv = Microversion(m) { return mv }
+            if let v = doc.version.version, let mv = Microversion(v) { return mv }
         }
 
         throw OpenStackError(

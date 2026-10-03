@@ -50,6 +50,16 @@ public actor Transport {
         let httpClient = HTTPClient(
             configuration: .init(
                 tlsConfiguration: tlsConfig,
+                // Follow redirects: some service version documents (e.g. Cinder's
+                // `/v3`) 302-redirect to the trailing-slash form (`/v3/`) that
+                // serves the actual document. Data-plane OpenStack calls do not
+                // redirect, so this is safe for the whole client.
+                redirectConfiguration: .follow(configuration: .init(
+                    max: 3,
+                    allowCycles: false,
+                    retainHTTPMethodAndBodyOn301: false,
+                    retainHTTPMethodAndBodyOn302: false
+                )),
                 timeout: .init(
                     connect: .seconds(10),
                     read: .seconds(max(timeoutSeconds, 1))
@@ -100,7 +110,12 @@ public actor Transport {
         /// where nova/glance/neutron each live on separate hosts). `path` is
         /// appended to this base, so callers pass a path relative to the
         /// service root.
-        overrideBase: URL? = nil
+        overrideBase: URL? = nil,
+        /// When true, 3xx responses (e.g. HTTP 300 Multiple Choices) are
+        /// returned to the caller instead of being normalized into an error.
+        /// Service version documents (cinder, glance) legitimately return 300,
+        /// so the negotiator uses this to read the body.
+        tolerate3xx: Bool = false
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let requestID = UUID().uuidString
         let token: String?
@@ -112,7 +127,9 @@ public actor Transport {
 
         let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         let effectiveBase = overrideBase ?? baseURL
-        var url = effectiveBase.appendingPathComponent(cleanPath)
+        // An empty path targets the base URL directly (no trailing slash), so
+        // version-doc fetches at the service root hit `base/` without a slash.
+        var url = cleanPath.isEmpty ? effectiveBase : effectiveBase.appendingPathComponent(cleanPath)
         if !query.isEmpty {
             if var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
                 comps.queryItems = query
@@ -154,7 +171,9 @@ public actor Transport {
                 OSMetrics.openstackRequest(service: service, method: method, status: status)
                 OSMetrics.openstackRequestDuration(service: service, seconds: seconds)
 
-                if response.status.code >= 200 && response.status.code < 300 {
+                if response.status.code >= 200 && response.status.code < 300
+                    || (tolerate3xx && response.status.code >= 300 && response.status.code < 400)
+                {
                     return (status, bodyData, requestID)
                 }
 

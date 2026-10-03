@@ -66,15 +66,12 @@ public actor OpenStackClient {
         self.computeNegotiator = VersionNegotiator(
             transport: transport,
             cache: cache,
-            serviceType: "compute",
-            clientMax: Microversion(major: 2, minor: 104)
+            profile: ServiceVersionProfile.profile(for: "compute")!
         )
         self.cinderNegotiator = VersionNegotiator(
             transport: transport,
             cache: cache,
-            serviceType: "volumev3",
-            clientMax: Microversion(major: 3, minor: 70),
-            floor: Microversion(major: 3, minor: 44)
+            profile: ServiceVersionProfile.profile(for: "volumev3")!
         )
     }
 

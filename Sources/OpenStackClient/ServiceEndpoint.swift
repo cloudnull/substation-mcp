@@ -11,10 +11,12 @@ import Foundation
 ///   `neutron/v2.0/networks`). The leading `basePath` is stripped and replaced
 ///   with the resolved prefix so the request targets the correct service root.
 ///
-/// Returns `(overrideBase, path)` where `overrideBase` is `nil` when the cloud
-/// has no `authURL` (the test/local fake path) and the existing `baseURL`
-/// default applies.
-func resolveServiceEndpoint(
+/// Returns `(overrideBase, path, pathPrefix)` where `overrideBase` is `nil`
+/// when the cloud has no `authURL` (the test/local fake path) and the existing
+/// `baseURL` default applies. `pathPrefix` is the resolved service root (e.g.
+/// `nova`, `v2.1`, `v3`) relative to the base — used to fetch the version
+/// document at the service root.
+public func resolveServiceEndpoint(
     vt: ValidatedToken,
     region: String,
     cloud: CloudEntry,
@@ -22,7 +24,7 @@ func resolveServiceEndpoint(
     serviceRoot: String,
     serviceType: String,
     fullPath: String
-) -> (overrideBase: URL?, path: String) {
+) -> (overrideBase: URL?, path: String, pathPrefix: String) {
     // Strip the leading basePath so the resource path is relative to the
     // service root (e.g. `nova/servers` -> `servers`).
     let resource: String
@@ -35,7 +37,7 @@ func resolveServiceEndpoint(
 
     guard let authURL = cloud.authURL else {
         // No authURL (local/test rig): let the transport's default base apply.
-        return (nil, fullPath)
+        return (nil, fullPath, basePath)
     }
 
     let resolver = EndpointResolver(
@@ -53,5 +55,5 @@ func resolveServiceEndpoint(
     let joined = ep.pathPrefix.isEmpty
         ? resource
         : "\(ep.pathPrefix)/\(resource)"
-    return (ep.base, joined)
+    return (ep.base, joined, ep.pathPrefix)
 }

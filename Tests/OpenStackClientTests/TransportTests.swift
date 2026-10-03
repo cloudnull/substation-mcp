@@ -240,10 +240,10 @@ struct TransportTests {
 
         // The catalog's nova endpoint is <server>/v2.1 (Rackspace-style: the
         // host is the nova host, the path is the version root). The client's
-        // basePath is "nova"; the request must arrive at /v2.1/servers (nova
-        // stripped), NOT /nova/v2.1/servers or under the authURL host.
+        // basePath is "nova"; the request must arrive at /v2.1/servers/detail
+        // (nova stripped), NOT /nova/v2.1/... or under the authURL host.
         let hit = PathRecorder()
-        server.addHandler("/v2.1/servers") { req in
+        server.addHandler("/v2.1/servers/detail") { req in
             hit.record(req.path)
             return (200, #"{"servers":[]}"#, [("Content-Type", "application/json")])
         }
@@ -283,7 +283,67 @@ struct TransportTests {
 
         let servers = try await region.listServers(vt)
         #expect(servers.isEmpty, "expected an empty server list from the stub")
-        #expect(hit.path == "/v2.1/servers", "client should have hit /v2.1/servers (basePath stripped), got \(hit.path)")
+        #expect(hit.path == "/v2.1/servers/detail", "client should have hit /v2.1/servers/detail (basePath stripped), got \(hit.path)")
+    }
+
+    /// Nova sends its negotiated microversion header on data-plane requests.
+    /// The stub serves the REAL version-doc format at the nova root (`/v2.1`)
+    /// and records the header on the `/v2.1/servers/detail` call. The header
+    /// must be `X-OpenStack-Nova-API-Version` with the negotiated value
+    /// (min(serverMax 2.100, clientMax 2.104) = 2.100).
+    @Test func sendsNegotiatedMicroversionHeaderOnNovaRequests() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        // Real nova version doc at the service root. Because the catalog URL is
+        // the authoritative root (<server>/v2.1, pathPrefix empty), the version
+        // doc is fetched at the base root (<server>/v2.1, no trailing slash).
+        let versionDoc = #"{"versions":[{"id":"v2.1","status":"CURRENT","version":"2.100","min_version":"2.1"}]}"#
+        let vdocHits = PathRecorder()
+        server.addHandler("/v2.1") { req in
+            vdocHits.record(req.path)
+            return (200, versionDoc, [("Content-Type", "application/json")])
+        }
+        let mvHeader = HeaderRecorder("X-OpenStack-Nova-API-Version")
+        server.addHandler("/v2.1/servers/detail") { req in
+            mvHeader.record(req.headers)
+            return (200, #"{"servers":[]}"#, [("Content-Type", "application/json")])
+        }
+
+        let unreachable = URL(string: "http://127.0.0.1:1")!
+        let cloud = CloudEntry(name: "rs", authURL: unreachable, regionName: "R1")
+        let transport = Transport(
+            cloud: cloud, tokenSource: { "tok-rs" },
+            maxConnectionsPerHost: 4, requestTimeout: .seconds(10),
+            logger: Logger(label: "test-mv-header")
+        )
+        defer { transport.syncShutdown() }
+        let cache = Cache()
+        let region = ComputeRegion(
+            cloud: cloud, transport: transport, cache: cache,
+            logger: Logger(label: "test-mv-header"),
+            defaultRegion: "R1", basePath: "nova"
+        )
+        let token = Token(
+            id: "tok-rs",
+            expiresAt: Date(timeIntervalSinceNow: 3600),
+            project: IdentityRef(id: "p1", name: "P", domain: nil),
+            domain: IdentityRef(id: "d1", name: "D", domain: nil),
+            user: IdentityRef(id: "u1", name: "U", domain: nil),
+            roles: ["member"],
+            catalog: [
+                CatalogEntry(type: "compute", name: "nova", endpoints: [
+                    CatalogEndpoint(region: "R1", interface: "public", url: server.baseURL.appendingPathComponent("v2.1"))
+                ])
+            ]
+        )
+        let vt = ValidatedToken(token: token, scopes: [.read])
+
+        _ = try await region.listServers(vt)
+        #expect(vdocHits.path != nil, "version doc should have been fetched, hit: \(String(describing: vdocHits.path))")
+        #expect(mvHeader.value == "2.100",
+                "nova should send X-OpenStack-Nova-API-Version: 2.100 (negotiated), got \(String(describing: mvHeader.value))")
     }
 
     /// Proves the neutron special-case: when the catalog URL omits the version
@@ -334,6 +394,54 @@ struct TransportTests {
         #expect(networks.isEmpty)
         #expect(hit.path == "/v2.0/networks", "neutron should hit /v2.0/networks (host + version root), got \(hit.path)")
     }
+
+    /// Rackspace advertises glance at the bare host (no /v2). The client must
+    /// use the catalog host + the version root (v2), so images land at
+    /// /v2/images (not /images, which would hit glance's 300 version root).
+    @Test func routesGlanceWithVersionRootWhenCatalogOmitsIt() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        let hit = PathRecorder()
+        server.addHandler("/v2/images") { req in
+            hit.record(req.path)
+            return (200, #"{"images":[]}"#, [("Content-Type", "application/json")])
+        }
+
+        let unreachable = URL(string: "http://127.0.0.1:1")!
+        let cloud = CloudEntry(name: "rs", authURL: unreachable, regionName: "R1")
+        let transport = Transport(
+            cloud: cloud, tokenSource: { "tok-rs" },
+            maxConnectionsPerHost: 4, requestTimeout: .seconds(10),
+            logger: Logger(label: "test-routing")
+        )
+        let cache = Cache()
+        let region = ImageRegion(
+            cloud: cloud, transport: transport, cache: cache,
+            logger: Logger(label: "test-routing"),
+            basePath: "glance/v2", defaultRegion: "R1"
+        )
+        let token = Token(
+            id: "tok-rs",
+            expiresAt: Date(timeIntervalSinceNow: 3600),
+            project: IdentityRef(id: "p1", name: "P", domain: nil),
+            domain: IdentityRef(id: "d1", name: "D", domain: nil),
+            user: IdentityRef(id: "u1", name: "U", domain: nil),
+            roles: ["member"],
+            catalog: [
+                // Rackspace-style: glance endpoint omits the /v2 root.
+                CatalogEntry(type: "image", name: "glance", endpoints: [
+                    CatalogEndpoint(region: "R1", interface: "public", url: server.baseURL)
+                ])
+            ]
+        )
+        let vt = ValidatedToken(token: token, scopes: [.read])
+
+        let images = try await region.listImages(vt)
+        #expect(images.isEmpty)
+        #expect(hit.path == "/v2/images", "glance should hit /v2/images (host + version root), got \(String(describing: hit.path))")
+    }
 }
 
 /// Thread-safe single-slot path recorder for @Sendable test handlers.
@@ -347,5 +455,20 @@ final class PathRecorder: @unchecked Sendable {
     var path: String? {
         lock.lock(); defer { lock.unlock() }
         return _path
+    }
+}
+
+final class HeaderRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: String?
+    private let name: String
+    init(_ name: String) { self.name = name }
+    func record(_ headers: [String: String]) {
+        lock.lock(); defer { lock.unlock() }
+        _value = headers[name.lowercased()]
+    }
+    var value: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _value
     }
 }

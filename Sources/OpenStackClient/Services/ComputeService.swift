@@ -41,9 +41,6 @@ public struct ComputeRegion: Sendable {
     private let defaultRegion: String?
     private let basePath: String
 
-    // Lazily negotiated state (stored in the cache)
-    private static let mvCacheResource = "__microversion__"
-
     private let serviceType: String
 
     init(cloud: CloudEntry, transport: Transport, cache: Cache, logger: Logger, defaultRegion: String?, basePath: String, serviceType: String = "compute") {
@@ -81,6 +78,31 @@ public struct ComputeRegion: Sendable {
             basePath: basePath, serviceRoot: serviceRoot,
             serviceType: serviceType, fullPath: path
         )
+        // Nova negotiates its microversion and sends it on every request. The
+        // negotiator caches the result per region, so this is a cache hit after
+        // the first call. Failures are non-fatal: a version-doc error should not
+        // block the data-plane call, so we proceed without the header.
+        var extraHeaders: [(String, String)] = []
+        if let profile = ServiceVersionProfile.profile(for: serviceType), profile.hasMicroversion {
+            let negotiator = VersionNegotiator(
+                transport: transport,
+                cache: cache,
+                profile: profile,
+                endpointBase: { ep.overrideBase }
+            )
+            do {
+                // The version doc lives at the service root (the resolved path
+                // prefix), fetched from the resolved base (catalog host on
+                // multi-endpoint clouds, authURL on single-endpoint).
+                let negotiated = try await negotiator.negotiate(region: region, versionDocPath: ep.pathPrefix)
+                if let header = negotiated.header {
+                    extraHeaders.append(header)
+                }
+            } catch {
+                logger.debug("Microversion negotiation failed for \(serviceType) in \(region); proceeding without header: \(error)")
+            }
+        }
+
         return try await transport.request(
             method: method,
             service: serviceType,
@@ -88,6 +110,7 @@ public struct ComputeRegion: Sendable {
             query: query ?? [],
             body: body,
             tokenOverride: vt.token.id,
+            extraHeaders: extraHeaders,
             timeoutOverride: timeoutOverride,
             overrideBase: ep.overrideBase
         )
@@ -120,7 +143,11 @@ public struct ComputeRegion: Sendable {
             query.append(URLQueryItem(name: "marker", value: marker))
         }
 
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers", query: query)
+        // Use the detail view: the non-detail `/servers` list returns only
+        // id/name/links, but our Server model needs the detail fields
+        // (status/flavor/addresses). Real clouds (e.g. Rackspace) confirm the
+        // non-detail shape lacks those, so /servers/detail is the correct call.
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/detail", query: query)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServerList: Decodable {
@@ -574,32 +601,29 @@ public struct ComputeRegion: Sendable {
         return region
     }
 
+    /// Negotiate the microversion for feature-gating (e.g. hostname requires
+    /// 2.90). Reuses the shared profile-based `VersionNegotiator`, which parses
+    /// both the real `{"versions":[...]}` form and the legacy object form. The
+    /// version doc is fetched from the service's resolved endpoint base (or the
+    /// cloud authURL for single-endpoint clouds) at the service root path.
     private func negotiateMicroversion(_ vt: ValidatedToken, region: String) async throws -> Microversion {
-        let key = CacheKey(tokenID: vt.token.id, region: region, resource: ComputeRegion.mvCacheResource, suffix: "compute")
-        if let cached = try await cache.get(key, ttl: .seconds(1800), as: String.self) {
-            if let mv = Microversion(cached) {
-                return mv
-            }
-        }
-
-        let result = try await req(vt, region, method: "GET", path: basePath)
-        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
-
-        struct VersionDoc: Decodable {
-            struct Version: Decodable {
-                let max_version: String
-                let min_version: String
-            }
-            let version: Version
-        }
-        let decoded = try JSONDecoder().decode(VersionDoc.self, from: result.body)
-        let serverMax = Microversion(decoded.version.max_version) ?? Microversion(major: 2, minor: 104)
-        let clientMax = Microversion(major: 2, minor: 104)
-        let negotiated = min(serverMax, clientMax)
-
-        let mvStr = negotiated.stringValue
-        await cache.put(key, ttl: .seconds(1800), value: mvStr)
-        return negotiated
+        let profile = ServiceVersionProfile.profile(for: serviceType)!
+        // Resolve the endpoint base the same way `req` does, so the version doc
+        // is fetched from the correct host (catalog on multi-endpoint clouds,
+        // authURL on single-endpoint). We only need the base here — the negotiator
+        // fetches the doc at `versionDocPath: basePath`, not at `ep.path`.
+        let ep = resolveServiceEndpoint(
+            vt: vt, region: region, cloud: cloud,
+            basePath: basePath, serviceRoot: serviceRoot,
+            serviceType: serviceType, fullPath: "\(basePath)/__version__"
+        )
+        let negotiator = VersionNegotiator(
+            transport: transport,
+            cache: cache,
+            profile: profile,
+            endpointBase: { ep.overrideBase }
+        )
+        return try await negotiator.negotiate(region: region, versionDocPath: ep.pathPrefix).version
     }
 
     private static func checkStatus(_ status: Int, service: String, resultID: String?) throws {

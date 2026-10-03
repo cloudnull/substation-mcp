@@ -177,17 +177,26 @@ struct CheckCommand: AsyncParsableCommand {
             let whoami = await wiring.client.whoami(vt)
             let region = await wiring.client.defaultRegion(vt)
 
-            // Negotiated versions per service present in the catalog.
+            // Negotiated versions per service present in the catalog. The version
+            // doc is fetched from the service's resolved endpoint (catalog host on
+            // multi-endpoint clouds, authURL on single-endpoint), not the authURL
+            // root — so we resolve the endpoint base per service first.
             var versions: [String: Microversion] = [:]
             for svc in ["compute", "volumev3"] {
-                if whoami.services[svc] != nil, let profile = ServiceVersionProfile.profile(for: svc) {
-                    let negotiator = VersionNegotiator(
-                        transport: wiring.transport, cache: wiring.cache,
-                        profile: profile, logger: logger
-                    )
-                    do { versions[svc] = try await negotiator.negotiate(region: region).version }
-                    catch { /* service absent or unreachable — skip */ }
-                }
+                guard whoami.services[svc] != nil,
+                      let profile = ServiceVersionProfile.profile(for: svc) else { continue }
+                let basePath = svc == "compute" ? "nova" : "cinder/v3"
+                let ep = resolveServiceEndpoint(
+                    vt: vt, region: region, cloud: wiring.cloud,
+                    basePath: basePath, serviceRoot: svc == "compute" ? "" : "v3",
+                    serviceType: svc, fullPath: "\(basePath)/__version__"
+                )
+                let negotiator = VersionNegotiator(
+                    transport: wiring.transport, cache: wiring.cache,
+                    profile: profile, endpointBase: { ep.overrideBase }, logger: logger
+                )
+                do { versions[svc] = try await negotiator.negotiate(region: region, versionDocPath: ep.pathPrefix).version }
+                catch { /* service absent or unreachable — skip */ }
             }
 
             // Neutron extensions.
