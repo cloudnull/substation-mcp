@@ -307,7 +307,7 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Cloud name (from clouds.yaml).") var cloud: String?
     @Option(name: .long, help: "Region to register endpoints in.") var region: String
     @Option(name: .long, help: "Public URL of the MCP endpoint.") var publicURL: String
-    @Option(name: .long, help: "Identity-admin token (X-Auth-Token). Defaults to OS_AUTH_TOKEN.") var adminToken: String?
+    @Option(name: .long, help: "Identity-admin token (X-Auth-Token). Defaults to OS_AUTH_TOKEN. If unset, mints one from the cloud's application credential (a service-domain user) and discards it after.") var adminToken: String?
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
     func run() async throws {
@@ -318,8 +318,20 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         let wiring = CloudWiring(config: cfg, cloud: cloudEntry, logger: logger)
         defer { wiring.shutdown() }
 
-        guard let admin = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] else {
-            throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN)")
+        // Admin token: explicit --admin-token > OS_AUTH_TOKEN > mint from the
+        // cloud's application credential (a service-domain user, e.g.
+        // `substation` in the `service` domain, mirroring `nova_service_user`).
+        // The minted token is discarded once registration completes. Catalog
+        // writes need the admin role; the service user is created with it.
+        let admin: String
+        if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
+            admin = t
+        } else if let credID = cloudEntry.appCredID, let secret = cloudEntry.appCredSecret {
+            let minter = LoginMinter(transport: wiring.transport, logger: logger)
+            let minted = try await minter.mint(method: .applicationCredential(id: credID, secret: Array(secret.utf8).map { Int8($0) }))
+            admin = minted.id
+        } else {
+            throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN) and no application credential in the cloud to mint one from")
         }
 
         do {

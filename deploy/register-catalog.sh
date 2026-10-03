@@ -1,23 +1,26 @@
 #!/bin/sh
 # register-catalog.sh — idempotent Keystone service+endpoint registration.
 #
-# Thin wrapper over `substation-mcp register-catalog` (Task 20). Run as an
-# operator with an admin token (minted from an application credential or
-# user password). Safe to re-run: it reuses the existing `mcp` service if
-# present, creates it otherwise, and ensures the three endpoint types
-# (public/internal/admin) exist.
+# Thin wrapper over `substation-mcp register-catalog`. Safe to re-run: it
+# reuses the existing `mcp` service if present, creates it otherwise, and
+# ensures the three endpoint types (public/internal/admin) exist.
+#
+# The catalog entry is created by a *service user* (e.g. `substation` in the
+# `service` domain, mirroring `nova_service_user`) holding an application
+# credential with the admin role. That credential is the service's standing
+# identity — not a one-shot token — so it is reusable for every re-run and
+# for the login page.
 #
 # Required env:
 #   OS_CLOUD        — cloud name from clouds.yaml
-#   REGION          — region to register (e.g. RegionOne)
-#   PUBLIC_URL      — externally reachable MCP URL, e.g. https://mcp.example.com
+#   REGION          — region to register (e.g. SAT0 / RegionOne)
+#   PUBLIC_URL      — externally reachable MCP URL, e.g. https://substation.api.sat0.cloudnull.dev
 #
 # Auth (one of):
-#   OS_AUTH_TOKEN            — a pre-minted Keystone admin token (X-Auth-Token)
-#   OS_APPLICATION_CREDENTIAL_ID + OS_APPLICATION_CREDENTIAL_SECRET
-#                             — a Keystone application credential (admin role)
-#   OS_USER_DOMAIN_NAME + OS_USERNAME + OS_PASSWORD
-#                             — user password auth (admin role)
+#   (preferred)   — the cloud entry in clouds.yaml carries an application
+#                   credential (appCredID / appCredSecret); the binary mints
+#                   an admin token from it natively (no curl/python needed).
+#   OS_AUTH_TOKEN — a pre-minted Keystone admin token (X-Auth-Token)
 #
 # Optional:
 #   OSMCP_BIN   — path to the substation-mcp binary (default: substation-mcp)
@@ -33,57 +36,14 @@ set -eu
 
 BIN="${OSMCP_BIN:-substation-mcp}"
 
-# If no OS_AUTH_TOKEN, mint one from the configured credential.
+# Token resolution happens in the binary, not here:
+#   --admin-token / OS_AUTH_TOKEN  >  the cloud's application credential.
+# When OS_AUTH_TOKEN is unset, the binary mints a token from the cloud entry's
+# appCredID/appCredSecret natively (no curl/python3, so it works in the
+# ubi10-minimal runtime) and discards it after registration. The cloud must
+# therefore carry the service user's application credential.
 if [ -z "${OS_AUTH_TOKEN:-}" ]; then
-  if [ -n "${OS_APPLICATION_CREDENTIAL_ID:-}" ] && [ -n "${OS_APPLICATION_CREDENTIAL_SECRET:-}" ]; then
-    OS_AUTH_URL="${OS_AUTH_URL:-}"
-    OS_AUTH_URL="${OS_AUTH_URL:-$(openstack endpoint list --service identity -f value -c URL 2>/dev/null | head -1)}"
-    : "${OS_AUTH_URL:?Cannot determine auth URL; set OS_AUTH_URL explicitly}"
-    TOKEN=$(curl -s -X POST "${OS_AUTH_URL}/auth/tokens" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"auth\": {
-          \"identity\": {
-            \"methods\": [\"application_credential\"],
-            \"application_credential\": {
-              \"id\": \"${OS_APPLICATION_CREDENTIAL_ID}\",
-              \"secret\": \"${OS_APPLICATION_CREDENTIAL_SECRET}\"
-            }
-          },
-          \"scope\": {\"type\": \"project\", \"project\": {\"domain\": {\"name\": \"default\"}}}
-        }
-      }" | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['id'])" 2>/dev/null) \
-      || { echo "ERROR: failed to mint token from application credential" >&2; exit 1; }
-    export OS_AUTH_TOKEN="$TOKEN"
-    echo "==> Minted admin token: ${TOKEN:0:8}…" >&2
-  elif [ -n "${OS_USERNAME:-}" ] && [ -n "${OS_PASSWORD:-}" ]; then
-    OS_AUTH_URL="${OS_AUTH_URL:-}"
-    OS_AUTH_URL="${OS_AUTH_URL:-$(openstack endpoint list --service identity -f value -c URL 2>/dev/null | head -1)}"
-    : "${OS_AUTH_URL:?Cannot determine auth URL; set OS_AUTH_URL explicitly}"
-    TOKEN=$(curl -s -X POST "${OS_AUTH_URL}/auth/tokens" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"auth\": {
-          \"identity\": {
-            \"methods\": [\"password\"],
-            \"password\": {
-              \"user\": {
-                \"name\": \"${OS_USERNAME}\",
-                \"domain\": {\"name\": \"${OS_USER_DOMAIN_NAME:-default}\"},
-                \"password\": \"${OS_PASSWORD}\"
-              }
-            }
-          },
-          \"scope\": {\"type\": \"project\", \"project\": {\"domain\": {\"name\": \"default\"}}}
-        }
-      }" | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['id'])" 2>/dev/null) \
-      || { echo "ERROR: failed to mint token from user password" >&2; exit 1; }
-    export OS_AUTH_TOKEN="$TOKEN"
-    echo "==> Minted admin token: ${TOKEN:0:8}…" >&2
-  else
-    echo "ERROR: set OS_AUTH_TOKEN, or OS_APPLICATION_CREDENTIAL_ID+SECRET, or OS_USERNAME+OS_PASSWORD" >&2
-    exit 1
-  fi
+  echo "==> No OS_AUTH_TOKEN; the binary will mint one from $OS_CLOUD's application credential" >&2
 fi
 
 echo "==> Registering substation-mcp service + endpoints in $OS_CLOUD/$REGION" >&2
