@@ -82,7 +82,13 @@ public actor Transport {
                 ),
                 connectionPool: .init(
                     idleTimeout: .seconds(60),
-                    concurrentHTTP1ConnectionsPerHostSoftLimit: maxConnectionsPerHost
+                    // `0` (or a negative value, e.g. from a "unlimited" config
+                    // default) would tell AsyncHTTPClient to open ZERO new
+                    // HTTP/1.1 connections to the host — every request then
+                    // waits forever for a connection that is never created and
+                    // times out (HTTPClientError.connectTimeout with no SYN
+                    // ever on the wire). Clamp to a sensible positive limit.
+                    concurrentHTTP1ConnectionsPerHostSoftLimit: max(maxConnectionsPerHost, 1)
                 )
             )
         )
