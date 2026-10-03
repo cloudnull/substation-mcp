@@ -37,6 +37,7 @@ let package = Package(
             name: "OpenStackClient",
             dependencies: [
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),

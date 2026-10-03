@@ -129,7 +129,7 @@ public struct ComputeRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ","))"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "server", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [Server].self) {
+        if let cached = await cache.get(key, ttl: .seconds(60), as: [Server].self) {
             return cached
         }
 
@@ -243,13 +243,6 @@ public struct ComputeRegion: Sendable {
         // Invalidate server list cache
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
 
-        struct ServerResp: Decodable {
-            struct Server: Decodable {
-                let id: String; let name: String; let status: String
-            }
-            let server: Server
-        }
-        let decoded = try JSONDecoder().decode(ServerResp.self, from: result.body)
         return try decodeSingleServer(result.body)
     }
 
@@ -328,7 +321,7 @@ public struct ComputeRegion: Sendable {
         let region = try resolveRegion(vt)
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "flavor", suffix: "")
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [Flavor].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [Flavor].self) {
             return cached
         }
 
@@ -480,18 +473,21 @@ public struct ComputeRegion: Sendable {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
 
-        // Build quota update body
+        // Build quota update body. Quota fields are optional; OpenStack
+        // treats -1 as "no change", so a nil (unset) field maps to -1.
+        // (Directly interpolating an Int? would emit "Optional(n)"/"nil",
+        // which is invalid JSON.)
         var parts: [String] = []
-        parts.append("\"instances\":\(quotas.instances)")
-        parts.append("\"cores\":\(quotas.cores)")
-        parts.append("\"ram\":\(quotas.ram)")
-        parts.append("\"metadata_items\":\(quotas.metadataItems)")
-        parts.append("\"injected_files\":\(quotas.injectedFiles)")
-        parts.append("\"key_pairs\":\(quotas.keyPairs)")
-        parts.append("\"security_groups\":\(quotas.securityGroups)")
-        parts.append("\"security_group_rules\":\(quotas.securityGroupRules)")
-        parts.append("\"fixed_ips\":\(quotas.fixedIPs)")
-        parts.append("\"floating_ips\":\(quotas.floatingIPs)")
+        parts.append("\"instances\":\(quotas.instances ?? -1)")
+        parts.append("\"cores\":\(quotas.cores ?? -1)")
+        parts.append("\"ram\":\(quotas.ram ?? -1)")
+        parts.append("\"metadata_items\":\(quotas.metadataItems ?? -1)")
+        parts.append("\"injected_files\":\(quotas.injectedFiles ?? -1)")
+        parts.append("\"key_pairs\":\(quotas.keyPairs ?? -1)")
+        parts.append("\"security_groups\":\(quotas.securityGroups ?? -1)")
+        parts.append("\"security_group_rules\":\(quotas.securityGroupRules ?? -1)")
+        parts.append("\"fixed_ips\":\(quotas.fixedIPs ?? -1)")
+        parts.append("\"floating_ips\":\(quotas.floatingIPs ?? -1)")
 
         let body = "{\"quota_set\":{\(parts.joined(separator: ","))}}"
         let result = try await req(vt, region, method: "PUT", path: "\(basePath)/os-quota-sets/\(projectID)", body: body.data(using: .utf8))

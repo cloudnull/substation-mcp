@@ -234,7 +234,7 @@ public struct ToolRegistry: Sendable {
                 content: [.text(text: errorParagraph(
                     OpenStackError(service: "mcp", status: 403, code: "insufficient_scope", message: "Tool \(params.name) requires write scope"),
                     what: "Calling \(params.name)"
-                ), metadata: nil)],
+                ), annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -244,14 +244,13 @@ public struct ToolRegistry: Sendable {
         if isMutating, hasWrite, let scopeErr = serviceScopeError(tool: params.name, params: params) {
             OSMetrics.toolCall(tool: params.name, outcome: "forbidden")
             return CallTool.Result(
-                content: [.text(text: errorParagraph(scopeErr, what: "Calling \(params.name)"), metadata: nil)],
+                content: [.text(text: errorParagraph(scopeErr, what: "Calling \(params.name)"), annotations: nil, _meta: nil)],
                 isError: true
             )
         }
 
         // spec §12: measure every tool call; audit only the mutating ones.
         let start = DispatchTime.now()
-        var lastOpenStackRequestID: String?
 
         let outcome: (result: CallTool.Result, requestID: String?)
         do {
@@ -276,7 +275,7 @@ public struct ToolRegistry: Sendable {
             case "os_detach": outcome = (try await handleLink(params, attach: false, server: server), nil)
             default:
                 outcome = (CallTool.Result(
-                    content: [.text(text: "Unknown tool: \(params.name). Valid: \(visibleToolNames.joined(separator: ", "))")],
+                    content: [.text(text: "Unknown tool: \(params.name). Valid: \(visibleToolNames.joined(separator: ", "))", annotations: nil, _meta: nil)],
                     isError: true
                 ), nil)
             }
@@ -295,7 +294,7 @@ public struct ToolRegistry: Sendable {
                 content: [.text(text: errorParagraph(
                     OpenStackError(service: "mcp", status: 500, message: error.localizedDescription),
                     what: "Calling \(params.name)"
-                ), metadata: nil)],
+                ), annotations: nil, _meta: nil)],
                 isError: true
             ), nil)
         }
@@ -347,7 +346,7 @@ public struct ToolRegistry: Sendable {
 
     private func resolveRegion(_ params: CallTool.Parameters) async throws -> String {
         if let region = argOptional(params, "region"), !region.isEmpty { return region }
-        return try await client.defaultRegion(identity.vt)
+        return await client.defaultRegion(identity.vt)
     }
 
     private func getDescriptor(_ params: CallTool.Parameters) throws -> ResourceDescriptor {

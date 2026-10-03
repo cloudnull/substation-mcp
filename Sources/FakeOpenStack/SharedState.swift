@@ -844,7 +844,7 @@ public actor FakeState {
         volumeAttachments[attID] = (serverID: serverID, volumeID: volumeID, device: device, status: "attached")
         var vol = volumes[vIdx]
         vol.status = "in-use"
-        var att = FakeVolumeAttachment(id: attID, serverID: serverID, volumeID: volumeID, device: device)
+        let att = FakeVolumeAttachment(id: attID, serverID: serverID, volumeID: volumeID, device: device)
         vol.attachments.append(att)
         volumes[vIdx] = vol
         return attID
@@ -957,7 +957,7 @@ public actor FakeState {
                 servers[idx].updated = Date()
                 Task {
                     try? await Task.sleep(for: delay)
-                    await self.finishSettle(idx: idx, status: "ACTIVE")
+                    self.finishSettle(idx: idx, status: "ACTIVE")
                 }
             } else {
                 servers[idx].status = "ACTIVE"
@@ -1342,7 +1342,7 @@ public actor FakeState {
     /// proving identity is per-token, not per-session (spec §12 hardening).
     @discardableResult
     public func expireToken(_ tokenID: String) -> Bool {
-        guard var token = tokens[tokenID] else { return false }
+        guard let token = tokens[tokenID] else { return false }
         let expired = FakeToken(
             id: token.id,
             projectID: token.projectID,

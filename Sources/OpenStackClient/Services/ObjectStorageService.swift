@@ -92,7 +92,7 @@ public struct ObjectStorageRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "container", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(120), as: [Container].self) {
+        if let cached = await cache.get(key, ttl: .seconds(120), as: [Container].self) {
             return cached
         }
 
@@ -184,7 +184,7 @@ public struct ObjectStorageRegion: Sendable {
         let suffix = "c:\(container):f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "object", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [Object].self) {
+        if let cached = await cache.get(key, ttl: .seconds(60), as: [Object].self) {
             return cached
         }
 

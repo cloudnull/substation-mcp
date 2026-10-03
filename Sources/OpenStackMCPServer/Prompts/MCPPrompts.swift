@@ -113,7 +113,7 @@ public struct MCPPrompts: Sendable {
             lines.append("\(step). Create a floating IP with os_create(resource: floating_ip) and attach it to the server with os_attach(link: floating_ip).")
             step += 1
         }
-        if a["volume_gb"].map { !$0.isEmpty } ?? false {
+        if (a["volume_gb"].map { !$0.isEmpty } ?? false) {
             lines.append("\(step). Create a volume of \(arg("volume_gb")) GB with os_create(resource: volume) and attach it to the server with os_attach(link: volume).")
         }
         lines.append("Report the server id, status, and any attached resources when finished.")

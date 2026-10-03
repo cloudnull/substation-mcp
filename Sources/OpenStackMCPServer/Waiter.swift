@@ -224,7 +224,7 @@ public struct Waiter: Sendable {
                 return ["status": .string(n.status)]
             case "subnet":
                 let r = await client.network(region: region)
-                let s = try await r.getSubnet(vt, id: id)
+                _ = try await r.getSubnet(vt, id: id)
                 return ["status": .string("ACTIVE")]
             case "port":
                 let r = await client.network(region: region)

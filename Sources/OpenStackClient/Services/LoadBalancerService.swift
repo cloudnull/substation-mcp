@@ -72,7 +72,7 @@ public struct LoadBalancerRegion: Sendable {
         let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "load_balancer", suffix: suffix)
-        if let cached = try await cache.get(key, ttl: .seconds(120), as: [LoadBalancer].self) { return cached }
+        if let cached = await cache.get(key, ttl: .seconds(120), as: [LoadBalancer].self) { return cached }
         struct Envelope: Decodable { let loadbalancers: [LoadBalancer] }
         let body = try await fetchListBody(vt, region: region, path: "\(basePath)/loadbalancers", filters: filters, limit: limit, marker: marker)
         let items = try JSONDecoder().decode(Envelope.self, from: body).loadbalancers

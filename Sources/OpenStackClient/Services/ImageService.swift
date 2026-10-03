@@ -71,7 +71,7 @@ public struct ImageRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "image", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [Image].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [Image].self) {
             return cached
         }
 

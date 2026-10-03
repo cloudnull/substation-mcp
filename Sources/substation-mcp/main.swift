@@ -123,7 +123,7 @@ struct StdioCommand: AsyncParsableCommand {
         try await server.start(transport: transport)
         // Block until the transport's read loop finishes (EOF on stdin).
         await transport.disconnect()
-        try await server.stop()
+        await server.stop()
     }
 }
 
@@ -420,8 +420,9 @@ struct ConformanceCommand: AsyncParsableCommand {
             if let id = tok?["id"] as? String { return id }
         } catch {}
         FileHandle.standardError.write(Data("conformance: token mint failed\n".utf8))
+        // exit(1) is @noreturn; the function's return is satisfied by the
+        // `return id` above plus this terminating call.
         Foundation.exit(1)
-        return ""
     }
 }
 

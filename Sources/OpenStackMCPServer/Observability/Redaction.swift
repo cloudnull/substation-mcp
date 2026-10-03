@@ -110,21 +110,13 @@ public final class CapturingLogHandler: LogHandler, @unchecked Sendable {
         return _records.last?.formatted
     }
 
-    public func log(
-        level: Logger.Level,
-        message: Logger.Message,
-        metadata: Logger.Metadata?,
-        source: String,
-        file: String,
-        function: String,
-        line: UInt
-    ) {
-        let merged = self.metadata.merging(metadata ?? [:]) { _, new in new }
-        let formatted = self.formatPayload(level: level, message: message, metadata: merged)
+    public func log(event: LogEvent) {
+        let merged = self.metadata.merging(event.metadata ?? [:]) { _, new in new }
+        let formatted = self.formatPayload(level: event.level, message: event.message, metadata: merged)
         lock.lock()
         _records.append(Record(
-            level: level,
-            message: message.description,
+            level: event.level,
+            message: event.message.description,
             formatted: formatted,
             metadata: merged
         ))
@@ -146,10 +138,12 @@ public final class CapturingLogHandler: LogHandler, @unchecked Sendable {
         }
         // The spec's redaction targets the metadata/payload fields. Run the
         // redactor over the JSON serialization of the metadata dict.
-        let jsonMeta = jsonEncode(payload)
-        let redactedMeta = Redactor.redact(jsonMeta)
-        // Compose the full line the way a JSON formatter would.
-        return #"{"level":"# + levelLabel(level) + #","message":"# + jsonEscape(message.description) + #","meta":# + redactedMeta + #}"#
+        // Compose the full line the way a JSON formatter would, running the
+        // redactor over the metadata JSON before embedding it. The metadata
+        // encoding + redaction are inlined (no intermediate local) because the
+        // compiler's unused-variable analysis does not track locals consumed
+        // only inside a raw-string-concatenated `return`.
+        return #"{"level":"# + levelLabel(level) + #","message":"# + jsonEscape(message.description) + #","meta":# + Redactor.redact(jsonEncode(payload)) + #}"#
     }
 
     private func jsonEncode(_ dict: [String: String]) -> String {

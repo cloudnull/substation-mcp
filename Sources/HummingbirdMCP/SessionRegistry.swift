@@ -85,7 +85,7 @@ public actor SessionRegistry {
                 } catch {
                     break
                 }
-                await self.evictExpired(now: Date())
+                _ = await self.evictExpired(now: Date())
             }
         }
     }

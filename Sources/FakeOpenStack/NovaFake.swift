@@ -179,7 +179,7 @@ public struct NovaFake {
             }
             _ = token
             let pid = ctx.parameters.get("projectId") ?? ""
-            let body = try await Self.readBody(req)
+            _ = try await Self.readBody(req)
             // Echo back the quota set with the project ID
             return Self.jsonResponse(status: .ok, body: """
             {"quota_set":{"id":"\(pid)","instances":10,"cores":20,"ram":51200,"metadata_items":128,"injected_files":5,"key_pairs":5,"security_groups":10,"security_group_rules":200}}

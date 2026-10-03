@@ -127,13 +127,11 @@ public struct MintMethod: Sendable {
     }
 
     public static func applicationCredential(id: String, secret: [Int8]) -> MintMethod {
-        var m = MintMethod(kind: .applicationCredential, appCredID: id, appCredSecret: secret, userID: nil, domain: nil, password: nil, projectName: nil)
-        return m
+        MintMethod(kind: .applicationCredential, appCredID: id, appCredSecret: secret, userID: nil, domain: nil, password: nil, projectName: nil)
     }
 
     public static func password(userID: String, domain: String?, password: String, projectName: String?) -> MintMethod {
-        var m = MintMethod(kind: .password, appCredID: nil, appCredSecret: nil, userID: userID, domain: domain, password: password, projectName: projectName)
-        return m
+        MintMethod(kind: .password, appCredID: nil, appCredSecret: nil, userID: userID, domain: domain, password: password, projectName: projectName)
     }
 }
 

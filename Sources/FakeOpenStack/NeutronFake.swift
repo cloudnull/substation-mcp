@@ -740,7 +740,7 @@ public struct NeutronFake {
 
         router.get("\(base)/quota/:projectId") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
+                  await state.validateToken(tokenID) != nil else {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
             let pid = ctx.parameters.get("projectId") ?? ""
@@ -751,7 +751,7 @@ public struct NeutronFake {
 
         router.put("\(base)/quota/:projectId") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
+                  await state.validateToken(tokenID) != nil else {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
             _ = req

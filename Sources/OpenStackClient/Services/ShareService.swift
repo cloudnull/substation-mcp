@@ -72,7 +72,7 @@ public struct ShareRegion: Sendable {
         let region = try resolveRegion(vt)
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "share", suffix: suffix)
-        if let cached = try await cache.get(key, ttl: .seconds(120), as: [Share].self) { return cached }
+        if let cached = await cache.get(key, ttl: .seconds(120), as: [Share].self) { return cached }
         struct Envelope: Decodable { let shares: [Share] }
         let body = try await fetchBody(vt, region: region, path: "\(basePath)/shares", filters: filters, limit: limit, marker: marker)
         let items = try JSONDecoder().decode(Envelope.self, from: body).shares

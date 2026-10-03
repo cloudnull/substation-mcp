@@ -1,5 +1,6 @@
 import Foundation
 import AsyncHTTPClient
+import NIOPosix
 import NIOSSL
 import Logging
 import NIOCore
@@ -7,6 +8,7 @@ import CoreMetrics
 
 public actor Transport {
     private let client: HTTPClient
+    private let eventLoopGroup: MultiThreadedEventLoopGroup?
     private let baseURL: URL
     private let tokenSource: @Sendable () async throws -> String
     private let requestTimeout: Duration
@@ -25,8 +27,17 @@ public actor Transport {
         self.requestTimeout = requestTimeout
         self.logger = logger
 
+        // An explicit MultiThreadedEventLoopGroup for the AsyncHTTPClient.
+        // The default `.createNew` provider was observed firing
+        // HTTPClientError.connectTimeout reaching in-cluster Keystone on a
+        // Kube-OVN pod while curl in the same netns connected in ~8 ms — the
+        // client's event-loop connect-completion was not posting in time.
+        // A named, multi-threaded ELG completes the connect reliably.
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 4)
+        self.eventLoopGroup = elg
+
         guard let baseURL = cloud.authURL else {
-            self.client = HTTPClient(eventLoopGroupProvider: .createNew)
+            self.client = HTTPClient(eventLoopGroupProvider: .shared(elg))
             self.baseURL = URL(string: "http://localhost:9000")!
             return
         }
@@ -48,6 +59,7 @@ public actor Transport {
             + Double(requestTimeout.components.attoseconds) / 1e18)
 
         let httpClient = HTTPClient(
+            eventLoopGroupProvider: .shared(elg),
             configuration: .init(
                 tlsConfiguration: tlsConfig,
                 // Follow redirects: some service version documents (e.g. Cinder's
@@ -79,10 +91,14 @@ public actor Transport {
 
     public func shutdown() {
         try? client.syncShutdown()
+        // Shut down the shared ELG only after the client has drained its
+        // connections back onto it.
+        try? eventLoopGroup?.syncShutdownGracefully()
     }
 
     nonisolated public func syncShutdown() {
         try? client.syncShutdown()
+        try? eventLoopGroup?.syncShutdownGracefully()
     }
 
     // Safety net: if a Transport is released without an explicit shutdown (a
@@ -92,6 +108,7 @@ public actor Transport {
     // underlying bug surfaces as an error, not a SIGTRAP.
     deinit {
         try? client.syncShutdown()
+        try? eventLoopGroup?.syncShutdownGracefully()
     }
 
     public func request(

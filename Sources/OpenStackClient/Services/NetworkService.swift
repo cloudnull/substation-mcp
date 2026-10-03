@@ -100,7 +100,7 @@ public struct NetworkRegion: Sendable {
     /// Discover seeded Neutron extension aliases (cached 1800s).
     public func discoverExtensions(_ vt: ValidatedToken, region: String) async throws -> NeutronExtensions {
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: NetworkRegion.extensionsResource, suffix: "network")
-        if let cached = try await cache.get(key, ttl: .seconds(1800), as: NeutronExtensions.self) {
+        if let cached = await cache.get(key, ttl: .seconds(1800), as: NeutronExtensions.self) {
             return cached
         }
 
@@ -149,7 +149,7 @@ public struct NetworkRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "network", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [Network].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [Network].self) {
             return cached
         }
 
@@ -274,7 +274,7 @@ public struct NetworkRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "subnet", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [Subnet].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [Subnet].self) {
             return cached
         }
 
@@ -397,7 +397,7 @@ public struct NetworkRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "port", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [OSPort].self) {
+        if let cached = await cache.get(key, ttl: .seconds(60), as: [OSPort].self) {
             return cached
         }
 
@@ -516,7 +516,7 @@ public struct NetworkRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "router", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [Router].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [Router].self) {
             return cached
         }
 
@@ -641,7 +641,7 @@ public struct NetworkRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "floatingip", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [FloatingIP].self) {
+        if let cached = await cache.get(key, ttl: .seconds(60), as: [FloatingIP].self) {
             return cached
         }
 
@@ -762,7 +762,7 @@ public struct NetworkRegion: Sendable {
         let region = try resolveRegion(vt)
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "securitygroup", suffix: "")
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [SecurityGroup].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [SecurityGroup].self) {
             return cached
         }
 
@@ -857,7 +857,7 @@ public struct NetworkRegion: Sendable {
         let suffix = securityGroupID.map { "sg:\($0)" } ?? ""
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "securitygrouprule", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(300), as: [SecurityGroupRule].self) {
+        if let cached = await cache.get(key, ttl: .seconds(300), as: [SecurityGroupRule].self) {
             return cached
         }
 

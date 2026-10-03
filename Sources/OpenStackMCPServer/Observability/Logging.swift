@@ -87,18 +87,10 @@ public struct RedactingJSONLogHandler: LogHandler, Sendable {
         }
     }
 
-    public func log(
-        level: Logger.Level,
-        message: Logger.Message,
-        metadata: Logger.Metadata?,
-        source: String,
-        file: String,
-        function: String,
-        line: UInt
-    ) {
+    public func log(event: LogEvent) {
         // swift-log already enforces the level filter for this handler.
-        let merged = self.metadata.merging(metadata ?? [:]) { _, new in new }
-        let payload = format(level: level, message: message, metadata: merged)
+        let merged = self.metadata.merging(event.metadata ?? [:]) { _, new in new }
+        let payload = format(level: event.level, message: event.message, metadata: merged)
         writeLine(payload)
     }
 

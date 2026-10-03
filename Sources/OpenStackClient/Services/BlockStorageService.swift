@@ -83,7 +83,7 @@ public struct BlockStorageRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "volume", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(60), as: [Volume].self) {
+        if let cached = await cache.get(key, ttl: .seconds(60), as: [Volume].self) {
             return cached
         }
 

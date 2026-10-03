@@ -77,7 +77,7 @@ public struct KeyManagerRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "secret", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(120), as: [Secret].self) {
+        if let cached = await cache.get(key, ttl: .seconds(120), as: [Secret].self) {
             return cached
         }
 
@@ -149,7 +149,7 @@ public struct KeyManagerRegion: Sendable {
         let suffix = "f:\(filters.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ",")):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "container", suffix: suffix)
 
-        if let cached = try await cache.get(key, ttl: .seconds(120), as: [SecretContainer].self) {
+        if let cached = await cache.get(key, ttl: .seconds(120), as: [SecretContainer].self) {
             return cached
         }
 

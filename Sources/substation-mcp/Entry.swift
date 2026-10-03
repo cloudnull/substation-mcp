@@ -14,7 +14,7 @@ import ArgumentParser
 // `OpenStackMCP` (and its subcommands) correctly.
 @main
 struct OpenStackMCPEntry {
-    static func main() async throws {
-        try await OpenStackMCP.main()
+    static func main() async {
+        await OpenStackMCP.main()
     }
 }
