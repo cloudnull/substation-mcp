@@ -115,8 +115,8 @@ public struct ServeApp: Sendable {
             Response(status: .ok, headers: [.contentType: "text/plain"],
                      body: .init(byteBuffer: ByteBuffer(string: "ok")))
         }
-        router.get("/readyz") { [cloud, transport = wiring.transport] _, _ in
-            await ReadyzChecker.check(cloud: cloud, transport: transport)
+        router.get("/readyz") { [cloud, transport = wiring.transport, logger] _, _ in
+            await ReadyzChecker.check(cloud: cloud, transport: transport, logger: logger)
         }
         router.get("/metrics") { [metricsToken = config.serverMetricsToken] context, _ in
             // Optional bearer-token gating (spec §7.3: `server.metrics_token`).
@@ -147,7 +147,8 @@ public struct ServeApp: Sendable {
 
 /// Readiness: Keystone reachable within 2 s. Never authenticates.
 enum ReadyzChecker {
-    static func check(cloud: CloudEntry, transport: Transport) async -> Response {
+    static func check(cloud: CloudEntry, transport: Transport,
+                      logger: Logger = Logger(label: "substation-mcp.readyz")) async -> Response {
         do {
             let (status, _, _) = try await transport.request(
                 method: "GET", service: "keystone", path: "/v3", tokenOverride: ""
@@ -159,6 +160,9 @@ enum ReadyzChecker {
             return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
                             body: .init(byteBuffer: ByteBuffer(string: #"{"ready":false,"reason":"keystone returned \#(status)"}"#)))
         } catch {
+            // Surface the real failure at error level so operators can diagnose
+            // "keystone unreachable" without guessing (DNS, TLS, egress, etc.).
+            logger.error("readyz: keystone check failed: \(error)")
             return Response(status: .serviceUnavailable, headers: [.contentType: "application/json"],
                             body: .init(byteBuffer: ByteBuffer(string: #"{"ready":false,"reason":"keystone unreachable"}"#)))
         }
