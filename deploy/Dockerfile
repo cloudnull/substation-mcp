@@ -24,19 +24,47 @@ WORKDIR /src
 COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
 
-# Dynamic release build (static not yet achievable due to ICU; see scripts/build.sh).
-RUN swift build -c release --static-swift-stdlib \
-    --scratch-path /build
+# Release build. On UBI10/Swift 6.4 the fully-static link fails (static
+# Foundation references ICU symbols not in the static path), so attempt
+# static first and fall back to a dynamic release binary — the same logic as
+# scripts/build.sh. The dynamic binary runs on UBI10-minimal with the
+# standard Swift runtime already present via the toolchain image's libs.
+RUN set -eux; \
+    if swift build -c release --static-swift-stdlib --scratch-path /build; then \
+      echo "static release build succeeded"; \
+    else \
+      echo "static build failed (ICU); falling back to dynamic release build"; \
+      swift build -c release --scratch-path /build; \
+    fi; \
+    test -x /build/release/substation-mcp
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────────
 FROM registry.access.redhat.com/ubi10/ubi10-minimal:latest AS runtime
 
-# TLS roots + minimal runtime deps.
-RUN dnf install -y ca-certificates && dnf clean all
+# TLS roots + every runtime lib the (dynamically-linked) Swift binary needs.
+# From `ldd` of the release binary: glibc stack, libstdc++, libicu (Foundation
+# ICU backend), libcurl + libnghttp2, openssl (libssl/libcrypto), and the
+# curl→krb5/unistring/selinux/pcre2/z transitive set. ca-certificates for
+# TLS roots. ubi10-minimal ships none of these, so install them explicitly.
+RUN dnf install -y \
+        ca-certificates \
+        glibc glibc-langpack-en \
+        libstdc++ \
+        libicu \
+        libcurl libnghttp2 \
+        openssl-libs \
+        krb5-libs libunistring libselinux pcre2 \
+        zlib \
+        && dnf clean all
 
 # Non-root user.
 RUN groupadd -g 10001 substation-mcp \
     && useradd -u 10001 -g substation-mcp -m -s /sbin/nologin substation-mcp
+
+# Bundle the dynamic Swift runtime from the toolchain image so the
+# (dynamically-linked) binary runs without needing the full toolchain.
+# The toolchain keeps its Swift libs under /usr/lib/swift.
+COPY --from=builder /usr/lib/swift /usr/lib/swift
 
 # Install the binary.
 COPY --from=builder /build/release/substation-mcp /usr/local/bin/substation-mcp
