@@ -1,6 +1,6 @@
-openstack-mcp {{ .Chart.AppVersion }} deployed to namespace {{ include "openstack-mcp.namespace" . }}.
+substation-mcp {{ .Chart.AppVersion }} deployed to namespace {{ include "substation-mcp.namespace" . }}.
 
-Service: {{ include "openstack-mcp.fullname" . }} (port {{ .Values.service.port }})
+Service: {{ include "substation-mcp.fullname" . }} (port {{ .Values.service.port }})
 
 {{- if .Values.gateway.enabled }}
 
@@ -27,8 +27,8 @@ The chart is deployed but external exposure (Gateway) is disabled.
 To expose the service, set gateway.enabled=true and gateway.fqdn=<your-domain>.
 
 In-cluster access:
-  kubectl -n {{ include "openstack-mcp.namespace" . }} port-forward \
-    svc/{{ include "openstack-mcp.fullname" . }} 8080:{{ .Values.service.port }}
+  kubectl -n {{ include "substation-mcp.namespace" . }} port-forward \
+    svc/{{ include "substation-mcp.fullname" . }} 8080:{{ .Values.service.port }}
 
 Then connect a client to http://127.0.0.1:8080/v1 with a Bearer token.
 {{- end }}

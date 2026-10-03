@@ -7,7 +7,7 @@ import Yams
 /// Loads an `OpenStackMCPConfig` from, in priority order:
 ///   1. command-line flags (passed via `args`),
 ///   2. the environment (`OSMCP_` prefix, `__` separator),
-///   3. a YAML file (`--config`, default `/etc/openstack-mcp/config.yaml`),
+///   3. a YAML file (`--config`, default `/etc/substation-mcp/config.yaml`),
 ///   4. defaults.
 ///
 /// The YAML file is a nested map with the same key paths as the spec §11.2
@@ -23,7 +23,7 @@ public enum ConfigLoader {
             configPath = cc
         } else {
             configPath = ProcessInfo.processInfo.environment["OSMCP__CONFIG"]
-                ?? "/etc/openstack-mcp/config.yaml"
+                ?? "/etc/substation-mcp/config.yaml"
         }
         let yaml = yamlValues(at: configPath)
         let env = ProcessInfo.processInfo.environment

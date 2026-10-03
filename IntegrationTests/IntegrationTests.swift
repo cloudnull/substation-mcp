@@ -21,7 +21,7 @@ import OpenStackMCPServer
 // does not leak resources. Server/compute mutations are deliberately avoided
 // (they require compute quota on a scratch project); network-only keeps the
 // mutation path meaningful while staying cheap. Created resources are tagged
-// with metadata `openstack-mcp-it: "true"` so they are recognisable.
+// with metadata `substation-mcp-it: "true"` so they are recognisable.
 //
 // The credential is the app credential on the chosen clouds.yaml entry
 // (`auth.application_password_id` + `application_password`). The test mints a
@@ -30,7 +30,7 @@ import OpenStackMCPServer
 // the client speaks the wire protocol a real cloud expects; the MCP tool layer
 // is covered by the in-process tests).
 
-private let itTag = "openstack-mcp-it"
+private let itTag = "substation-mcp-it"
 private let itTagValue = "true"
 
 /// Build the environment-gated test context, or `nil` when the suite should
@@ -48,7 +48,7 @@ private func itContext() -> (cloud: CloudEntry, logger: Logger)? {
         Issue.record("OSMCP_IT_CLOUD '\(cloudName)' not found or missing auth_url in \(expanded)")
         return nil
     }
-    return (cloud, Logger(label: "openstack-mcp-it"))
+    return (cloud, Logger(label: "substation-mcp-it"))
 }
 
 /// Mint a token from the cloud's app credential. Returns nil when the cloud

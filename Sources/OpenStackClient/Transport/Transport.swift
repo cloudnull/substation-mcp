@@ -147,7 +147,7 @@ public actor Transport {
         }
         req.headers.add(name: "Accept", value: "application/json")
         req.headers.add(name: "Content-Type", value: "application/json")
-        req.headers.add(name: "User-Agent", value: "openstack-mcp/\(openStackClientVersion)")
+        req.headers.add(name: "User-Agent", value: "substation-mcp/\(openStackClientVersion)")
         req.headers.add(name: "X-OpenStack-Request-Id", value: requestID)
         for (name, value) in extraHeaders {
             req.headers.add(name: name, value: value)

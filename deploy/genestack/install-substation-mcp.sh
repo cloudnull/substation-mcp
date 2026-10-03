@@ -1,19 +1,19 @@
 #!/bin/bash
-# install-openstack-mcp.sh — install/upgrade the openstack-mcp Helm chart
+# install-substation-mcp.sh — install/upgrade the substation-mcp Helm chart
 # into a Genestack cluster, following the Genestack add-on pattern
 # (mirrors bin/install-barbican-exporter.sh).
 #
 # Usage (from the Genestack controller node):
-#   ./install-openstack-mcp.sh                        # use defaults
-#   ./install-openstack-mcp.sh --set image.repository=registry.example.com/openstack/openstack-mcp \
+#   ./install-substation-mcp.sh                        # use defaults
+#   ./install-substation-mcp.sh --set image.repository=registry.example.com/openstack/substation-mcp \
 #                              --set image.tag=1.2.3   # override values
-#   ./install-openstack-mcp.sh --dry-run              # print the helm command, don't execute
+#   ./install-substation-mcp.sh --dry-run              # print the helm command, don't execute
 #
 # The operator must:
 #   1. Build + push the image (deploy/Dockerfile, amd64) to their registry.
 #   2. Add an entry to /etc/genestack/helm-chart-versions.yaml:
-#        openstack-mcp: <chart-version>
-#   3. (Optional) create /etc/genestack/helm-configs/openstack-mcp/*.yaml
+#        substation-mcp: <chart-version>
+#   3. (Optional) create /etc/genestack/helm-configs/substation-mcp/*.yaml
 #      with service-specific overrides.
 #
 # This script is idempotent: `helm upgrade --install` is safe to re-run.
@@ -23,11 +23,11 @@
 set -euo pipefail
 
 # Service
-SERVICE_NAME_DEFAULT="openstack-mcp"
+SERVICE_NAME_DEFAULT="substation-mcp"
 SERVICE_NAMESPACE="openstack"
 
 # Helm chart path (in-tree; the operator can also publish it to a repo).
-# Default: use the chart from this repo's deploy/genestack/helm/openstack-mcp/.
+# Default: use the chart from this repo's deploy/genestack/helm/substation-mcp/.
 # Override with --chart <path> or HELM_CHART_PATH env.
 GENESTACK_BASE_DIR="${GENESTACK_BASE_DIR:-/opt/genestack}"
 GENESTACK_OVERRIDES_DIR="${GENESTACK_OVERRIDES_DIR:-/etc/genestack}"
@@ -163,11 +163,11 @@ fi
 "${helm_command[@]}"
 
 echo
-echo "==> Done. openstack-mcp installed in namespace $SERVICE_NAMESPACE."
+echo "==> Done. substation-mcp installed in namespace $SERVICE_NAMESPACE."
 echo
 echo "Next steps:"
 echo "  1. Verify the deployment:"
-echo "     kubectl -n $SERVICE_NAMESPACE get deploy openstack-mcp"
+echo "     kubectl -n $SERVICE_NAMESPACE get deploy substation-mcp"
 echo "  2. Run register-catalog (one-time, as an operator with an admin token):"
 echo "     OS_CLOUD=mycloud REGION=RegionOne PUBLIC_URL=https://<fqdn> ./register-catalog.sh"
 echo "  3. Connect an MCP client:"

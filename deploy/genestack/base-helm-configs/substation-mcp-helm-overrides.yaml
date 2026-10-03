@@ -1,7 +1,7 @@
-# Baseline Helm overrides for openstack-mcp (Genestack add-on).
+# Baseline Helm overrides for substation-mcp (Genestack add-on).
 #
 # Copy this file to:
-#   /opt/genestack/base-helm-configs/openstack-mcp/openstack-mcp-helm-overrides.yaml
+#   /opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml
 #
 # Then adjust values for your environment. The install script picks up
 # every *.yaml in this directory (in addition to global_overrides and
@@ -13,19 +13,19 @@
 # ── Image ──────────────────────────────────────────────────────────────────────
 image:
   # Replace with your cluster registry path + the tag you pushed.
-  repository: registry.example.com/openstack/openstack-mcp
+  repository: registry.example.com/openstack/substation-mcp
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
-# ── Server config (snake_case keys, rendered to /etc/openstack-mcp/config.yaml) ─
-# Full config reference: deploy/genestack/helm/openstack-mcp/values.yaml
+# ── Server config (snake_case keys, rendered to /etc/substation-mcp/config.yaml) ─
+# Full config reference: deploy/genestack/helm/substation-mcp/values.yaml
 # Only set the keys you want to override; the chart's defaults apply for
 # everything else.
 
 config:
   server:
     # Public URL (must match the Gateway FQDN + register-catalog PUBLIC_URL).
-    public_url: https://openstack-mcp.example.com
+    public_url: https://substation-mcp.example.com
     # Gate /metrics with a bearer token (recommended for production).
     # Set a strong, unique token — do NOT ship "change-me".
     metrics_token: ""
@@ -81,6 +81,6 @@ appCred:
 gateway:
   enabled: true
   createGateway: false    # true only if you have NOT created a Gateway yet
-  fqdn: openstack-mcp.example.com
+  fqdn: substation-mcp.example.com
   gatewayClassName: envoy-gateway
   useExistingListener: true   # reuse the operator's existing Gateway listener

@@ -14,7 +14,7 @@ public struct Waiter: Sendable {
     public let catalog: ResourceCatalog
     public let logger: Logger
 
-    public init(client: OpenStackClient, catalog: ResourceCatalog, logger: Logger = Logger(label: "openstack-mcp-waiter")) {
+    public init(client: OpenStackClient, catalog: ResourceCatalog, logger: Logger = Logger(label: "substation-mcp-waiter")) {
         self.client = client
         self.catalog = catalog
         self.logger = logger

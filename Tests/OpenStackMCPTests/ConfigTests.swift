@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import OpenStackMCPServer
-@testable import openstack_mcp
+@testable import substation_mcp
 
 // MARK: - Config precedence (spec §11.1: CLI > env > YAML > defaults)
 

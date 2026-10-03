@@ -3,7 +3,7 @@ import Foundation
 
 // MARK: - CLI entry-point smoke (spec §11.3)
 //
-// The CLI types live in `Sources/openstack-mcp/main.swift`. Because that file
+// The CLI types live in `Sources/substation-mcp/main.swift`. Because that file
 // is a top-level-code file named `main.swift`, Swift does NOT synthesize an
 // `@main` for the `AsyncParsableCommand` root, and there is no top-level
 // statement calling `.main()`. The result: the executable's real entry point
@@ -26,13 +26,13 @@ struct CLIEntryTests {
         let fm = FileManager.default
         let home = URL(fileURLWithPath: NSHomeDirectory())
         var candidates = [
-            home.appendingPathComponent(".build/release/openstack-mcp"),
-            home.appendingPathComponent(".build/debug/openstack-mcp"),
+            home.appendingPathComponent(".build/release/substation-mcp"),
+            home.appendingPathComponent(".build/debug/substation-mcp"),
         ]
         // Also probe /work (Apple Container mount) and CWD.
         for base in ["/work", fm.currentDirectoryPath] {
             for cfg in ["release", "debug"] {
-                candidates.append(URL(fileURLWithPath: "\(base)/.build/\(cfg)/openstack-mcp"))
+                candidates.append(URL(fileURLWithPath: "\(base)/.build/\(cfg)/substation-mcp"))
             }
         }
         // Prefer the most-recently-built executable, so a stale binary from an
@@ -66,7 +66,7 @@ struct CLIEntryTests {
     @Test("binary entry point runs a subcommand and produces output")
     func entryPointProducesOutput() throws {
         guard let bin = binaryPath() else {
-            print("SKIP: no built openstack-mcp binary found — CLI entry smoke not run")
+            print("SKIP: no built substation-mcp binary found — CLI entry smoke not run")
             return
         }
         // `tools --json` must print the 15-tool JSON array. This proves the
@@ -82,7 +82,7 @@ struct CLIEntryTests {
     @Test("no subcommand prints usage, not silence")
     func noArgPrintsUsage() throws {
         guard let bin = binaryPath() else {
-            print("SKIP: no built openstack-mcp binary found — CLI entry smoke not run")
+            print("SKIP: no built substation-mcp binary found — CLI entry smoke not run")
             return
         }
         let r = try run([], bin)

@@ -65,7 +65,7 @@ public struct OpenStackError: Error, Sendable, Equatable {
 
         var hint: String?
         if status == 403 && hasAccessRules {
-            hint = "the application credential's access rules do not allow METHOD PATH; regenerate with `openstack-mcp access-rules`"
+            hint = "the application credential's access rules do not allow METHOD PATH; regenerate with `substation-mcp access-rules`"
         }
 
         let retriable = (status == 429 || status == 502 || status == 503 || status == 504)

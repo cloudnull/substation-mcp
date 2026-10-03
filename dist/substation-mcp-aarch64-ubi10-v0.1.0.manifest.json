@@ -1,14 +1,14 @@
 {
-  "name": "openstack-mcp",
+  "name": "substation-mcp",
   "tag": "v0.1.0",
   "arch": "aarch64",
   "os": "linux",
   "base": "ubi10 (RHEL 10 compatible)",
   "type": "filesystem-rootfs",
-  "entrypoint": ["/usr/local/bin/openstack-mcp"],
+  "entrypoint": ["/usr/local/bin/substation-mcp"],
   "cmd": ["serve", "--host", "0.0.0.0", "--port", "8080"],
   "expose": [8080],
-  "user": "openstack-mcp:10001",
+  "user": "substation-mcp:10001",
   "binary_sha256": "2e1d083028dd3d2f851e006586d13b6caf4efdd9188ae4314a4dd81cde264c11",
   "binary_size_bytes": "96464936",
   "note": "Native rootfs (no docker). Extract on an arm64 UBI10 host, or feed as a layer. ca-certificates must be present on the host (the image relies on the host's /etc/ssl/certs)."

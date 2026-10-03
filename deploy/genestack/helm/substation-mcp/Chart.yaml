@@ -1,7 +1,7 @@
 apiVersion: v2
-name: openstack-mcp
+name: substation-mcp
 description: |
-  Genestack add-on: deploys the openstack-mcp server (an MCP server for
+  Genestack add-on: deploys the substation-mcp server (an MCP server for
   consuming an OpenStack cloud via Keystone/Nova/Neutron/Cinder/Glance)
   into the `openstack` namespace. Mirrors the Genestack add-on pattern
   (barbican-exporter reference).
@@ -14,4 +14,4 @@ keywords:
   - model-context-protocol
   - genestack
 maintainers:
-  - name: openstack-mcp contributors
+  - name: substation-mcp contributors

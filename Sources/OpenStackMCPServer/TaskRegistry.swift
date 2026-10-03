@@ -67,7 +67,7 @@ public actor TaskRegistry {
     private let reapAfter: TimeInterval
     private let logger: Logger
 
-    public init(reapAfter: TimeInterval = 600, logger: Logger = Logger(label: "openstack-mcp-tasks")) {
+    public init(reapAfter: TimeInterval = 600, logger: Logger = Logger(label: "substation-mcp-tasks")) {
         self.reapAfter = reapAfter
         self.logger = logger
     }

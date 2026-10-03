@@ -71,7 +71,7 @@ public struct ToolRegistry: Sendable {
         policy: Policy = Policy(),
         identity: RequestIdentity,
         scopeMode: ScopeMode = .coarse,
-        logger: Logger = Logger(label: "openstack-mcp"),
+        logger: Logger = Logger(label: "substation-mcp"),
         auditEnabled: Bool = true,
         callLimiter: ToolCallLimiter? = nil,
         taskRegistry: TaskRegistry? = nil
@@ -160,7 +160,7 @@ public struct ToolRegistry: Sendable {
     /// Build the MCP `Server` with all tool handlers registered.
     public func makeServer() async -> MCP.Server {
         let server = MCP.Server(
-            name: "openstack-mcp",
+            name: "substation-mcp",
             version: "1.0.0",
             instructions: "OpenStack cloud management via MCP. Use os_describe(resource:) to see the JSON schema for a resource before creating or updating. Use os_find to search by IP or name. Use os_topology to understand connectivity. Mutating operations require write scope.",
             capabilities: .init(

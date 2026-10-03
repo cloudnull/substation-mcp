@@ -1,6 +1,6 @@
-# openstack-mcp — Genestack Deployment
+# substation-mcp — Genestack Deployment
 
-Deploy the **openstack-mcp** server (an MCP server for consuming an OpenStack
+Deploy the **substation-mcp** server (an MCP server for consuming an OpenStack
 cloud via Keystone/Nova/Neutron/Cinder/Glance) into a [Genestack](https://github.com/rackerlabs/genestack)
 cluster as a canonical Genestack add-on.
 
@@ -20,16 +20,16 @@ This follows the same pattern as Genestack's built-in add-ons
 
 | Path | Purpose |
 |------|---------|
-| `helm/openstack-mcp/` | The Helm chart (Deployment, Service, config ConfigMap, clouds Secret, ServiceAccount, optional Gateway+HTTPRoute). |
+| `helm/substation-mcp/` | The Helm chart (Deployment, Service, config ConfigMap, clouds Secret, ServiceAccount, optional Gateway+HTTPRoute). |
 | `kustomize/base/` | Kustomize base (namespace, common labels, `all.yaml` written by the post-renderer). |
 | `kustomize/overlay/` | Kustomize overlay (post-renderer target for the install script). |
-| `install-openstack-mcp.sh` | The install/upgrade script (mirrors `bin/install-barbican-exporter.sh`). |
-| `base-helm-configs/openstack-mcp-helm-overrides.yaml` | Baseline Helm overrides to copy into the Genestack tree. |
+| `install-substation-mcp.sh` | The install/upgrade script (mirrors `bin/install-barbican-exporter.sh`). |
+| `base-helm-configs/substation-mcp-helm-overrides.yaml` | Baseline Helm overrides to copy into the Genestack tree. |
 | `helm-chart-versions.yaml` | The one-line version entry to append to `/etc/genestack/helm-chart-versions.yaml`. |
 
-> **How the post-renderer works:** `install-openstack-mcp.sh` invokes
+> **How the post-renderer works:** `install-substation-mcp.sh` invokes
 > `helm upgrade --install --post-renderer /etc/genestack/kustomize/kustomize.sh
-> --post-renderer-args openstack-mcp/overlay`. Genestack's `kustomize.sh`
+> --post-renderer-args substation-mcp/overlay`. Genestack's `kustomize.sh`
 > writes the `helm template` output (stdin) to `kustomize/base/all.yaml`, then
 > runs `kubectl kustomize kustomize/overlay/`. The overlay's `resources:
 > [../base]` pulls in that written `all.yaml`, applies the Genestack namespace
@@ -45,8 +45,8 @@ The chart pulls a container image. Build it from the repo root (amd64, per
 ```sh
 # From the repo root:
 docker build --platform linux/amd64 -f deploy/Dockerfile \
-  -t registry.example.com/openstack/openstack-mcp:0.1.0 .
-docker push registry.example.com/openstack/openstack-mcp:0.1.0
+  -t registry.example.com/openstack/substation-mcp:0.1.0 .
+docker push registry.example.com/openstack/substation-mcp:0.1.0
 ```
 
 > **Arch note:** Genestack clusters are typically `linux/amd64`. The
@@ -59,23 +59,23 @@ On the Genestack controller node, copy the chart and baseline overrides:
 
 ```sh
 # (adjust paths to match your Genestack checkout / install layout)
-cp -r deploy/genestack/helm/openstack-mcp /opt/genestack/base-helm-configs/  # optional; see below
-mkdir -p /opt/genestack/base-helm-configs/openstack-mcp
-cp deploy/genestack/base-helm-configs/openstack-mcp-helm-overrides.yaml \
-   /opt/genestack/base-helm-configs/openstack-mcp/
+cp -r deploy/genestack/helm/substation-mcp /opt/genestack/base-helm-configs/  # optional; see below
+mkdir -p /opt/genestack/base-helm-configs/substation-mcp
+cp deploy/genestack/base-helm-configs/substation-mcp-helm-overrides.yaml \
+   /opt/genestack/base-helm-configs/substation-mcp/
 
 # Append the version entry:
-echo "  openstack-mcp: 0.1.0" >> /etc/genestack/helm-chart-versions.yaml
+echo "  substation-mcp: 0.1.0" >> /etc/genestack/helm-chart-versions.yaml
 ```
 
 > **Chart location:** the install script uses the in-tree chart by default
-> (`deploy/genestack/helm/openstack-mcp`). If you prefer a published Helm
+> (`deploy/genestack/helm/substation-mcp`). If you prefer a published Helm
 > repo, set `chart.repo_url` in a custom override YAML and the script will
 > `helm repo add` it.
 
 ## Step 3 — Configure
 
-Edit `/opt/genestack/base-helm-configs/openstack-mcp/openstack-mcp-helm-overrides.yaml`:
+Edit `/opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml`:
 
 - **`image.repository` / `image.tag`** — your registry + tag.
 - **`config.server.publicUrl`** — the FQDN that will be exposed (must match
@@ -88,21 +88,21 @@ Edit `/opt/genestack/base-helm-configs/openstack-mcp/openstack-mcp-helm-override
   external exposure via Gateway API (Envoy or Poundcake).
 
 For an operator-specific override with the highest precedence, drop a file
-into `/etc/genestack/helm-configs/openstack-mcp/*.yaml`.
+into `/etc/genestack/helm-configs/substation-mcp/*.yaml`.
 
 ## Step 4 — Install
 
 ```sh
 # Dry-run first (prints the helm command, does not execute):
-./deploy/genestack/install-openstack-mcp.sh --dry-run
+./deploy/genestack/install-substation-mcp.sh --dry-run
 
 # Real install:
-./deploy/genestack/install-openstack-mcp.sh \
-  --set image.repository=registry.example.com/openstack/openstack-mcp \
+./deploy/genestack/install-substation-mcp.sh \
+  --set image.repository=registry.example.com/openstack/substation-mcp \
   --set image.tag=0.1.0
 
 # Or with a custom override file:
-./deploy/genestack/install-openstack-mcp.sh
+./deploy/genestack/install-substation-mcp.sh
 ```
 
 The script is idempotent (`helm upgrade --install`). Re-running it after a
@@ -131,7 +131,7 @@ One-time, as an operator with an admin token:
 
 ```sh
 export OS_CLOUD=mycloud REGION=RegionOne
-export PUBLIC_URL=https://openstack-mcp.example.com   # must match gateway.fqdn
+export PUBLIC_URL=https://substation-mcp.example.com   # must match gateway.fqdn
 export OS_AUTH_TOKEN=<admin-keystone-token>
 
 ./deploy/register-catalog.sh
@@ -145,7 +145,7 @@ Mint a Keystone token (or use the `/v1/login` page in a browser), then:
 
 ```sh
 claude mcp add --transport http openstack \
-  https://openstack-mcp.example.com/v1 \
+  https://substation-mcp.example.com/v1 \
   --header "Authorization: Bearer <keystone-token>"
 ```
 
@@ -153,15 +153,15 @@ claude mcp add --transport http openstack \
 
 ```sh
 # 1. The deployment is running:
-kubectl -n openstack get deploy openstack-mcp
-kubectl -n openstack get pods -l app.kubernetes.io/name=openstack-mcp
+kubectl -n openstack get deploy substation-mcp
+kubectl -n openstack get pods -l app.kubernetes.io/name=substation-mcp
 
 # 2. Validate the credential + scopes:
-OS_AUTH_TOKEN=<token> ./.build/release/openstack-mcp check --cloud mycloud
+OS_AUTH_TOKEN=<token> ./.build/release/substation-mcp check --cloud mycloud
 
 # 3. Run the conformance handshake against the live URL:
 scripts/conformance.sh \
-  --url https://openstack-mcp.example.com/v1 \
+  --url https://substation-mcp.example.com/v1 \
   --token <minted-keystone-token>
 ```
 
@@ -173,8 +173,8 @@ with `read_only: true`) → `os_whoami` 200 → DELETE 200.
 ```sh
 # Bump the image tag in the override, then re-run the install script:
 sed -i 's/tag: "0.1.0"/tag: "0.2.0"/' \
-  /opt/genestack/base-helm-configs/openstack-mcp/openstack-mcp-helm-overrides.yaml
-./deploy/genestack/install-openstack-mcp.sh
+  /opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml
+./deploy/genestack/install-substation-mcp.sh
 ```
 
 `helm upgrade` performs a rolling update (maxSurge=1, maxUnavailable=0).
@@ -182,7 +182,7 @@ sed -i 's/tag: "0.1.0"/tag: "0.2.0"/' \
 ## Uninstalling
 
 ```sh
-helm uninstall openstack-mcp --namespace openstack
+helm uninstall substation-mcp --namespace openstack
 # Remove the version entry from /etc/genestack/helm-chart-versions.yaml
 # (optional, if you want to keep the cluster clean).
 ```

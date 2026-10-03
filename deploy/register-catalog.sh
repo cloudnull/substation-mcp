@@ -1,7 +1,7 @@
 #!/bin/sh
 # register-catalog.sh — idempotent Keystone service+endpoint registration.
 #
-# Thin wrapper over `openstack-mcp register-catalog` (Task 20). Run as an
+# Thin wrapper over `substation-mcp register-catalog` (Task 20). Run as an
 # operator with an admin token (minted from an application credential or
 # user password). Safe to re-run: it reuses the existing `mcp` service if
 # present, creates it otherwise, and ensures the three endpoint types
@@ -20,7 +20,7 @@
 #                             — user password auth (admin role)
 #
 # Optional:
-#   OSMCP_BIN   — path to the openstack-mcp binary (default: openstack-mcp)
+#   OSMCP_BIN   — path to the substation-mcp binary (default: substation-mcp)
 #   OS_CONFIG   — clouds.yaml path (default: ~/.config/openstack/clouds.yaml)
 #
 # Exit codes: 0 = success, 1 = auth/connectivity failure.
@@ -31,7 +31,7 @@ set -eu
 : "${REGION:?REGION is required (e.g. RegionOne)}"
 : "${PUBLIC_URL:?PUBLIC_URL is required (externally reachable MCP URL)}"
 
-BIN="${OSMCP_BIN:-openstack-mcp}"
+BIN="${OSMCP_BIN:-substation-mcp}"
 
 # If no OS_AUTH_TOKEN, mint one from the configured credential.
 if [ -z "${OS_AUTH_TOKEN:-}" ]; then
@@ -86,7 +86,7 @@ if [ -z "${OS_AUTH_TOKEN:-}" ]; then
   fi
 fi
 
-echo "==> Registering openstack-mcp service + endpoints in $OS_CLOUD/$REGION" >&2
+echo "==> Registering substation-mcp service + endpoints in $OS_CLOUD/$REGION" >&2
 "$BIN" register-catalog \
   --cloud "$OS_CLOUD" \
   --region "$REGION" \

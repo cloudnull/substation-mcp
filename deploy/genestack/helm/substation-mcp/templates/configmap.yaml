@@ -1,7 +1,7 @@
-# Renders the openstack-mcp server YAML config + the OpenStack clouds.yaml.
+# Renders the substation-mcp server YAML config + the OpenStack clouds.yaml.
 #
 # Two resources:
-#   <fullname>-config  (ConfigMap) → /etc/openstack-mcp/config.yaml  (server config, no secrets)
+#   <fullname>-config  (ConfigMap) → /etc/substation-mcp/config.yaml  (server config, no secrets)
 #   <fullname>-clouds  (Secret)    → /etc/openstack/clouds.yaml      (may contain app-cred secret)
 #
 # The clouds.yaml is a Secret (not ConfigMap) because it may contain the
@@ -11,10 +11,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "openstack-mcp.fullname" . }}-config
-  namespace: {{ include "openstack-mcp.namespace" . }}
+  name: {{ include "substation-mcp.fullname" . }}-config
+  namespace: {{ include "substation-mcp.namespace" . }}
   labels:
-    {{- include "openstack-mcp.labels" . | nindent 4 }}
+    {{- include "substation-mcp.labels" . | nindent 4 }}
 data:
   config.yaml: |
     {{- toYaml .Values.config | nindent 4 }}
@@ -27,10 +27,10 @@ data:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: {{ include "openstack-mcp.fullname" . }}-clouds
-  namespace: {{ include "openstack-mcp.namespace" . }}
+  name: {{ include "substation-mcp.fullname" . }}-clouds
+  namespace: {{ include "substation-mcp.namespace" . }}
   labels:
-    {{- include "openstack-mcp.labels" . | nindent 4 }}
+    {{- include "substation-mcp.labels" . | nindent 4 }}
 type: Opaque
 stringData:
   clouds.yaml: |

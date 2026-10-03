@@ -42,7 +42,7 @@ struct TransportTests {
         #expect(status == 200)
         let json = try JSONSerialization.jsonObject(with: body) as! [String: String]
         #expect(json["x-auth-token"] == "tok-123")
-        #expect(json["user-agent"] == "openstack-mcp/0.1.0")
+        #expect(json["user-agent"] == "substation-mcp/0.1.0")
         #expect(json["accept"] == "application/json")
         let rid = json["request-id"] ?? ""
         #expect(UUID(uuidString: rid) != nil)

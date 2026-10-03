@@ -48,6 +48,6 @@ mcp.example.com {
 
     # Access + error logs.
     log {
-        output file /var/log/caddy/openstack-mcp.log
+        output file /var/log/caddy/substation-mcp.log
     }
 }

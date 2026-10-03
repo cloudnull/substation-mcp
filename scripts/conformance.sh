@@ -2,7 +2,7 @@
 #
 # conformance.sh — conformance-HTTP-smoke (spec §14.5).
 #
-# Drives the FULL MCP Streamable-HTTP handshake against a RUNNING `openstack-mcp
+# Drives the FULL MCP Streamable-HTTP handshake against a RUNNING `substation-mcp
 # serve` instance using the binary itself as the HTTP client — the hidden
 # `conformance` subcommand (no curl, which is absent from the ubi10-minimal
 # runtime and not assumed on dev hosts).
@@ -36,14 +36,14 @@ set -euo pipefail
 # Locate the built binary (prefer release, fall back to debug).
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN=""
-for candidate in "$ROOT/.build/release/openstack-mcp" "$ROOT/.build/debug/openstack-mcp"; do
+for candidate in "$ROOT/.build/release/substation-mcp" "$ROOT/.build/debug/substation-mcp"; do
     if [[ -x "$candidate" ]]; then
         BIN="$candidate"
         break
     fi
 done
 if [[ -z "$BIN" ]]; then
-    echo "conformance: no built openstack-mcp binary found in .build/release or .build/debug" >&2
+    echo "conformance: no built substation-mcp binary found in .build/release or .build/debug" >&2
     echo "conformance: run 'scripts/swift build' (or build --configuration release) first" >&2
     exit 2
 fi
@@ -51,7 +51,7 @@ echo "conformance: using binary $BIN" >&2
 
 # Pass through all remaining args to the conformance subcommand. The script is a
 # thin convenience wrapper: `conformance.sh --url ... --token ...` ==
-# `openstack-mcp conformance --url ... --token ...`. This keeps the real
+# `substation-mcp conformance --url ... --token ...`. This keeps the real
 # handshake logic in the binary (testable, no curl) and lets the caller point
 # it at any already-running server.
 if [[ $# -eq 0 ]]; then

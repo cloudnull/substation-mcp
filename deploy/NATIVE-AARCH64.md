@@ -9,10 +9,10 @@ packages a UBI10 **filesystem-image tarball** matching `Dockerfile` stage 2.
 
 - A native aarch64 release binary (built in the `swift:6.4-rhel-ubi10`
   aarch64 container via `scripts/swift build -c release`, no QEMU).
-- A UBI10 rootfs tarball at `dist/openstack-mcp-aarch64-ubi10-<tag>.tar.gz`:
-  - `/usr/local/bin/openstack-mcp` (the native binary)
-  - `openstack-mcp` user/group (uid/gid 10001) in `/etc/passwd` + `/etc/group`
-  - `/etc/openstack`, `/etc/openstack-mcp`, `/var/log/openstack-mcp` mount points
+- A UBI10 rootfs tarball at `dist/substation-mcp-aarch64-ubi10-<tag>.tar.gz`:
+  - `/usr/local/bin/substation-mcp` (the native binary)
+  - `substation-mcp` user/group (uid/gid 10001) in `/etc/passwd` + `/etc/group`
+  - `/etc/openstack`, `/etc/substation-mcp`, `/var/log/substation-mcp` mount points
   - `/etc/ssl/certs` directory (ca-certificates must be present on the host)
 - A `.manifest.json` next to the tarball recording tag, arch, binary sha256,
   size, entrypoint, cmd, exposed port, and the non-root user.
@@ -38,10 +38,10 @@ the binary in-container against a live cloud).
 ## Running
 
     # extract the rootfs on an arm64 UBI10 host, then:
-    sudo -u openstack-mcp /usr/local/bin/openstack-mcp serve \
-      --config /etc/openstack-mcp/config.yaml --cloud <name> \
+    sudo -u substation-mcp /usr/local/bin/substation-mcp serve \
+      --config /etc/substation-mcp/config.yaml --cloud <name> \
       --host 0.0.0.0 --port 8080
 
-`deploy/openstack-mcp.service` (hardened systemd) and `deploy/caddy/Caddyfile`
-/ `deploy/nginx/openstack-mcp.conf` (SSE buffering off) are the same for both
+`deploy/substation-mcp.service` (hardened systemd) and `deploy/caddy/Caddyfile`
+/ `deploy/nginx/substation-mcp.conf` (SSE buffering off) are the same for both
 arches — they reference the binary path, not the arch.

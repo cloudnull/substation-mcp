@@ -4,13 +4,13 @@
 # Runtime: ubi10-minimal + ca-certificates. Non-root user uid 10001.
 #
 # Build (from repo root):
-#   docker build --platform linux/amd64 -f deploy/Dockerfile -t openstack-mcp:local .
+#   docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
 #
 # Run:
 #   docker run --rm -p 8080:8080 \
 #     -v /path/to/clouds.yaml:/etc/openstack/clouds.yaml:ro \
-#     -v /path/to/config.yaml:/etc/openstack-mcp/config.yaml:ro \
-#     openstack-mcp:local
+#     -v /path/to/config.yaml:/etc/substation-mcp/config.yaml:ro \
+#     substation-mcp:local
 #
 # NOTE: the runtime is UBI10 (RHEL 10 compatible), not Rocky 9 as originally
 # sketched in the spec. UBI10 is the base of the Swift 6.4 toolchain image and
@@ -25,7 +25,7 @@ COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
 
 # Dynamic release build (static not yet achievable due to ICU; see scripts/build.sh).
-RUN swift build -c release \
+RUN swift build -c release --static-swift-stdlib \
     --scratch-path /build
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────────
@@ -35,21 +35,21 @@ FROM registry.access.redhat.com/ubi10/ubi10-minimal:latest AS runtime
 RUN dnf install -y ca-certificates && dnf clean all
 
 # Non-root user.
-RUN groupadd -g 10001 openstack-mcp \
-    && useradd -u 10001 -g openstack-mcp -m -s /sbin/nologin openstack-mcp
+RUN groupadd -g 10001 substation-mcp \
+    && useradd -u 10001 -g substation-mcp -m -s /sbin/nologin substation-mcp
 
 # Install the binary.
-COPY --from=builder /build/release/openstack-mcp /usr/local/bin/openstack-mcp
+COPY --from=builder /build/release/substation-mcp /usr/local/bin/substation-mcp
 
 # Default config locations (override by mounting).
-RUN mkdir -p /etc/openstack /etc/openstack-mcp \
-    && chown -R openstack-mcp:openstack-mcp /etc/openstack /etc/openstack-mcp
+RUN mkdir -p /etc/openstack /etc/substation-mcp \
+    && chown -R substation-mcp:substation-mcp /etc/openstack /etc/substation-mcp
 
-USER openstack-mcp
+USER substation-mcp
 
 # The server binds 0.0.0.0 inside the container regardless of OSMCP_SERVER__HOST
 # (TLS terminates at the reverse proxy; the container must accept all interfaces).
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/openstack-mcp"]
+ENTRYPOINT ["/usr/local/bin/substation-mcp"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

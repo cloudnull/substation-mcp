@@ -1,7 +1,7 @@
 {{- if .Values.gateway.enabled }}
 {{- $gw := .Values.gateway -}}
-{{- $fullname := include "openstack-mcp.fullname" . -}}
-{{- $ns := include "openstack-mcp.namespace" . -}}
+{{- $fullname := include "substation-mcp.fullname" . -}}
+{{- $ns := include "substation-mcp.namespace" . -}}
 ---
 {{- if $gw.createGateway }}
 # Creates the Gateway when the operator has not already provisioned one.
@@ -13,7 +13,7 @@ metadata:
   name: {{ $gw.gatewayName }}
   namespace: {{ $gw.namespace }}
   labels:
-    {{- include "openstack-mcp.labels" . | nindent 4 }}
+    {{- include "substation-mcp.labels" . | nindent 4 }}
 spec:
   gatewayClassName: {{ $gw.gatewayClassName }}
   listeners:
@@ -36,9 +36,9 @@ spec:
       hostname: "{{ $gw.fqdn }}"
 ---
 {{- end }}
-# HTTPRoute: routes traffic for $gw.fqdn to the openstack-mcp Service.
+# HTTPRoute: routes traffic for $gw.fqdn to the substation-mcp Service.
 #
-# SSE / streaming: the openstack-mcp server streams Server-Sent Events on
+# SSE / streaming: the substation-mcp server streams Server-Sent Events on
 # /v1 and /mcp. Envoy Gateway does NOT buffer HTTP responses by default
 # (it is a streaming L7 proxy), so SSE works out of the box. Poundcake
 # likewise does not buffer by default. No special annotation is required.
@@ -53,7 +53,7 @@ metadata:
   name: {{ $fullname }}-route
   namespace: {{ $ns }}
   labels:
-    {{- include "openstack-mcp.labels" . | nindent 4 }}
+    {{- include "substation-mcp.labels" . | nindent 4 }}
 spec:
   hostnames:
     - "{{ $gw.fqdn }}"

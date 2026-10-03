@@ -6,14 +6,14 @@
 
 ## Summary
 
-Add a **Genestack production deployment** capability to `openstack-mcp`, delivered as:
+Add a **Genestack production deployment** capability to `substation-mcp`, delivered as:
 1. A container image build target (reuses `deploy/Dockerfile`, amd64).
-2. A **Helm chart** (`deploy/genestack/helm/openstack-mcp/`) that deploys the MCP server into the Genestack `openstack` namespace.
+2. A **Helm chart** (`deploy/genestack/helm/substation-mcp/`) that deploys the MCP server into the Genestack `openstack` namespace.
 3. **Kustomize overlays** (`deploy/genestack/kustomize/`) that wire the chart into Genestack's `install-<svc>.sh` + `kustomize.sh` post-renderer flow.
-4. An **install script** (`deploy/genestack/install-openstack-mcp.sh`) modeled on `bin/install-barbican-exporter.sh`.
+4. An **install script** (`deploy/genestack/install-substation-mcp.sh`) modeled on `bin/install-barbican-exporter.sh`.
 5. A **README section** (`## Production deployment (Genestack)`) documenting the end-to-end path.
 
-This is **additive**: the existing `deploy/Dockerfile`, `deploy/openstack-mcp.service` (systemd), and `scripts/build-image.sh` (native UBI10 rootfs tarball) remain untouched and are the deployables for non-Genestack hosts. Genestack is Kubernetes-based and consumes a container image, so it does **not** use the rootfs tarball or the systemd unit.
+This is **additive**: the existing `deploy/Dockerfile`, `deploy/substation-mcp.service` (systemd), and `scripts/build-image.sh` (native UBI10 rootfs tarball) remain untouched and are the deployables for non-Genestack hosts. Genestack is Kubernetes-based and consumes a container image, so it does **not** use the rootfs tarball or the systemd unit.
 
 ## Why Genestack (context)
 
@@ -28,7 +28,7 @@ Genestack (github.com/rackerlabs/genestack) is a K8s-based OpenStack deployer. I
 
 All OpenStack services live in the `openstack` namespace. External exposure is **Gateway API** (Envoy or Poundcake) + **MetalLB** VIP + a per-service FQDN (e.g. `keystone.domain.tld`). Secrets are created via `/opt/genestack/bin/create-secrets.sh` → `kubesecrets.yaml`.
 
-Our openstack-mcp chart mirrors this layout under `deploy/genestack/` so a Genestack operator recognizes it, and so it can be dropped into a Genestack tree (or referenced from the operator's overlay) without translation.
+Our substation-mcp chart mirrors this layout under `deploy/genestack/` so a Genestack operator recognizes it, and so it can be dropped into a Genestack tree (or referenced from the operator's overlay) without translation.
 
 ## Architecture
 
@@ -37,16 +37,16 @@ MCP Client (Claude, etc.)
   │  Authorization: Bearer <keystone-token>
   ▼
 Genestack Edge (MetalLB VIP + Gateway API — Envoy or Poundcake)
-  │  https://openstack-mcp.<domain.tld>
+  │  https://substation-mcp.<domain.tld>
   ▼
-openstack-mcp Deployment (namespace: openstack)
+substation-mcp Deployment (namespace: openstack)
   │  port 8080 (plaintext; TLS terminates at Gateway)
   ▼
-Service openstack-mcp
+Service substation-mcp
   │
-  ├── ConfigMap: openstack-mcp-config      (config.yaml)
-  ├── ConfigMap: openstack-mcp-clouds      (clouds.yaml)
-  └── Secret:    openstack-mcp-appcred     (app-cred id+secret for login page, optional)
+  ├── ConfigMap: substation-mcp-config      (config.yaml)
+  ├── ConfigMap: substation-mcp-clouds      (clouds.yaml)
+  └── Secret:    substation-mcp-appcred     (app-cred id+secret for login page, optional)
   │
   ▼
 Keystone / Nova / Neutron / Cinder / Glance  (in-cluster OpenStack services)
@@ -56,31 +56,31 @@ Keystone / Nova / Neutron / Cinder / Glance  (in-cluster OpenStack services)
 
 | Component | Purpose |
 |-----------|---------|
-| `deploy/genestack/helm/openstack-mcp/Chart.yaml` | Chart metadata (apiVersion v2, name `openstack-mcp`). |
-| `deploy/genestack/helm/openstack-mcp/values.yaml` | Defaults: image repo/tag/pullPolicy, replicas, resources, `server`/`policy`/`log`/`session`/`auth`/`client`/`cache` config sections, `clouds` (name, allowed, region), `gateway` (fqdn, namespace, gatewayName, listener), `metrics` (enabled, token). |
-| `deploy/genestack/helm/openstack-mcp/templates/deployment.yaml` | Deployment: non-root `securityContext`, `env` from config (OSMCP_* form), volume mounts for `clouds.yaml` + `config.yaml` (from ConfigMaps), `/metrics` port, liveness/readiness probes on `/healthz` + `/readyz`. |
-| `deploy/genestack/helm/openstack-mcp/templates/service.yaml` | ClusterIP Service, port 8080 → container 8080. |
-| `deploy/genestack/helm/openstack-mcp/templates/configmap.yaml` | Two ConfigMaps: `openstack-mcp-config` (renders the `server`/`policy`/`log`/… YAML) and `openstack-mcp-clouds` (renders `clouds.yaml`). |
-| `deploy/genestack/helm/openstack-mcp/templates/secret.yaml` | `openstack-mcp-appcred` Secret (optional; only when `appCred` configured). |
-| `deploy/genestack/helm/openstack-mcp/templates/_helpers.tpl` | Label/name helpers. |
-| `deploy/genestack/helm/openstack-mcp/templates/gateway.yaml` | **Optional** HTTPRoute + Gateway (or references the operator's existing Gateway) + `tls` config. Conditionally rendered when `gateway.enabled`. This is the Genestack-recommended path for external exposure (MetalLB VIP + per-service FQDN). |
-| `deploy/genestack/helm/openstack-mcp/templates/NOTES.txt` | Post-install: FQDN, how to connect a client, how to run `register-catalog`. |
+| `deploy/genestack/helm/substation-mcp/Chart.yaml` | Chart metadata (apiVersion v2, name `substation-mcp`). |
+| `deploy/genestack/helm/substation-mcp/values.yaml` | Defaults: image repo/tag/pullPolicy, replicas, resources, `server`/`policy`/`log`/`session`/`auth`/`client`/`cache` config sections, `clouds` (name, allowed, region), `gateway` (fqdn, namespace, gatewayName, listener), `metrics` (enabled, token). |
+| `deploy/genestack/helm/substation-mcp/templates/deployment.yaml` | Deployment: non-root `securityContext`, `env` from config (OSMCP_* form), volume mounts for `clouds.yaml` + `config.yaml` (from ConfigMaps), `/metrics` port, liveness/readiness probes on `/healthz` + `/readyz`. |
+| `deploy/genestack/helm/substation-mcp/templates/service.yaml` | ClusterIP Service, port 8080 → container 8080. |
+| `deploy/genestack/helm/substation-mcp/templates/configmap.yaml` | Two ConfigMaps: `substation-mcp-config` (renders the `server`/`policy`/`log`/… YAML) and `substation-mcp-clouds` (renders `clouds.yaml`). |
+| `deploy/genestack/helm/substation-mcp/templates/secret.yaml` | `substation-mcp-appcred` Secret (optional; only when `appCred` configured). |
+| `deploy/genestack/helm/substation-mcp/templates/_helpers.tpl` | Label/name helpers. |
+| `deploy/genestack/helm/substation-mcp/templates/gateway.yaml` | **Optional** HTTPRoute + Gateway (or references the operator's existing Gateway) + `tls` config. Conditionally rendered when `gateway.enabled`. This is the Genestack-recommended path for external exposure (MetalLB VIP + per-service FQDN). |
+| `deploy/genestack/helm/substation-mcp/templates/NOTES.txt` | Post-install: FQDN, how to connect a client, how to run `register-catalog`. |
 | `deploy/genestack/kustomize/base/kustomization.yaml` | `resources: [all.yaml]` — points at the rendered Helm output. |
-| `deploy/genestack/kustomize/overlay/kustomization.yaml` | Genestack `--post-renderer-args openstack-mcp/overlay` target; applies namespace/label patches. |
-| `deploy/genestack/install-openstack-mcp.sh` | Modeled on `install-barbican-exporter.sh`: reads `helm-chart-versions.yaml`, `helm repo add` + `helm upgrade --install openstack-mcp ... --namespace openstack --post-renderer $OVERRIDES/kustomize/kustomize.sh --post-renderer-args openstack-mcp/overlay`. |
+| `deploy/genestack/kustomize/overlay/kustomization.yaml` | Genestack `--post-renderer-args substation-mcp/overlay` target; applies namespace/label patches. |
+| `deploy/genestack/install-substation-mcp.sh` | Modeled on `install-barbican-exporter.sh`: reads `helm-chart-versions.yaml`, `helm repo add` + `helm upgrade --install substation-mcp ... --namespace openstack --post-renderer $OVERRIDES/kustomize/kustomize.sh --post-renderer-args substation-mcp/overlay`. |
 | `deploy/genestack/README.md` | Standalone how-to (mirrors `docs/<svc>.md` in Genestack). Also the source for the README section in the root repo. |
-| `deploy/genestack/helm-chart-versions.yaml` (snippet) | The one-line entry the operator appends: `openstack-mcp: <version>`. |
+| `deploy/genestack/helm-chart-versions.yaml` (snippet) | The one-line entry the operator appends: `substation-mcp: <version>`. |
 
 ### Data flow
 
-1. **Build & push image.** `deploy/Dockerfile` (amd64) builds the release binary into `ubi10-minimal`, non-root uid 10001. The operator builds it and pushes to their cluster registry (e.g. `registry.<domain>/openstack/openstack-mcp:<tag>`).
-2. **Chart values → config.** The Helm chart renders the server's YAML config (`server`, `policy`, `log`, `session`, `auth`, `client`, `cache`, `clouds`) into a ConfigMap. The server reads `--config /etc/openstack-mcp/config.yaml` (mounted) and `clouds.yaml` (mounted at `/etc/openstack/clouds.yaml`).
+1. **Build & push image.** `deploy/Dockerfile` (amd64) builds the release binary into `ubi10-minimal`, non-root uid 10001. The operator builds it and pushes to their cluster registry (e.g. `registry.<domain>/openstack/substation-mcp:<tag>`).
+2. **Chart values → config.** The Helm chart renders the server's YAML config (`server`, `policy`, `log`, `session`, `auth`, `client`, `cache`, `clouds`) into a ConfigMap. The server reads `--config /etc/substation-mcp/config.yaml` (mounted) and `clouds.yaml` (mounted at `/etc/openstack/clouds.yaml`).
 3. **Env vars.** `OSMCP_*` env vars (e.g. `OSMCP_SERVER__HOST`) are set on the Deployment as a secondary override layer, per the existing CLI > env > YAML > defaults precedence.
 4. **Auth.** Token-per-request. The MCP client presents a Keystone Bearer token; the server validates via `GET /v3/auth/tokens`. No long-lived session token. The optional `appCred` secret powers the `/v1/login` URL-mode elicitation page.
-5. **External exposure.** Gateway API (Envoy or Poundcake) routes `https://openstack-mcp.<domain.tld>` to the ClusterIP Service. TLS terminates at the Gateway. **Response buffering must be disabled** for `/v1` and `/mcp` (SSE) — in the Envoy/Poundcake Gateway config this maps to disabling buffering on those paths (documented in the Gateway template + README).
-6. **Keystone catalog.** After the deployment is live, the operator runs `openstack-mcp register-catalog` (or `deploy/register-catalog.sh`) with an admin token to publish the `mcp` service + endpoints. This is a **separate, one-time** step, not part of the Helm chart.
-7. **Connect a client.** `claude mcp add --transport http openstack https://openstack-mcp.<domain.tld>/v1 --header "Authorization: Bearer <token>"`.
-8. **Verify.** `openstack-mcp check --cloud <name>` and `scripts/conformance.sh` against the live URL.
+5. **External exposure.** Gateway API (Envoy or Poundcake) routes `https://substation-mcp.<domain.tld>` to the ClusterIP Service. TLS terminates at the Gateway. **Response buffering must be disabled** for `/v1` and `/mcp` (SSE) — in the Envoy/Poundcake Gateway config this maps to disabling buffering on those paths (documented in the Gateway template + README).
+6. **Keystone catalog.** After the deployment is live, the operator runs `substation-mcp register-catalog` (or `deploy/register-catalog.sh`) with an admin token to publish the `mcp` service + endpoints. This is a **separate, one-time** step, not part of the Helm chart.
+7. **Connect a client.** `claude mcp add --transport http openstack https://substation-mcp.<domain.tld>/v1 --header "Authorization: Bearer <token>"`.
+8. **Verify.** `substation-mcp check --cloud <name>` and `scripts/conformance.sh` against the live URL.
 
 ### Error handling
 
@@ -91,9 +91,9 @@ Keystone / Nova / Neutron / Cinder / Glance  (in-cluster OpenStack services)
 
 ### Testing
 
-- **Helm lint + template:** `helm lint deploy/genestack/helm/openstack-mcp/` and `helm template` (with sample values) → asserts all resources render, no `nil` errors.
+- **Helm lint + template:** `helm lint deploy/genestack/helm/substation-mcp/` and `helm template` (with sample values) → asserts all resources render, no `nil` errors.
 - **Kustomize build:** `kubectl kustomize deploy/genestack/kustomize/overlay/` → asserts the rendered output applies cleanly (dry-run).
-- **Install script:** shellcheck on `install-openstack-mcp.sh`; a `--dry-run` mode that prints the helm command without executing.
+- **Install script:** shellcheck on `install-substation-mcp.sh`; a `--dry-run` mode that prints the helm command without executing.
 - **End-to-end (opt-in, in CI or on a Genestack cluster):** deploy the chart, run `scripts/conformance.sh` against the in-cluster URL. This is the real acceptance test and is **not** automated in CI (no Genestack cluster in CI); it's documented as a manual verification step.
 
 ## Global constraints
@@ -110,7 +110,7 @@ Keystone / Nova / Neutron / Cinder / Glance  (in-cluster OpenStack services)
 
 - **Helm chart publishing/packaging** to a public repo (the operator builds and pushes their own chart or references `deploy/genestack/helm/` directly via `--chart`).
 - **CI pipeline** for building + pushing the image (operator-owned).
-- **Modifying existing `deploy/Dockerfile`, `deploy/openstack-mcp.service`, `scripts/build-image.sh`** (untouched).
+- **Modifying existing `deploy/Dockerfile`, `deploy/substation-mcp.service`, `scripts/build-image.sh`** (untouched).
 - **Gateway implementation choice** (Envoy vs Poundcake) — the chart ships an Envoy-compatible HTTPRoute; the README notes Poundcake needs the same route.
 - **Monitoring** (Prometheus scrape, Loki logging) — documented as a follow-up; the `/metrics` endpoint is already exposed.
 

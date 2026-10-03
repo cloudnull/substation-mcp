@@ -20,7 +20,7 @@ public struct TopologyBuilder: Sendable {
     public let catalog: ResourceCatalog
     public let logger: Logger
 
-    public init(client: OpenStackClient, catalog: ResourceCatalog, logger: Logger = Logger(label: "openstack-mcp-topology")) {
+    public init(client: OpenStackClient, catalog: ResourceCatalog, logger: Logger = Logger(label: "substation-mcp-topology")) {
         self.client = client
         self.catalog = catalog
         self.logger = logger

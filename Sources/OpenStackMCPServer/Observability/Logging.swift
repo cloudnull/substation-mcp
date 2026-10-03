@@ -20,7 +20,7 @@ public func makeLogger(
     level: String,
     format: String,
     sink: LogSink = .standardOutput,
-    label: String = "openstack-mcp"
+    label: String = "substation-mcp"
 ) -> Logger {
     let logLevel: Logger.Level
     switch level.lowercased() {
@@ -65,7 +65,7 @@ public struct RedactingJSONLogHandler: LogHandler, Sendable {
     private let sink: LogSink
 
     public init(
-        label: String = "openstack-mcp",
+        label: String = "substation-mcp",
         sink: LogSink = .standardOutput,
         logLevel: Logger.Level = .info
     ) {

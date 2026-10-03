@@ -7,15 +7,15 @@ let swiftSettings: [SwiftSetting] = [
 ]
 
 let package = Package(
-    name: "openstack-mcp",
+    name: "substation-mcp",
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "OpenStackClient", targets: ["OpenStackClient"]),
         .library(name: "OpenStackMCPServer", targets: ["OpenStackMCPServer"]),
         .library(name: "HummingbirdMCP", targets: ["HummingbirdMCP"]),
         .library(name: "FakeOpenStack", targets: ["FakeOpenStack"]),
-        .executable(name: "openstack-mcp", targets: ["openstack-mcp"]),
-        .executable(name: "openstack-mcp-fake", targets: ["openstack-mcp-fake"]),
+        .executable(name: "substation-mcp", targets: ["substation-mcp"]),
+        .executable(name: "substation-mcp-fake", targets: ["substation-mcp-fake"]),
     ],
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.26.0"),
@@ -86,7 +86,7 @@ let package = Package(
 
         // MARK: - Executable: the MCP server
         .executableTarget(
-            name: "openstack-mcp",
+            name: "substation-mcp",
             dependencies: [
                 .target(name: "OpenStackMCPServer"),
                 .target(name: "HummingbirdMCP"),
@@ -103,7 +103,7 @@ let package = Package(
 
         // MARK: - Executable: the fake cloud (additive, manual testing)
         .executableTarget(
-            name: "openstack-mcp-fake",
+            name: "substation-mcp-fake",
             dependencies: [
                 .target(name: "FakeOpenStack"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -150,7 +150,7 @@ let package = Package(
                 .target(name: "OpenStackClient"),
                 .target(name: "OpenStackMCPServer"),
                 .target(name: "FakeOpenStack"),
-                .target(name: "openstack-mcp"),
+                .target(name: "substation-mcp"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Configuration", package: "swift-configuration"),
                 .product(name: "Logging", package: "swift-log"),

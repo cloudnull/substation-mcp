@@ -1,4 +1,4 @@
-# openstack-mcp
+# substation-mcp
 
 A Hummingbird-hosted Swift MCP (Model Context Protocol) server that lets an LLM
 client consume an OpenStack cloud — identity (Keystone), compute (Nova), network
@@ -45,7 +45,7 @@ on mutating calls.
 MCP Client (Claude, etc.)
   │  Authorization: Bearer <keystone-token>
   ▼
-openstack-mcp serve
+substation-mcp serve
   ├── MCPRoute (HummingbirdMCP adapter)
   │     ├── Token-per-request validation (GET /v3/auth/tokens, cached)
   │     ├── Scope gate (read-only / write)
@@ -98,7 +98,7 @@ Release build:
 
 ```sh
 scripts/build.sh          # swift build -c release (attempts --static-swift-stdlib first)
-# → ./.build/release/openstack-mcp
+# → ./.build/release/substation-mcp
 ```
 
 > **Note:** the static build is attempted first (spec §13 wants a
@@ -119,10 +119,10 @@ scripts/build.sh
 
 ```sh
 # Using an existing token:
-OS_AUTH_TOKEN=<token-id> ./.build/release/openstack-mcp check --cloud mycloud
+OS_AUTH_TOKEN=<token-id> ./.build/release/substation-mcp check --cloud mycloud
 
 # Or let it mint a token from the cloud's application credential:
-./.build/release/openstack-mcp check --cloud mycloud
+./.build/release/substation-mcp check --cloud mycloud
 ```
 
 Expected output: project name, derived scopes (`[openstack:read openstack:write]`),
@@ -141,7 +141,7 @@ export OS_AUTH_TOKEN=<admin-token>   # or OS_APPLICATION_CREDENTIAL_ID+SECRET
 deploy/register-catalog.sh
 
 # Or directly:
-./.build/release/openstack-mcp register-catalog \
+./.build/release/substation-mcp register-catalog \
   --cloud mycloud --region RegionOne \
   --public-url https://mcp.example.com \
   --admin-token <admin-token>
@@ -153,8 +153,8 @@ and endpoints.
 ### 4. Run the server
 
 ```sh
-./openstack-mcp serve \
-  --config /etc/openstack-mcp/config.yaml \
+./substation-mcp serve \
+  --config /etc/substation-mcp/config.yaml \
   --host 127.0.0.1 --port 8080 \
   --public-url https://mcp.example.com
 ```
@@ -162,11 +162,11 @@ and endpoints.
 Or via Docker:
 
 ```sh
-docker build --platform linux/amd64 -f deploy/Dockerfile -t openstack-mcp:local .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
 docker run --rm -p 8080:8080 \
   -v /path/to/clouds.yaml:/etc/openstack/clouds.yaml:ro \
-  -v /path/to/config.yaml:/etc/openstack-mcp/config.yaml:ro \
-  openstack-mcp:local
+  -v /path/to/config.yaml:/etc/substation-mcp/config.yaml:ro \
+  substation-mcp:local
 ```
 
 ### 5. Connect an MCP client
@@ -186,7 +186,7 @@ claude mcp add --transport http openstack \
 {
   "mcpServers": {
     "openstack": {
-      "command": "/usr/bin/openstack-mcp",
+      "command": "/usr/bin/substation-mcp",
       "args": ["stdio", "--cloud", "mycloud"],
       "env": {
         "OS_AUTH_TOKEN": "<keystone-token>"
@@ -208,7 +208,7 @@ claude mcp add --transport http openstack \
 
 TLS terminates at the proxy; the server binds `127.0.0.1` (or `0.0.0.0`
 inside a container) in plaintext. See `deploy/caddy/Caddyfile` and
-`deploy/nginx/openstack-mcp.conf` for ready-to-use configs. The critical
+`deploy/nginx/substation-mcp.conf` for ready-to-use configs. The critical
 setting: **disable response buffering** for the `/v1` and `/mcp` paths
 (Caddy: `flush_interval -1`; nginx: `proxy_buffering off; proxy_cache off;`)
 so SSE streams are not buffered.
@@ -288,7 +288,7 @@ accepts. Two modes:
 - `--mode operator` — all methods (default)
 
 ```sh
-openstack-mcp access-rules --mode read-only --services compute,network
+substation-mcp access-rules --mode read-only --services compute,network
 # → {"rules": [{"match": "GET /servers", "service": "compute"}, ...]}
 ```
 
@@ -298,9 +298,9 @@ openstack-mcp access-rules --mode read-only --services compute,network
 ### `tools`
 
 ```sh
-openstack-mcp tools                  # human-readable table (15 tools)
-openstack-mcp tools --read-only      # 9 read-only tools
-openstack-mcp tools --json           # machine-readable JSON
+substation-mcp tools                  # human-readable table (15 tools)
+substation-mcp tools --read-only      # 9 read-only tools
+substation-mcp tools --json           # machine-readable JSON
 ```
 
 ## Security model
@@ -320,7 +320,7 @@ openstack-mcp tools --json           # machine-readable JSON
   that require write scope.
 - **No held user credentials.** The server holds application-credential secrets
   only for the login page (URL-mode elicitation); they are zeroized after use.
-- **Access rules.** Use `openstack-mcp access-rules` to generate the
+- **Access rules.** Use `substation-mcp access-rules` to generate the
   Keystone access-rule JSON for application credentials. Combine with
   `keystonemiddleware` for per-service path enforcement.
 - **TLS off-host.** The server does not terminate TLS (phase 1); a reverse
@@ -355,14 +355,14 @@ openstack-mcp tools --json           # machine-readable JSON
 ### Docker
 
 ```sh
-docker build --platform linux/amd64 -f deploy/Dockerfile -t openstack-mcp:local .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
 docker run --rm -p 8080:8080 \
   -v $(pwd)/clouds.yaml:/etc/openstack/clouds.yaml:ro \
-  -v $(pwd)/config.yaml:/etc/openstack-mcp/config.yaml:ro \
-  openstack-mcp:local
+  -v $(pwd)/config.yaml:/etc/substation-mcp/config.yaml:ro \
+  substation-mcp:local
 ```
 
-The container runs as non-root user `openstack-mcp` (uid 10001) on
+The container runs as non-root user `substation-mcp` (uid 10001) on
 `ubi10-minimal`. The builder stage is `swift:6.4-rhel-ubi10` (same as
 `scripts/swift`).
 
@@ -372,18 +372,18 @@ The container runs as non-root user `openstack-mcp` (uid 10001) on
 ### systemd
 
 ```sh
-sudo install -m 755 ./.build/release/openstack-mcp /usr/bin/openstack-mcp
-sudo install -m 644 deploy/openstack-mcp.service /etc/systemd/system/
-sudo mkdir -p /etc/openstack-mcp
-sudo cp config.yaml /etc/openstack-mcp/
-# Create /etc/openstack-mcp/env with OSMCP_* variables (optional)
+sudo install -m 755 ./.build/release/substation-mcp /usr/bin/substation-mcp
+sudo install -m 644 deploy/substation-mcp.service /etc/systemd/system/
+sudo mkdir -p /etc/substation-mcp
+sudo cp config.yaml /etc/substation-mcp/
+# Create /etc/substation-mcp/env with OSMCP_* variables (optional)
 sudo systemctl daemon-reload
-sudo systemctl enable --now openstack-mcp
+sudo systemctl enable --now substation-mcp
 ```
 
 ### Reverse proxy
 
-See `deploy/caddy/Caddyfile` and `deploy/nginx/openstack-mcp.conf`. Both
+See `deploy/caddy/Caddyfile` and `deploy/nginx/substation-mcp.conf`. Both
 disable response buffering for `/v1` and `/mcp` (required for SSE).
 
 ### Genestack (Kubernetes / OpenStack)
@@ -398,22 +398,22 @@ pseudo-production and production OpenStack clouds.
 ```sh
 # 1. Build + push the image (amd64):
 docker build --platform linux/amd64 -f deploy/Dockerfile \
-  -t <registry>/openstack/openstack-mcp:<tag> .
-docker push <registry>/openstack/openstack-mcp:<tag>
+  -t <registry>/openstack/substation-mcp:<tag> .
+docker push <registry>/openstack/substation-mcp:<tag>
 
 # 2. Install the chart into the Genestack cluster (on the controller node):
-./deploy/genestack/install-openstack-mcp.sh \
-  --set image.repository=<registry>/openstack/openstack-mcp \
+./deploy/genestack/install-substation-mcp.sh \
+  --set image.repository=<registry>/openstack/substation-mcp \
   --set image.tag=<tag>
 
 # 3. Register the MCP service in Keystone (one-time, as admin):
 OS_CLOUD=mycloud REGION=RegionOne \
-PUBLIC_URL=https://openstack-mcp.<domain.tld> \
+PUBLIC_URL=https://substation-mcp.<domain.tld> \
 ./deploy/register-catalog.sh
 
 # 4. Connect a client:
 claude mcp add --transport http openstack \
-  https://openstack-mcp.<domain.tld>/v1 \
+  https://substation-mcp.<domain.tld>/v1 \
   --header "Authorization: Bearer <keystone-token>"
 ```
 
@@ -425,7 +425,7 @@ upgrading, troubleshooting — lives in
 > **Note:** the Docker and systemd paths above are for non-Kubernetes hosts.
 > Genestack is Kubernetes and consumes the container image, not the native
 > UBI10 rootfs tarball (`scripts/build-image.sh`) or the systemd unit
-> (`deploy/openstack-mcp.service`).
+> (`deploy/substation-mcp.service`).
 
 ## Development
 
@@ -436,7 +436,7 @@ seeded data (3 projects, servers, networks, volumes, images, SGs, routers).
 It is used by all tests and is also runnable as a standalone binary:
 
 ```sh
-scripts/swift run openstack-mcp-fake   # starts on :8080 (adjust in source)
+scripts/swift run substation-mcp-fake   # starts on :8080 (adjust in source)
 ```
 
 Seeded credentials:
@@ -459,8 +459,8 @@ mutations: create/delete network+subnet+port) requires `OSMCP_IT_MUTATE=1`.
 ### Conformance (HTTP smoke)
 
 `scripts/conformance.sh` drives the full MCP Streamable-HTTP handshake against a
-**running** `openstack-mcp serve` using the binary itself as the HTTP client
-(`openstack-mcp conformance`, a hidden subcommand — no curl, which is absent from
+**running** `substation-mcp serve` using the binary itself as the HTTP client
+(`substation-mcp conformance`, a hidden subcommand — no curl, which is absent from
 the ubi10-minimal runtime). It asserts, in order: 401 challenge on an
 unauthenticated request, the PRM document shape (`resource` /
 `authorization_servers` / `scopes_supported`), `initialize` → 200 +
@@ -505,8 +505,8 @@ Sources/
   OpenStackClient/        # OpenStack API client (no MCP knowledge)
   OpenStackMCPServer/     # MCP server logic (catalog, tools, policy, sessions)
   HummingbirdMCP/         # Hummingbird ⇄ MCP SDK transport adapter (OpenStack-free)
-  openstack-mcp/          # executable: serve, stdio, healthz, check, access-rules, tools, register-catalog
-  openstack-mcp-fake/     # executable: standalone fake cloud
+  substation-mcp/          # executable: serve, stdio, healthz, check, access-rules, tools, register-catalog
+  substation-mcp-fake/     # executable: standalone fake cloud
   FakeOpenStack/          # in-process fake cloud (test support)
 Tests/
   OpenStackClientTests/
@@ -516,12 +516,12 @@ Tests/
 IntegrationTests/          # opt-in, real-cloud (OSMCP_IT_CLOUD); self-skips in CI
 deploy/
   Dockerfile
-  openstack-mcp.service
+  substation-mcp.service
   register-catalog.sh
   caddy/Caddyfile
-  nginx/openstack-mcp.conf
+  nginx/substation-mcp.conf
 specs/
-  openstack-mcp-spec.md   # the specification
+  substation-mcp-spec.md   # the specification
 docs/
   superpowers/plans/      # implementation plans
 scripts/

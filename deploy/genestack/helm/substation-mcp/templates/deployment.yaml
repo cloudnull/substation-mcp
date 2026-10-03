@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "openstack-mcp.fullname" . }}
-  namespace: {{ include "openstack-mcp.namespace" . }}
+  name: {{ include "substation-mcp.fullname" . }}
+  namespace: {{ include "substation-mcp.namespace" . }}
   labels:
-    {{- include "openstack-mcp.labels" . | nindent 4 }}
+    {{- include "substation-mcp.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas }}
   selector:
     matchLabels:
-      {{- include "openstack-mcp.selectorLabels" . | nindent 6 }}
+      {{- include "substation-mcp.selectorLabels" . | nindent 6 }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -18,7 +18,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "openstack-mcp.selectorLabels" . | nindent 8 }}
+        {{- include "substation-mcp.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -33,11 +33,11 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "openstack-mcp.serviceAccountName" . }}
+      serviceAccountName: {{ include "substation-mcp.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: openstack-mcp
+        - name: substation-mcp
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
@@ -59,7 +59,7 @@ spec:
             {{- end }}
           volumeMounts:
             - name: config
-              mountPath: /etc/openstack-mcp/config.yaml
+              mountPath: /etc/substation-mcp/config.yaml
               subPath: config.yaml
               readOnly: true
             - name: clouds
@@ -90,10 +90,10 @@ spec:
       volumes:
         - name: config
           configMap:
-            name: {{ include "openstack-mcp.fullname" . }}-config
+            name: {{ include "substation-mcp.fullname" . }}-config
         - name: clouds
           secret:
-            secretName: {{ include "openstack-mcp.fullname" . }}-clouds
+            secretName: {{ include "substation-mcp.fullname" . }}-clouds
             items:
               - key: clouds.yaml
                 path: clouds.yaml

@@ -1,4 +1,4 @@
-# config.yaml for running openstack-mcp serve against the sat0 local cloud.
+# config.yaml for running substation-mcp serve against the sat0 local cloud.
 #
 # Bind to 0.0.0.0 so the conformance smoke (run from the container/host) can
 # reach it. In a real deployment, put a TLS reverse proxy (Caddy/nginx) in

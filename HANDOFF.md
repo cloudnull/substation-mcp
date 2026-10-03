@@ -15,10 +15,10 @@
 - **Tests**: **451 tests, 0 failures** across the full suite (up from 373 at Phase 1 close).
 - **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
-- **Native image**: `scripts/build-image.sh` → `dist/openstack-mcp-aarch64-ubi10-v*.tar.gz`
+- **Native image**: `scripts/build-image.sh` → `dist/substation-mcp-aarch64-ubi10-v*.tar.gz`
   (UBI10 rootfs, see `deploy/NATIVE-AARCH64.md`). Note: the current tarball predates the
   version-negotiation + octavia-v2 commits — rebuild if you need a deployable with them.
-- **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance`
+- **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `substation-mcp conformance`
   subcommand; 6-step handshake, `--read-only` for read-scoped tokens).
 - **Real-cloud proof (Rackspace sjc3, 2026-10-03)**: `check` valid + versions
   (compute 2.100 / volumev3 3.70); conformance **6/6 PASS**; `os_list` for **all 5**
@@ -30,7 +30,7 @@
 
 - **License: MIT.** `substation-mcp` is to be licensed MIT. The `LICENSE` file has been
   added (Copyright (c) 2026 Kevin Carter). Still to do: add the license badge/section to the
-  README and confirm the project rename from `openstack-mcp` → `substation-mcp` is complete
+  README and confirm the project rename from `substation-mcp` → `substation-mcp` is complete
   (target remote `cloudnull/substation-mcp`).
 
 ## Post-Phase-1 Work (Phase 2/3 → Versioning)
@@ -117,8 +117,8 @@ tools/call os_whoami (returns real identity: project admin, region SAT0, all 9
 services, roles reader/member/admin/manager/glance_admin), DELETE.
 
 ### Native aarch64 image
-`scripts/build-image.sh TAG=v0.1.0` → `dist/openstack-mcp-aarch64-ubi10-v0.1.0.tar.gz`
-(27 MB UBI10 rootfs: binary at `/usr/local/bin/openstack-mcp`, `openstack-mcp`
+`scripts/build-image.sh TAG=v0.1.0` → `dist/substation-mcp-aarch64-ubi10-v0.1.0.tar.gz`
+(27 MB UBI10 rootfs: binary at `/usr/local/bin/substation-mcp`, `substation-mcp`
 uid 10001, `/etc/openstack*` mount points) + `.manifest.json`. See
 `deploy/NATIVE-AARCH64.md`. `dist/sat0/{clouds.yaml,config.yaml,clouds-it.yaml}`
 are working config templates (app-cred secret scrubbed).
@@ -160,7 +160,7 @@ The shared-transport design could not reach the fake's services: the fake served
 New SwiftPM test target `OpenStackMCPIntegrationTests` (path `IntegrationTests`). Self-skips unless `OSMCP_IT_CLOUD` is set. Pass 1 read-only (whoami, clouds, list servers/networks/volumes/images, describe). Pass 2 network-only mutation (network→subnet→port, reverse cleanup, best-effort) gated by `OSMCP_IT_MUTATE=1` so CI never mutates. Drives `OpenStackClient` directly against a real cloud.
 
 ### Conformance (spec §14.5)
-- Hidden `openstack-mcp conformance` subcommand (`main.swift`, `shouldDisplay: false`) drives the full Streamable-HTTP handshake with the binary as the HTTP client (`URLSession`/FoundationNetworking — no curl, which is absent from ubi10-minimal): 401 challenge, PRM shape, initialize→200+MCP-Session-Id, tools/list (15/9), os_whoami, DELETE. Exit 0/1.
+- Hidden `substation-mcp conformance` subcommand (`main.swift`, `shouldDisplay: false`) drives the full Streamable-HTTP handshake with the binary as the HTTP client (`URLSession`/FoundationNetworking — no curl, which is absent from ubi10-minimal): 401 challenge, PRM shape, initialize→200+MCP-Session-Id, tools/list (15/9), os_whoami, DELETE. Exit 0/1.
 - `scripts/conformance.sh` (executable) is a thin wrapper: locates the built binary and `exec`s `conformance` with the caller's args (`--url ... --token ...` or `--auth-url ... --app-cred-id ... --app-cred-secret ...`, `--read-only` for the 9-tool surface).
 - README documents the conformance flow + MCP Inspector manual steps.
 
@@ -173,11 +173,11 @@ New SwiftPM test target `OpenStackMCPIntegrationTests` (path `IntegrationTests`)
 ## Task 21 Implementation Notes (new)
 
 ### Deployment assets (`deploy/`)
-- **`Dockerfile`**: multi-stage — builder `swift:6.4-rhel-ubi10`, runtime `ubi10-minimal` + `ca-certificates`. Non-root user uid 10001. `EXPOSE 8080`. `ENTRYPOINT openstack-mcp serve --host 0.0.0.0 --port 8080`. Dynamic release build (static not achievable — ICU symbols).
-- **`openstack-mcp.service`**: hardened systemd unit — `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `EnvironmentFile=-/etc/openstack-mcp/env`.
+- **`Dockerfile`**: multi-stage — builder `swift:6.4-rhel-ubi10`, runtime `ubi10-minimal` + `ca-certificates`. Non-root user uid 10001. `EXPOSE 8080`. `ENTRYPOINT substation-mcp serve --host 0.0.0.0 --port 8080`. Dynamic release build (static not achievable — ICU symbols).
+- **`substation-mcp.service`**: hardened systemd unit — `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `EnvironmentFile=-/etc/substation-mcp/env`.
 - **`register-catalog.sh`**: idempotent wrapper. Mints admin token from app-cred or password if `OS_AUTH_TOKEN` unset. Required env: `OS_CLOUD`, `REGION`, `PUBLIC_URL`.
 - **`caddy/Caddyfile`**: reverse proxy, `flush_interval -1` for SSE on `/v1` and `/mcp`.
-- **`nginx/openstack-mcp.conf`**: `proxy_buffering off; proxy_cache off;` on `/v1/` and `/mcp/`.
+- **`nginx/substation-mcp.conf`**: `proxy_buffering off; proxy_cache off;` on `/v1/` and `/mcp/`.
 
 ### README (full rewrite)
 Tools table, architecture diagram, quickstart (check → register-catalog → serve → client setup), config reference (spec §11.2), all 7 subcommands, security model, observability, deployment (docker/systemd/proxy), development (fake, integration test, repo layout).
@@ -191,7 +191,7 @@ Attempts `--static-swift-stdlib` first, falls back to dynamic release (ICU symbo
 
 ## Task 20 Implementation Notes (new)
 
-### Testable cores in `OpenStackMCPServer` + thin CLI shims in `openstack-mcp`
+### Testable cores in `OpenStackMCPServer` + thin CLI shims in `substation-mcp`
 - `CheckReport.swift`: `CheckReport.build(config:)` — connectivity (per region), `region_required` warn, `catalog_mismatch` warn (only if `server.enableCatalogChecks`).
 - `AccessRule.swift`: `AccessRulesGenerator.rules(mode:project:region:services:resources:)` — read-only = 15 tools, operator = 14 non-write. `AccessRulePaths` = single source for tool → `service/resource` mapping.
 - `CatalogRegistrar.swift`: idempotent per region — find-or-create `type=mcp` service, then public/internal/admin endpoints.
@@ -566,6 +566,6 @@ public struct XRegion: Sendable {
 ### Git / SDD Discipline
 - Commit per task with descriptive message
 - Merge to main after each task, sync worktree
-- SDD ledger at `.superpowers/sdd/2026-09-28-openstack-mcp-phase-1/progress.md` (gitignored, local-only)
-- Plan at `docs/superpowers/plans/2026-09-28-openstack-mcp-phase-1.md`
-- Spec at `specs/openstack-mcp-spec.md`
+- SDD ledger at `.superpowers/sdd/2026-09-28-substation-mcp-phase-1/progress.md` (gitignored, local-only)
+- Plan at `docs/superpowers/plans/2026-09-28-substation-mcp-phase-1.md`
+- Spec at `specs/substation-mcp-spec.md`

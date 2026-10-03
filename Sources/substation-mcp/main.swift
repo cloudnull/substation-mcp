@@ -12,7 +12,7 @@ import OpenStackMCPServer
 /// OpenStack MCP server.
 struct OpenStackMCP: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "openstack-mcp",
+        commandName: "substation-mcp",
         abstract: "Expose an OpenStack cloud as an MCP server.",
         subcommands: [
             ServeCommand.self,
@@ -60,7 +60,7 @@ struct ServeCommand: AsyncParsableCommand {
         let tokenStore = TokenStore(logger: logger)
         let app = ServeApp(config: cfg, cloud: cloudEntry, tokenStore: tokenStore, logger: logger)
 
-        logger.info("openstack-mcp serving", metadata: [
+        logger.info("substation-mcp serving", metadata: [
             "cloud": "\(cloudEntry.name)",
             "host": "\(cfg.serverHost)",
             "port": "\(cfg.serverPort)",
@@ -116,7 +116,7 @@ struct StdioCommand: AsyncParsableCommand {
         let server = await factory(identity)
 
         let transport = StdioTransport(logger: nil)
-        logger.info("openstack-mcp running over stdio", metadata: [
+        logger.info("substation-mcp running over stdio", metadata: [
             "cloud": "\(cloudEntry.name)",
             "project": "\(vt.token.project.id)",
         ])

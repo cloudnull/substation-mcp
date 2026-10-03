@@ -11,7 +11,7 @@ public struct LinkExecutor: Sendable {
     public let waiter: Waiter
     public let logger: Logger
 
-    public init(client: OpenStackClient, catalog: ResourceCatalog, waiter: Waiter, logger: Logger = Logger(label: "openstack-mcp-links")) {
+    public init(client: OpenStackClient, catalog: ResourceCatalog, waiter: Waiter, logger: Logger = Logger(label: "substation-mcp-links")) {
         self.client = client
         self.catalog = catalog
         self.waiter = waiter

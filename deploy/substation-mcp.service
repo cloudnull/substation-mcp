@@ -1,6 +1,6 @@
 [Unit]
 Description=OpenStack MCP Server (Hummingbird/Swift)
-Documentation=file:///etc/openstack-mcp/README.md
+Documentation=file:///etc/substation-mcp/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -23,10 +23,10 @@ SystemCallFilter=~ @privileged @resources
 
 # OSMCP_* env vars (e.g. OSMCP_SERVER__METRICS_TOKEN, OSMCP_LOG__LEVEL).
 # File is optional (- prefix); absence is not an error.
-EnvironmentFile=-/etc/openstack-mcp/env
+EnvironmentFile=-/etc/substation-mcp/env
 
 # The binary is installed to /usr/bin by the packaging step.
-ExecStart=/usr/bin/openstack-mcp serve --config /etc/openstack-mcp/config.yaml
+ExecStart=/usr/bin/substation-mcp serve --config /etc/substation-mcp/config.yaml
 
 # Graceful shutdown: give in-flight SSE sessions time to finish.
 TimeoutStopSec=30

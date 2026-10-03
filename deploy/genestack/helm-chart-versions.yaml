@@ -3,10 +3,10 @@
 # docs/genestack-structure-and-files.md). Append one indented line under it:
 #
 charts:
-  openstack-mcp: 0.1.0
+  substation-mcp: 0.1.0
 
 # The version must match the `version:` field in
-# deploy/genestack/helm/openstack-mcp/Chart.yaml.
+# deploy/genestack/helm/substation-mcp/Chart.yaml.
 #
 # If the chart is published to a Helm repo (instead of used in-tree),
 # the version is the chart version in that repo.
