@@ -362,14 +362,16 @@ docker run --rm -p 8080:8080 \
   substation-mcp:local
 ```
 
-The container runs as non-root user `substation-mcp` (uid 10001) on
-`almalinux:10` (public RHEL 10-compatible base). The builder stage is
-`swift:6.4-rhel-ubi10` (same as `scripts/swift`). The dynamic release binary
-is bundled with the Swift runtime and its runtime libraries.
+The container runs as non-root user `substation-mcp` (uid 10001) on genuine
+Red Hat **UBI10 minimal** (`registry.access.redhat.com/ubi10-minimal`, freely
+pullable with no login). The builder stage is `swift:6.4-rhel-ubi10` (same as
+`scripts/swift`). The dynamic release binary is bundled with the Swift runtime
+and its runtime libraries.
 
-> **Note:** the runtime is a RHEL 10-compatible image. We use the public
-> `almalinux:10` base instead of `ubi10-minimal` because the UBI10 images
-> require a Red Hat subscription login that a public CI runner does not have.
+> **Note:** the runtime is UBI10 minimal, using **microdnf** (the -minimal
+> image has no full dnf). EPEL is enabled by writing the repo file directly.
+> The base already ships libcurl/libstdc++/libssl/libnghttp2/krb5/glibc, so
+> only `libicu` + `glibc-langpack-en` are installed.
 
 ### systemd
 

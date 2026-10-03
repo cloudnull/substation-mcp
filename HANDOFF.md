@@ -173,7 +173,7 @@ New SwiftPM test target `OpenStackMCPIntegrationTests` (path `IntegrationTests`)
 ## Task 21 Implementation Notes (new)
 
 ### Deployment assets (`deploy/`)
-- **`Dockerfile`**: multi-stage — builder `swift:6.4-rhel-ubi10`, runtime `almalinux:10` (public RHEL10-compatible; UBI10 needs a RH subscription login CI doesn't have) + `ca-certificates` + the dynamic Swift runtime + its dnf runtime libs. Non-root user uid 10001. `EXPOSE 8080`. `ENTRYPOINT substation-mcp serve --host 0.0.0.0 --port 8080`. Dynamic release build (static not achievable — ICU symbols).
+- **`Dockerfile`**: multi-stage — builder `swift:6.4-rhel-ubi10`, runtime `registry.access.redhat.com/ubi10-minimal` (genuine Red Hat UBI10, freely pullable with no login) + EPEL (repo file written directly, no epel-release RPM in UBI repos) + the dynamic Swift runtime. Package manager is **microdnf** (no full dnf in -minimal); the base already ships libcurl/libstdc++/libssl/libnghttp2/krb5/glibc, so only `libicu` + `glibc-langpack-en` are installed. Non-root user uid 10001. `EXPOSE 8080`. `ENTRYPOINT substation-mcp serve --host 0.0.0.0 --port 8080`. Dynamic release build (static not achievable — ICU symbols).
 - **`substation-mcp.service`**: hardened systemd unit — `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `EnvironmentFile=-/etc/substation-mcp/env`.
 - **`register-catalog.sh`**: idempotent wrapper. Mints admin token from app-cred or password if `OS_AUTH_TOKEN` unset. Required env: `OS_CLOUD`, `REGION`, `PUBLIC_URL`.
 - **`caddy/Caddyfile`**: reverse proxy, `flush_interval -1` for SSE on `/v1` and `/mcp`.

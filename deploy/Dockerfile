@@ -1,8 +1,10 @@
 # OpenStack MCP — multi-stage build (spec §13)
 #
 # Builder: swift:6.4-rhel-ubi10 (same toolchain used by scripts/swift).
-# Runtime: almalinux:10 (public RHEL10-compatible base) + ca-certificates +
-# the dynamic Swift runtime. Non-root user uid 10001.
+# Runtime: registry.access.redhat.com/ubi10-minimal (genuine Red Hat UBI10 /
+# RHEL 10, freely pullable with no login) + EPEL + the dynamic Swift runtime.
+# Non-root user uid 10001. Package manager in the runtime is microdnf (no full
+# dnf in the -minimal image).
 #
 # Build (from repo root):
 #   docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
@@ -13,13 +15,13 @@
 #     -v /path/to/config.yaml:/etc/substation-mcp/config.yaml:ro \
 #     substation-mcp:local
 #
-# NOTE on the runtime base: the runtime is a RHEL 10-compatible image. We use
-# docker.io/almalinux:10 (public, no registry auth) rather than
-# registry.access.redhat.com/ubi10/ubi10-minimal — the UBI10 images require a
-# Red Hat subscription login, which a public CI runner does not have, so the
-# build would fail with 401. AlmaLinux 10 is binary-compatible with RHEL 10
-# and provides the same glibc/dnf runtime the dynamic Swift binary needs. The
-# *builder* stage still uses the official swift:6.4-rhel-ubi10 toolchain image.
+# NOTE on the runtime base: genuine Red Hat UBI10 minimal, pulled from
+# registry.access.redhat.com/ubi10-minimal (the free Red Hat "access"
+# registry) — freely pullable with no login, confirmed. EPEL is enabled by
+# writing the repo file directly (the UBI repos carry no epel-release RPM).
+# The -minimal base already ships libcurl/libstdc++/libssl/libnghttp2/krb5/
+# glibc, so only libicu + glibc-langpack-en are installed. The *builder* stage
+# uses the official swift:6.4-rhel-ubi10 toolchain image.
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────────
 FROM --platform=linux/amd64 swift:6.4-rhel-ubi10 AS builder
@@ -27,6 +29,13 @@ FROM --platform=linux/amd64 swift:6.4-rhel-ubi10 AS builder
 WORKDIR /src
 COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
+# Tests/ + IntegrationTests/ must exist for Package.swift's manifest to parse
+# (it declares test targets, incl. IntegrationTests with a custom path); the
+# release build does not compile them, but `swift build` fails with
+# "'src': Source files for target ... should be located under ..." if the
+# directories are absent.
+COPY Tests/ Tests/
+COPY IntegrationTests/ IntegrationTests/
 
 # Release build. On UBI10/Swift 6.4 the fully-static link fails (static
 # Foundation references ICU symbols not in the static path), so attempt
@@ -43,27 +52,24 @@ RUN set -eux; \
     test -x /build/release/substation-mcp
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────────
-FROM docker.io/library/almalinux:10 AS runtime
+# Genuine Red Hat UBI10 (RHEL 10), freely pullable without a Red Hat login.
+# The -minimal variant is built for microdnf (no full dnf).
+FROM registry.access.redhat.com/ubi10-minimal:latest AS runtime
 
-# TLS roots + every runtime lib the (dynamically-linked) Swift binary needs.
-# From `ldd` of the release binary: glibc stack, libstdc++, libicu (Foundation
-# ICU backend), libcurl + libnghttp2, openssl (libssl/libcrypto), and the
-# curl→krb5/unistring/selinux/pcre2/z transitive set. ca-certificates for
-# TLS roots. almalinux:10 ships none of these, so install them explicitly.
-# Note: the almalinux:10 amd64 base ships libcurl-minimal, which conflicts
-# with full libcurl. --allowerasing lets dnf replace it. The binary needs
-# libcurl.so.4 + libnghttp2 for HTTPS (the MCP client uses URLSession/
-# FoundationNetworking over libcurl on Linux).
-RUN dnf install -y --allowerasing \
-        ca-certificates \
-        glibc glibc-langpack-en \
-        libstdc++ \
-        libicu \
-        libcurl libnghttp2 \
-        openssl-libs \
-        krb5-libs libunistring libselinux pcre2 \
-        zlib \
-        && dnf clean all
+# Enable EPEL (microdnf has no epel-release RPM in the UBI repos, so write the
+# repo file directly) and refresh the metadata cache. EPEL is a standing
+# preference for this image even though the current binary's deps are all in
+# the baseos/appstream repos.
+RUN printf '[epel]\nname=Extra Packages for Enterprise Linux 10\nbaseurl=https://download.fedoraproject.org/pub/epel/10/Everything/$basearch/\nenabled=1\ngpgcheck=1\ngpgkey=https://download.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-$releasever\n' \
+        > /etc/yum.repos.d/epel.repo \
+    && microdnf makecache
+
+# The ubi10-minimal base already ships libcurl, libstdc++, libssl, libnghttp2,
+# krb5 and glibc (verified via ldconfig). The only runtime libs the dynamic
+# Swift binary additionally needs are the ICU data/lib (Foundation's ICU
+# backend) and the English locale pack. Install just those.
+RUN microdnf install -y libicu glibc-langpack-en \
+    && microdnf clean all
 
 # Non-root user.
 RUN groupadd -g 10001 substation-mcp \
