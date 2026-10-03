@@ -1,9 +1,11 @@
 # openstack-mcp
 
 A Hummingbird-hosted Swift MCP (Model Context Protocol) server that lets an LLM
-client consume an OpenStack cloud — identity (Keystone), compute (Nova),
-network (Neutron), block storage (Cinder), and image (Glance) — through a small
-set of catalog-driven tools.
+client consume an OpenStack cloud — identity (Keystone), compute (Nova), network
+(Neutron), block storage (Cinder), image (Glance), object storage (Swift), key
+management (Barbican), load balancing (Octavia), DNS (Designate), container
+infrastructure (Magnum), orchestration (Heat), and shared file systems (Manila) —
+through a small set of catalog-driven tools.
 
 Identity is **token-per-request**: every HTTP request carries a Keystone token
 (`Authorization: Bearer <token>`). The server validates it and uses only that
@@ -56,14 +58,28 @@ openstack-mcp serve
   │
   ▼
 OpenStackClient (stateless per-identity actor)
-  ├── Transport (async-http-client, retry, request-id)
+  ├── Transport (async-http-client, retry, request-id, redirects,
+  │               per-request token override, multi-endpoint overrideBase)
+  ├── EndpointResolver (routes each call to the service's real catalog endpoint)
+  ├── VersionNegotiator (per-service microversion + version-unit negotiation)
   ├── Cache (TTL + per-token invalidation)
-  ├── KeystoneService (token decode, catalog, scopes)
+  ├── KeystoneService (identity: token decode, catalog, scopes)
   ├── ComputeService (Nova)
   ├── NetworkService (Neutron)
-  ├── BlockStorageService (Cinder)
-  └── ImageService (Glance)
+  ├── BlockStorageService (Cinder v3)
+  ├── ImageService (Glance v2)
+  ├── ObjectStorageService (Swift)
+  ├── KeyManagerService (Barbican)
+  ├── LoadBalancerService (Octavia v2)
+  ├── DNSService (Designate)
+  ├── ContainerService (Magnum)
+  ├── OrchestrationService (Heat)
+  └── ShareService (Manila)
 ```
+
+The 15 MCP verb tools (`os_list`, `os_get`, `os_create`, …) are **stable**
+(additive-only invariant): new OpenStack services are exposed as new *resources*
+under the existing verbs, not as new tools.
 
 ## Build & test
 

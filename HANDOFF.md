@@ -1,15 +1,66 @@
-# Handoff: OpenStack MCP Phase 1 — COMPLETE
+# Handoff: OpenStack MCP — Phase 1 + Phase 2/3 + Multi-Endpoint + Versioning COMPLETE
 
 ## Current State
 
-- **Phase 1 is complete** (all 22 tasks + `console_url`), and **three real-cloud integration bugs found while wiring to sat0 are fixed**.
-- **Branch**: `openstack-mcp` in worktree `/Users/cloudnull/Projects/openstack-mcp/.worktrees/openstack-mcp/`
-- **Latest commit**: `36330b8` fix(conformance): assert on the result envelope, not the tool name
-- **Tests**: 373 tests, all green across 5 targets (38 OpenStackMCP / 134 server / 2 / 155 client / 44 HummingbirdMCP)
-- **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64, `--cpus 8 --memory 16g`)
-- **Native image**: `scripts/build-image.sh` → `dist/openstack-mcp-aarch64-ubi10-v0.1.0.tar.gz` (UBI10 rootfs, see `deploy/NATIVE-AARCH64.md`)
-- **Real-cloud proof**: live sat0 conformance **6/6 PASS** (see below)
-- **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance` subcommand)
+- **Phase 1 complete** (22 tasks + `console_url`), **three sat0 real-cloud bugs fixed**, plus
+  **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**, and
+  **P2 per-service scopes** — all validated against a real Rackspace sjc3 cloud.
+- **Branch**: `main` (commits land directly on main; the worktree ff-merges).
+- **Latest commits** (newest first):
+  - `e6ed9a2` chore: gitignore `.openstack-credentials.md` (keep creds local-only)
+  - `43b7b32` fix(octavia): use v2 (Rackspace) + pass token to version negotiator in stateless mode
+  - `a43f08c` feat(versioning): negotiate API versions across service types (real cloud formats)
+  - `2c74ac3` feat(auth): P2 per-service scopes (config-gated) + form-mode elicitation hardening
+  - `6bde5b4` feat(routing): per-service multi-endpoint resolution (catalog = authoritative base)
+- **Tests**: **451 tests, 0 failures** across the full suite (up from 373 at Phase 1 close).
+- **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
+- **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
+- **Native image**: `scripts/build-image.sh` → `dist/openstack-mcp-aarch64-ubi10-v*.tar.gz`
+  (UBI10 rootfs, see `deploy/NATIVE-AARCH64.md`). Note: the current tarball predates the
+  version-negotiation + octavia-v2 commits — rebuild if you need a deployable with them.
+- **Conformance smoke**: `scripts/conformance.sh` (wraps the hidden `openstack-mcp conformance`
+  subcommand; 6-step handshake, `--read-only` for read-scoped tokens).
+- **Real-cloud proof (Rackspace sjc3, 2026-10-03)**: `check` valid + versions
+  (compute 2.100 / volumev3 3.70); conformance **6/6 PASS**; `os_list` for **all 5**
+  services PASS (server/volume/image/secret/load_balancer); nova microversion header
+  **confirmed sent** (`X-OpenStack-Nova-API-Version: 2.100`). See
+  `.superpowers/sdd/version-negotiation-plan.md`.
+
+## Post-Phase-1 Work (Phase 2/3 → Versioning)
+
+Added after Phase 1, each validated against real clouds and committed on main:
+
+- **Phase 2/3 services** — 7 more OpenStack services wired as resources under the stable
+  15 verbs: Swift (object-store), Barbican (key-manager), Octavia (load-balancer),
+  Designate (dns), Magnum (container-infra), Heat (orchestration), Manila (share).
+- **Multi-endpoint routing** (`6bde5b4`) — `EndpointResolver` routes each call to the
+  service's real catalog endpoint (`Transport.overrideBase`). The catalog URL is the
+  authoritative base; a per-service `serviceRoot` handles clouds that omit the version
+  root in the catalog (Rackspace: glance→`v2`, barbican→`v1`, octavia→`v2`, cinder→`v3`,
+  neutron→`v2.0`). Token-id backfill for Rackspace's whoami (which omits `token.id`).
+- **Version negotiation** (`a43f08c`, `43b7b32`) — `VersionNegotiator` + per-service
+  `ServiceVersionProfile`. Parses **both** the real `{"versions":[...]}` array form and the
+  legacy `{"version":{...}}` object form; the `Transport` follows redirects (max 3) and
+  accepts 200/300 for version-doc fetches (curl-verified Rackspace: nova `/v2.1/` → 200
+  legacy-form max 2.100; cinder `/v3` → 302 → `/v3/` → 200 array-form max 3.71). Nova sends
+  its negotiated microversion on every request; Cinder sends `OpenStack-API-Version: volume 3.70`.
+  `check` resolves each service's endpoint before negotiating so versions print on
+  multi-endpoint clouds. The `VersionNegotiator` takes a `tokenOverride` for stateless
+  (serve/check) mode where the transport has no standing token source.
+- **P2 per-service scopes** (`2c74ac3`) — config-gated `auth.scopes: per_service`
+  (default `coarse`): a write token may mutate only services present in its own token catalog.
+  Plus form-mode elicitation hardening (the login prompt advertises only URL-mode/client-mint).
+
+### Real-cloud gotchas (Rackspace sjc3, curl-verified)
+- **Token**: `.openstack-credentials.md` holds a literal user token (send as-is in
+  `x-auth-token`; Keystone 3.14 also wants `x-subject-token` on whoami — the Transport sends
+  both). It is **short-lived**; a fresh one + an app-cred are now in the (gitignored) file.
+- **App-cred minting** must **omit the scope block** — Rackspace returns 401
+  "Application credentials cannot request a scope" when one is present.
+- **Octavia is v2** on Rackspace (catalog omits the version; `/v1/loadbalancers` 404s,
+  `/v2/loadbalancers` 200s). MCP resource names: octavia = `load_balancer`, barbican = `secret`.
+- **nova 500** was our decode bug (`listServers` needed `/servers/detail`, not `/servers`);
+  **glance 300** was the version-root bug (catalog omits `/v2` → `serviceRoot: v2`).
 
 ## Real-cloud integration against sat0 (2026-10-01)
 
