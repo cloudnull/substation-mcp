@@ -50,7 +50,11 @@ FROM docker.io/library/almalinux:10 AS runtime
 # ICU backend), libcurl + libnghttp2, openssl (libssl/libcrypto), and the
 # curl→krb5/unistring/selinux/pcre2/z transitive set. ca-certificates for
 # TLS roots. almalinux:10 ships none of these, so install them explicitly.
-RUN dnf install -y \
+# Note: the almalinux:10 amd64 base ships libcurl-minimal, which conflicts
+# with full libcurl. --allowerasing lets dnf replace it. The binary needs
+# libcurl.so.4 + libnghttp2 for HTTPS (the MCP client uses URLSession/
+# FoundationNetworking over libcurl on Linux).
+RUN dnf install -y --allowerasing \
         ca-certificates \
         glibc glibc-langpack-en \
         libstdc++ \
