@@ -189,6 +189,35 @@ Attempts `--static-swift-stdlib` first, falls back to dynamic release (ICU symbo
 - **Apple Container stdout forwarding**: child process stdout NOT forwarded to host file redirects — verify CLI output via unit tests.
 - **Static build failure**: `--static-swift-stdlib` fails with undefined ICU references (`swift_ucasemap_open`, `swift_ures_open`, etc.).
 
+## Genestack deployment (LIVE, 2026-10-03)
+
+Deployed to the Genestack cluster at **172.16.27.67**, namespace `openstack`, image
+`ghcr.io/cloudnull/substation-mcp:latest`. Auth is **token-per-request** (the server
+holds no credentials; it validates each client Bearer token against the in-cluster
+Keystone `keystone-api.openstack.svc.cluster.local:5000`, region `SAT0`).
+
+External exposure (full Gateway API): FQDN **`substation.api.sat0.cloudnull.dev`** →
+`substation-https` listener patched onto the shared `flex-gateway` (envoy-gateway ns) →
+HTTPRoute `substation-mcp-route` → Service `substation-mcp:8080`. TLS via cert-manager
+`Certificate substation-gw-tls-secret` (issuer `letsencrypt-prod`, HTTP-01 through
+flex-gateway). Verified: pod 1/1 Ready, `/healthz`+`/readyz` 200, and
+`https://substation.api.sat0.cloudnull.dev/v1` → `HTTP/2 401 {"error":"unauthorized"}`
+(full TLS→Gateway→Service→pod→MCP-auth chain works; 401 = auth correctly enforced).
+
+**Root cause of the long `readyz`/`connectTimeout` blocker** (pod stuck 0/1 for 2h while
+curl reached Keystone in ~8ms): the helm chart default
+`client.max_connections_per_host: 0`. AsyncHTTPClient treats `0` as "open ZERO HTTP/1.1
+connections to the host", so every request waited forever for a connection that was never
+created (`/proc/nent/tcp` showed no SYN ever sent, ELG threads idle). Fixed: chart default
+0→16 + `Transport` clamps the soft limit to `>= 1` (commit `209df54`). The nsswitch.conf,
+30s connect timeout, and explicit `MultiThreadedEventLoopGroup` changes (commit `b300c14`)
+were correct hardening but NOT the cause.
+
+**REMAINING**: a live authenticated `os_whoami`/conformance against the real sat0 cloud
+needs a Keystone token (admin app-cred or password to mint) — not yet run. The in-process
+MCP data-plane is covered by the 457 green tests (`HummingbirdMCPTests` full Streamable-HTTP
+handshake incl. `os_whoami` against the fake).
+
 ## Task 20 Implementation Notes (new)
 
 ### Testable cores in `OpenStackMCPServer` + thin CLI shims in `substation-mcp`
