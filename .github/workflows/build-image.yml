@@ -18,11 +18,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Image tag override (default: short SHA + latest)"
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -58,7 +53,6 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=branch
             type=raw,enable={{is_default_branch}},value=latest
-            type=raw,enable={{is_input}},value=${{ inputs.tag }}
 
       - name: Build and push image (linux/amd64)
         uses: docker/build-push-action@v6
