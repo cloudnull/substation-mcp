@@ -88,7 +88,8 @@ public struct ComputeRegion: Sendable {
                 transport: transport,
                 cache: cache,
                 profile: profile,
-                endpointBase: { ep.overrideBase }
+                endpointBase: { ep.overrideBase },
+                tokenOverride: vt.token.id
             )
             do {
                 // The version doc lives at the service root (the resolved path
@@ -621,7 +622,8 @@ public struct ComputeRegion: Sendable {
             transport: transport,
             cache: cache,
             profile: profile,
-            endpointBase: { ep.overrideBase }
+            endpointBase: { ep.overrideBase },
+            tokenOverride: vt.token.id
         )
         return try await negotiator.negotiate(region: region, versionDocPath: ep.pathPrefix).version
     }

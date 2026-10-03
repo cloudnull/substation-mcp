@@ -34,6 +34,11 @@ public actor VersionNegotiator {
     /// The base URL to fetch the version doc from (the service endpoint). When
     /// nil the request goes under the cloud authURL with the versionDocPath.
     private let endpointBase: @Sendable () async -> URL?
+    /// A token to send as `X-Auth-Token` on the version-doc fetch. Required when
+    /// the transport is stateless (serve/`check` mode, where requests carry an
+    /// explicit token override rather than a standing token source). Nil when the
+    /// transport has a standing token source.
+    private let tokenOverride: String?
     private let logger: Logger
 
     public init(
@@ -41,12 +46,14 @@ public actor VersionNegotiator {
         cache: Cache,
         profile: ServiceVersionProfile,
         endpointBase: @escaping @Sendable () async -> URL? = { nil },
+        tokenOverride: String? = nil,
         logger: Logger = Logger(label: "version-negotiator")
     ) {
         self.transport = transport
         self.cache = cache
         self.profile = profile
         self.endpointBase = endpointBase
+        self.tokenOverride = tokenOverride
         self.logger = logger
     }
 
@@ -79,6 +86,7 @@ public actor VersionNegotiator {
             method: "GET",
             service: profile.serviceType,
             path: path,
+            tokenOverride: tokenOverride,
             overrideBase: base,
             tolerate3xx: true
         )

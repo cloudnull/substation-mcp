@@ -248,9 +248,11 @@ struct EndpointResolverTests {
         #expect(barbican.base.absoluteString == "https://barbican.api.sjc3.example.com")
         #expect(barbican.pathPrefix == "v1")
 
-        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "SJC3", basePath: "loadbalancer/v1", serviceRoot: "v1", fallbackBase: fb)
+        // Rackspace octavia is v2 (the catalog omits the version root; the client
+        // adds the v2 serviceRoot).
+        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "SJC3", basePath: "loadbalancer/v2", serviceRoot: "v2", fallbackBase: fb)
         #expect(octavia.base.absoluteString == "https://octavia.api.sjc3.example.com")
-        #expect(octavia.pathPrefix == "v1")
+        #expect(octavia.pathPrefix == "v2")
     }
 
     /// The same services in a conventional (fake) catalog where the version root
@@ -264,7 +266,7 @@ struct EndpointResolverTests {
                 CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/barbican/v1")!)
             ]),
             CatalogEntry(type: "load-balancer", name: "octavia", endpoints: [
-                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/loadbalancer/v1")!)
+                CatalogEndpoint(region: "R1", interface: "public", url: URL(string: "http://k.local/loadbalancer/v2")!)
             ])
         ]), preferredInterface: "public")
 
@@ -272,8 +274,8 @@ struct EndpointResolverTests {
         #expect(glance.base.absoluteString == "http://k.local/glance/v2")
         #expect(glance.pathPrefix == "")
 
-        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "R1", basePath: "loadbalancer/v1", serviceRoot: "v1", fallbackBase: URL(string: "http://k.local")!)
-        #expect(octavia.base.absoluteString == "http://k.local/loadbalancer/v1")
+        let octavia = try r.resolveEndpoint(serviceType: "load-balancer", region: "R1", basePath: "loadbalancer/v2", serviceRoot: "v2", fallbackBase: URL(string: "http://k.local")!)
+        #expect(octavia.base.absoluteString == "http://k.local/loadbalancer/v2")
         #expect(octavia.pathPrefix == "")
     }
 }

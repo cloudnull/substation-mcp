@@ -6,7 +6,7 @@ import NIOCore
 
 /// Fake Octavia (load balancer) implementation.
 ///
-/// Routes live under `/loadbalancer/v1/*`. Standard OpenStack REST shape:
+/// Routes live under `/loadbalancer/v2/*`. Standard OpenStack REST shape:
 /// collections at `/loadbalancers`, `/listeners`, `/pools`, `/members`,
 /// `/healthmonitors`; items at `/<collection>/{id}`. List responses wrap items
 /// in a keyed envelope (`{"loadbalancers":[...]}`); item/POST responses return
@@ -14,7 +14,7 @@ import NIOCore
 /// `{"faultblock": {"code": ..., "title": ..., "description": ...}}`.
 public struct OctaviaFake {
     public static func registerRoutes(_ router: Router<BasicRequestContext>, state: FakeState) {
-        let base = "/loadbalancer/v1"
+        let base = "/loadbalancer/v2"
 
         registerCollection(router, state: state, base: base, collection: "loadbalancers") { state, projectID, req in
             let name = Self.queryParam("name", from: req)

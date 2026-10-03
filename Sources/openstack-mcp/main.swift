@@ -193,7 +193,8 @@ struct CheckCommand: AsyncParsableCommand {
                 )
                 let negotiator = VersionNegotiator(
                     transport: wiring.transport, cache: wiring.cache,
-                    profile: profile, endpointBase: { ep.overrideBase }, logger: logger
+                    profile: profile, endpointBase: { ep.overrideBase },
+                    tokenOverride: vt.token.id, logger: logger
                 )
                 do { versions[svc] = try await negotiator.negotiate(region: region, versionDocPath: ep.pathPrefix).version }
                 catch { /* service absent or unreachable — skip */ }

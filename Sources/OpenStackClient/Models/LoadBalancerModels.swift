@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Octavia (load balancer) models — phase 2
 //
-// Keystone service type: `loadbalancer`. API base path: `loadbalancer/v1`
+// Keystone service type: `loadbalancer`. API base path: `loadbalancer/v2`
 // (Octavia's API version root is `/v1/<project>`; the fake uses the project-
 // scoped path). Resources: load_balancer (pollable — provisioning ->
 // active), listener, pool, member, health_monitor.
