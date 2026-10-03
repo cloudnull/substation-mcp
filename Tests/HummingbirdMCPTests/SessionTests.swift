@@ -303,6 +303,7 @@ struct ServeSessionTests {
             let body = bodyString(listResp)
             #expect(body.contains("os_create"), "write token should see os_create: \(body)")
             #expect(body.contains("os_delete"), "write token should see os_delete: \(body)")
+            #expect(body.contains("os_task_submit"), "write token should see os_task_submit: \(body)")
         }
     }
 

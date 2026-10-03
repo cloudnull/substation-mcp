@@ -145,6 +145,46 @@ public enum AllTools {
                 annotations: .init(readOnlyHint: true, destructiveHint: false)
             ),
             Tool(
+                name: "os_task_submit",
+                description: "Start a long-running wait as a task. Returns immediately with a task_id and the current status; the poll continues in the background. Use os_task_status to poll it and os_task_cancel to stop it. Prefer this over os_wait when the wait may outlive the client's request timeout.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
+                        "id": .object(["type": .string("string")]),
+                        "region": .object(["type": .string("string")]),
+                        "until": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
+                        "timeout_seconds": .object(["type": .string("integer")]),
+                    ]),
+                    "required": .array([.string("resource"), .string("id")]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
+                name: "os_task_status",
+                description: "Poll a task submitted by os_task_submit. Returns its state (submitted/running/succeeded/failed/timed_out/cancelled), last observed status, and — once terminal — the final result. Tasks are scoped to the presenting token.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "task_id": .object(["type": .string("string")]),
+                    ]),
+                    "required": .array([.string("task_id")]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
+                name: "os_task_cancel",
+                description: "Cancel a running task submitted by os_task_submit. Stops the background poll and marks the task cancelled. No-op (error) if the task is unknown, foreign, or already terminal.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "task_id": .object(["type": .string("string")]),
+                    ]),
+                    "required": .array([.string("task_id")]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
                 name: "os_create",
                 description: "Create an OpenStack resource. Call os_describe(resource:) first for the create schema. dry_run validates without creating.",
                 inputSchema: .object([

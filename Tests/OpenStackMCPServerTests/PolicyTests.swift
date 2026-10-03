@@ -31,14 +31,15 @@ struct PolicyTests {
         #expect(effective.descriptor("service") != nil, "service should not be denied")
     }
 
-    @Test("read-only tool set has exactly 9 tools")
+    @Test("read-only tool set has 9 verb tools + 3 task tools")
     func readOnlyToolSet() {
         let policy = Policy(readOnly: true)
         let tools = policy.toolsEnabled()
-        #expect(tools.count == 9, "Expected 9 read-only tools, got \(tools.count): \(tools.sorted())")
+        #expect(tools.count == 12, "Expected 12 read-only tools, got \(tools.count): \(tools.sorted())")
         let expected: Set<String> = [
             "os_list", "os_get", "os_describe", "os_topology",
-            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait"
+            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait",
+            "os_task_submit", "os_task_status", "os_task_cancel"
         ]
         #expect(tools == expected)
     }

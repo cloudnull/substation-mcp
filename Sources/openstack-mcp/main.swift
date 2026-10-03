@@ -281,7 +281,7 @@ struct ToolsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "tools", abstract: "Dump the tool list (name, description, annotations, inputSchema) for the effective policy.")
 
     @Flag(name: .long, help: "Machine-readable JSON output.") var json: Bool = false
-    @Flag(name: .long, help: "Read-only policy (9 tools) instead of the full set (15).") var readOnly: Bool = false
+    @Flag(name: .long, help: "Read-only policy (9 verb + 3 task tools) instead of the full set (15 verb + 3 task).") var readOnly: Bool = false
 
     func run() async throws {
         let catalog = ResourceCatalog.phase1()
@@ -368,7 +368,7 @@ struct ConformanceCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Keystone auth URL to mint a token if --token is unset.") var authURL: String?
     @Option(name: .long, help: "App credential id (mint).") var appCredID: String?
     @Option(name: .long, help: "App credential secret (mint).") var appCredSecret: String?
-    @Flag(name: .long, help: "Expect a read-only (9-tool) tools/list instead of 15.") var readOnly: Bool = false
+    @Flag(name: .long, help: "Expect a read-only (12-tool) tools/list instead of 18.") var readOnly: Bool = false
 
     struct Step: Sendable {
         let name: String
@@ -473,11 +473,14 @@ struct ConformanceRunner {
             return steps
         }
 
-        // 2. tools/list -> 200, 9 (read-only) or 15 (write) tools.
+        // 2. tools/list -> 200, 12 (read-only) or 18 (write) tools.
+        // The 15 verb tools + 3 task-lifecycle tools (os_task_submit/status/
+        // cancel, the Path C shim). Read-only sees the 9 read verbs + the 3
+        // read-scoped task tools.
         let listBody = #"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#
         let (listStatus, _, listResp) = await raw(endpoint: endpoint, method: "POST", token: tokenID, sessionID: sid, body: listBody)
-        let expectedCount = expectReadOnly ? 9 : 15
-        let toolNames = ["os_list","os_get","os_describe","os_topology","os_find","os_whoami","os_quota","os_clouds","os_wait","os_create","os_update","os_delete","os_action","os_attach","os_detach"]
+        let expectedCount = expectReadOnly ? 12 : 18
+        let toolNames = ["os_list","os_get","os_describe","os_topology","os_find","os_whoami","os_quota","os_clouds","os_wait","os_create","os_update","os_delete","os_action","os_attach","os_detach","os_task_submit","os_task_status","os_task_cancel"]
         let present = toolNames.filter { listResp.contains("\"\($0)\"") }
         let listOk = listStatus == 200 && present.count == expectedCount
         steps.append(.init(name: "tools/list (\(expectedCount) tools)", ok: listOk, detail: "status=\(listStatus) found=\(present.count)/\(expectedCount)"))

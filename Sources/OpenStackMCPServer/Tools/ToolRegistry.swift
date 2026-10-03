@@ -24,10 +24,16 @@ public struct RequestIdentity: Sendable {
     }
 }
 
-/// The tool registry: maps the 15 MCP tools to OpenStack client calls.
+/// The tool registry: maps the MCP tools to OpenStack client calls.
 ///
-/// The registry is scope-aware: a read-only token gets 9 tools,
-/// a write-scoped token gets all 15.
+/// Two families:
+/// - **15 verb tools** (the stable, additive-only set: os_list, os_get, …)
+/// - **3 task-lifecycle tools** (os_task_submit/status/cancel, the Path C shim
+///   for long-running waits; read-scoped)
+///
+/// The registry is scope-aware: a read-only token gets the 9 read verbs + the 3
+/// task tools (12); a write-scoped token gets all 15 verbs + the 3 task tools
+/// (18).
 public struct ToolRegistry: Sendable {
     /// How write scope is enforced (spec §6.1.2 / P2 per-service scopes).
     public enum ScopeMode: Sendable {
@@ -52,6 +58,12 @@ public struct ToolRegistry: Sendable {
     /// Per-identity (per-token) sliding-window tool-call rate limiter
     /// (spec §12: `policy.max_calls_per_minute`, default 120/min).
     public let callLimiter: ToolCallLimiter
+    /// Server-scoped store for the `os_task_*` shim (MCP Tasks, Path C).
+    /// Shared by every per-identity registry on the server; keyed by token id
+    /// internally so each token sees only its own tasks. Defaults to the
+    /// process-wide shared instance so existing constructions/tests are
+    /// unaffected; the serve path passes a server-scoped one.
+    public let taskRegistry: TaskRegistry
 
     public init(
         client: OpenStackClient,
@@ -61,7 +73,8 @@ public struct ToolRegistry: Sendable {
         scopeMode: ScopeMode = .coarse,
         logger: Logger = Logger(label: "openstack-mcp"),
         auditEnabled: Bool = true,
-        callLimiter: ToolCallLimiter? = nil
+        callLimiter: ToolCallLimiter? = nil,
+        taskRegistry: TaskRegistry? = nil
     ) {
         self.client = client
         self.catalog = policy.effective(catalog)
@@ -74,6 +87,10 @@ public struct ToolRegistry: Sendable {
         // the default so existing constructions/tests are unaffected; the
         // serve path passes a real one sized to `policy.maxCallsPerMinute`.
         self.callLimiter = callLimiter ?? ToolCallLimiter(limitPerMinute: .max)
+        // A task store that persists for the process lifetime is the default;
+        // the serve path passes a server-scoped one so tasks survive the
+        // per-identity registry being re-created on each request.
+        self.taskRegistry = taskRegistry ?? TaskRegistry.shared
     }
 
     /// In `perService` mode, the set of catalog service types the token may
@@ -134,6 +151,7 @@ public struct ToolRegistry: Sendable {
         return [
             "os_list", "os_get", "os_describe", "os_topology",
             "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait",
+            "os_task_submit", "os_task_status", "os_task_cancel",
             "os_create", "os_update", "os_delete", "os_action",
             "os_attach", "os_detach",
         ]
@@ -247,6 +265,9 @@ public struct ToolRegistry: Sendable {
             case "os_find": outcome = (try await handleFind(params), nil)
             case "os_topology": outcome = (try await handleTopology(params), nil)
             case "os_wait": outcome = (try await handleWait(params, server: server), nil)
+            case "os_task_submit": outcome = (try await handleTaskSubmit(params), nil)
+            case "os_task_status": outcome = (try await handleTaskStatus(params), nil)
+            case "os_task_cancel": outcome = (try await handleTaskCancel(params), nil)
             case "os_create": outcome = (try await handleCreate(params), nil)
             case "os_update": outcome = (try await handleUpdate(params), nil)
             case "os_delete": outcome = (try await handleDelete(params), nil)
@@ -647,6 +668,151 @@ public struct ToolRegistry: Sendable {
         )
 
         let (text, val) = resultText(outcome)
+        return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    }
+
+    // MARK: - Task shim handlers (MCP Tasks, Path C)
+
+    /// Start a background wait and return a `task_id` immediately.
+    private func handleTaskSubmit(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        let resourceName = try argString(params, "resource")
+        let id = try argString(params, "id")
+        let region = try await resolveRegion(params)
+        let until = argStringArray(params, "until")
+        let timeoutSeconds = argInt(params, "timeout_seconds") ?? 120
+        let vt = identity.vt
+        let tokenID = vt.token.id
+        let taskRegistry = self.taskRegistry
+
+        // Validate up front (same rules os_wait uses) so a bad call fails
+        // fast with a 4xx instead of spawning a task that immediately dies.
+        guard let descriptor = catalog.descriptor(resourceName) else {
+            throw OpenStackError(
+                service: "mcp", status: 400, code: "unknownResource",
+                message: "Unknown resource: \(resourceName). Valid: \(catalog.names.sorted().joined(separator: ", "))"
+            )
+        }
+        // Validate `until` against known states (mirror Waiter.validStates).
+        if let until, !until.isEmpty {
+            var known = Set(descriptor.terminalStates)
+            known.insert("ERROR"); known.insert("killed")
+            let bad = until.filter { !known.contains($0) }
+            guard bad.isEmpty else {
+                throw OpenStackError(
+                    service: "mcp", status: 400, code: "invalidState",
+                    message: "Unknown state(s) \(bad.joined(separator: ", ")). Valid states for \(resourceName): \(Array(known).sorted().joined(separator: ", "))"
+                )
+            }
+        }
+
+        let taskID = await taskRegistry.submit(
+            tokenID: tokenID, resource: resourceName, resourceID: id, region: region
+        )
+
+        // Snapshot the current status so the submit response is informative
+        // without blocking on the settle. Best-effort: a fetch failure just
+        // means we report no initial status.
+        let waiter = Waiter(client: client, catalog: catalog, logger: logger)
+        var initialStatus: String?
+        do {
+            initialStatus = try await waiter.probeStatus(vt, descriptor: descriptor, id: id, region: region)
+        } catch {
+            initialStatus = nil
+        }
+
+        // Spawn the background poll. It writes its terminal state back into the
+        // store; cancellation is handled by the store holding the Task handle.
+        // `waiter` (a Sendable struct) is captured by value, as is client/
+        // catalog/logger — no mutable self is retained.
+        let handle = Task { [waiter] in
+            let start = Date()
+            do {
+                let result = try await waiter.wait(
+                    vt, resource: resourceName, id: id, region: region,
+                    until: until, timeout: TimeInterval(timeoutSeconds),
+                    progressToken: nil, server: nil
+                )
+                let status = result["status"]?.stringValue ?? ""
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: .succeeded,
+                    lastStatus: status,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: result["polls"]?.intValue,
+                    result: result, message: nil
+                )
+            } catch let e as OpenStackError {
+                let state: TaskState = e.code == "timeout" ? .timedOut : .failed
+                // A 404 "no longer exists" during a wait means the resource
+                // vanished; surface that as a "deleted" status. Otherwise the
+                // error text (in `message`) is the full detail.
+                let lastStatus: String? = (e.status == 404) ? "deleted" : nil
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: state,
+                    lastStatus: lastStatus,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: nil, result: nil, message: e.message
+                )
+            } catch {
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: .failed,
+                    lastStatus: nil,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: nil, result: nil, message: error.localizedDescription
+                )
+            }
+        }
+        await taskRegistry.attachHandle(handle, for: taskID)
+
+        let result: [String: JSONValue] = [
+            "task_id": .string(taskID),
+            "resource": .string(resourceName),
+            "id": .string(id),
+            "region": .string(region),
+            "state": .string("running"),
+            "current_status": .string(initialStatus ?? ""),
+            "timeout_seconds": .integer(timeoutSeconds),
+            "note": .string("Task started. Poll with os_task_status(task_id); stop with os_task_cancel(task_id)."),
+        ]
+        let (text, val) = resultText(result)
+        return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    }
+
+    private func handleTaskStatus(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        let taskID = try argString(params, "task_id")
+        let tokenID = identity.vt.token.id
+        guard let entry = await taskRegistry.status(tokenID: tokenID, taskID: taskID) else {
+            throw OpenStackError(service: "mcp", status: 404, code: "unknownTask",
+                message: "Unknown task: \(taskID). Tasks are scoped to the presenting token and expire after a short TTL once terminal.")
+        }
+        var result: [String: JSONValue] = [
+            "task_id": .string(entry.taskID),
+            "state": .string(entry.state.rawValue),
+            "resource": .string(entry.resource),
+            "id": .string(entry.resourceID),
+            "region": .string(entry.region),
+        ]
+        if let s = entry.lastStatus { result["status"] = .string(s) }
+        if let e = entry.elapsedSeconds { result["elapsedSeconds"] = .float(e) }
+        if let p = entry.polls { result["polls"] = .integer(p) }
+        if let msg = entry.message { result["message"] = .string(msg) }
+        if let r = entry.result { result["result"] = .object(r) }
+        let (text, val) = resultText(result)
+        return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    }
+
+    private func handleTaskCancel(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        let taskID = try argString(params, "task_id")
+        let tokenID = identity.vt.token.id
+        guard let state = await taskRegistry.cancel(tokenID: tokenID, taskID: taskID) else {
+            throw OpenStackError(service: "mcp", status: 404, code: "unknownTask",
+                message: "Cannot cancel task: \(taskID). Unknown, foreign to this token, or already terminal.")
+        }
+        let result: [String: JSONValue] = [
+            "task_id": .string(taskID),
+            "state": .string(state.rawValue),
+            "message": .string("Task cancelled."),
+        ]
+        let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
 

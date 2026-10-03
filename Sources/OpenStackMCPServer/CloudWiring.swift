@@ -83,6 +83,11 @@ public struct CloudWiring: Sendable {
         // One shared limiter for the whole server, keyed by token id, so
         // concurrent sessions presenting the same token share a budget.
         let callLimiter = ToolCallLimiter(limitPerMinute: policy.maxCallsPerMinute, logger: logger)
+        // One shared task store for the whole server (MCP Tasks shim, Path C).
+        // Keyed by token id internally, so each token sees only its own tasks,
+        // and a task survives the per-identity registry being re-created on
+        // each request (submit in one call, status/cancel in later calls).
+        let taskRegistry = TaskRegistry(logger: logger)
         return { identity in
             let scopes = identity.scopes.compactMap { TokenScope(rawValue: $0) }
             do {
@@ -105,7 +110,8 @@ public struct CloudWiring: Sendable {
                     scopeMode: scopeMode,
                     logger: logger,
                     auditEnabled: auditEnabled,
-                    callLimiter: callLimiter
+                    callLimiter: callLimiter,
+                    taskRegistry: taskRegistry
                 )
                 return await registry.makeServer()
             } catch {
@@ -137,7 +143,8 @@ public struct CloudWiring: Sendable {
                     scopeMode: scopeMode,
                     logger: logger,
                     auditEnabled: auditEnabled,
-                    callLimiter: callLimiter
+                    callLimiter: callLimiter,
+                    taskRegistry: taskRegistry
                 )
                 return await registry.makeServer()
             }

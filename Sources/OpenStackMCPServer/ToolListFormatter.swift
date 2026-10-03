@@ -9,19 +9,24 @@ import OpenStackClient
 /// table. This is the documentation/diff artifact.
 public enum ToolListFormatter {
     /// The tool names a session of the given scope would see.
+    ///
+    /// Both scopes see the 3 task-lifecycle tools (os_task_submit/status/cancel,
+    /// the Path C shim) — they are read-scoped. Read-only sees 9 verbs + 3 tasks
+    /// (12); write sees 15 verbs + 3 tasks (18).
     public static func toolNames(readOnly: Bool) -> [String] {
+        let taskTools = ["os_task_submit", "os_task_status", "os_task_cancel"]
         if readOnly {
             return [
                 "os_list", "os_get", "os_describe", "os_topology",
                 "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait",
-            ]
+            ] + taskTools
         }
         return [
             "os_list", "os_get", "os_describe", "os_topology",
             "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait",
             "os_create", "os_update", "os_delete", "os_action",
             "os_attach", "os_detach",
-        ]
+        ] + taskTools
     }
 
     /// Build the full `[Tool]` list (name/description/schema/annotations) for

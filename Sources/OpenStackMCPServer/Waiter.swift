@@ -160,6 +160,15 @@ public struct Waiter: Sendable {
         )
     }
 
+    /// One-shot, non-looping read of a resource's current status string. Used
+    /// by the task shim to make `os_task_submit` responses informative without
+    /// blocking on the settle. Reuses the same per-service `getRaw` switch as
+    /// the polling loop.
+    public func probeStatus(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async throws -> String {
+        let raw = try await getRaw(vt, descriptor: descriptor, id: id, region: region)
+        return raw["status"]?.stringValue ?? ""
+    }
+
     /// Whether the resource exposes a status a waiter can poll. Mirrors the
     /// pollable set in `getRaw`.
     private func supportsWaiting(_ descriptor: ResourceDescriptor) -> Bool {

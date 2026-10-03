@@ -6,8 +6,8 @@ import OpenStackClient
 // MARK: - tools subcommand (spec §11.3)
 
 /// Tests the `tools` subcommand's output via `ToolListFormatter`:
-/// `--json` machine output (15 tools for write, 9 for read-only) and the
-/// human table.
+/// `--json` machine output (18 tools for write = 15 verbs + 3 task tools,
+/// 12 for read-only = 9 verbs + 3 task tools) and the human table.
 @Suite("Tools Subcommand", .timeLimit(.minutes(2)))
 struct SubcommandTests {
 
@@ -17,14 +17,14 @@ struct SubcommandTests {
         return arr.compactMap { $0["name"] as? String }
     }
 
-    @Test("tools --json (write) lists 15 tools")
+    @Test("tools --json (write) lists 18 tools")
     func toolsJSONWrite() throws {
         let tools = ToolListFormatter.tools(readOnly: false, catalog: ResourceCatalog.phase1())
         let json = try ToolListFormatter.json(tools)
         let names = try decodeNames(json)
-        #expect(names.count == 15, "Expected 15 write-scoped tools, got \(names.count): \(names)")
-        // Spot-check a few mutating + read tools.
-        for n in ["os_list", "os_get", "os_create", "os_delete", "os_attach", "os_detach", "os_action"] {
+        #expect(names.count == 18, "Expected 18 write-scoped tools, got \(names.count): \(names)")
+        // Spot-check a few mutating + read + task tools.
+        for n in ["os_list", "os_get", "os_create", "os_delete", "os_attach", "os_detach", "os_action", "os_task_submit", "os_task_status", "os_task_cancel"] {
             #expect(names.contains(n), "missing tool \(n)")
         }
         // Valid JSON with name/description/annotations/inputSchema keys.
@@ -37,15 +37,18 @@ struct SubcommandTests {
         }
     }
 
-    @Test("tools --read-only --json lists 9 tools")
+    @Test("tools --read-only --json lists 12 tools")
     func toolsJSONReadOnly() throws {
         let tools = ToolListFormatter.tools(readOnly: true, catalog: ResourceCatalog.phase1())
         let json = try ToolListFormatter.json(tools)
         let names = try decodeNames(json)
-        #expect(names.count == 9, "Expected 9 read-only tools, got \(names.count): \(names)")
-        // Mutating tools must be absent.
+        #expect(names.count == 12, "Expected 12 read-only tools, got \(names.count): \(names)")
+        // Mutating tools must be absent; the 3 read-scoped task tools present.
         for n in ["os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach"] {
             #expect(!names.contains(n), "read-only should not include \(n)")
+        }
+        for n in ["os_task_submit", "os_task_status", "os_task_cancel"] {
+            #expect(names.contains(n), "read-only should include task tool \(n)")
         }
     }
 

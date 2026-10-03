@@ -226,8 +226,8 @@ struct InProcessMCPTests {
         // connect() already ran initialize; the server is ready.
     }
 
-    @Test("write-scoped token sees 15 tools")
-    func writeTokenSees15Tools() async throws {
+    @Test("write-scoped token sees the 15 verb tools + 3 task tools")
+    func writeTokenSeesVerbAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
         let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
@@ -235,14 +235,19 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        #expect(names.count == 15, "Expected 15 tools, got \(names.count): \(names.sorted())")
+        // 15 verb tools (the stable, additive-only set) + 3 task-lifecycle
+        // tools (os_task_submit/status/cancel, the Path C shim).
+        #expect(names.count == 18, "Expected 18 tools, got \(names.count): \(names.sorted())")
         #expect(names.contains("os_create"))
         #expect(names.contains("os_delete"))
         #expect(names.contains("os_list"))
+        #expect(names.contains("os_task_submit"))
+        #expect(names.contains("os_task_status"))
+        #expect(names.contains("os_task_cancel"))
     }
 
-    @Test("read-only token sees 9 tools")
-    func readOnlyTokenSees9Tools() async throws {
+    @Test("read-only token sees the 9 read verbs + 3 task tools")
+    func readOnlyTokenSeesReadAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
         let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-ro", secret: "secret-ro")
@@ -250,11 +255,15 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        #expect(names.count == 9, "Expected 9 tools, got \(names.count): \(names.sorted())")
+        // 9 read-only verb tools + 3 read-scoped task tools = 12.
+        #expect(names.count == 12, "Expected 12 tools, got \(names.count): \(names.sorted())")
         #expect(!names.contains("os_create"))
         #expect(!names.contains("os_delete"))
         #expect(names.contains("os_list"))
         #expect(names.contains("os_describe"))
+        #expect(names.contains("os_task_submit"))
+        #expect(names.contains("os_task_status"))
+        #expect(names.contains("os_task_cancel"))
     }
 
     @Test("os_whoami reports scopes")
