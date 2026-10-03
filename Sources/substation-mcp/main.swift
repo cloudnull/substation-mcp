@@ -1,9 +1,12 @@
 import ArgumentParser
+import AsyncHTTPClient
 import Foundation
 import Hummingbird
 import HummingbirdMCP
 import Logging
 import MCP
+import NIOCore
+import NIOPosix
 import OpenStackClient
 import OpenStackMCPServer
 
@@ -22,6 +25,8 @@ struct OpenStackMCP: AsyncParsableCommand {
             AccessRulesCommand.self,
             ToolsCommand.self,
             RegisterCatalogCommand.self,
+            ProvisionCommand.self,
+            WaitSecretCommand.self,
             ConformanceCommand.self,
         ],
         defaultSubcommand: nil
@@ -351,6 +356,166 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         } catch {
             throw CLIExit(code: 1, message: "register-catalog: \(error)")
         }
+    }
+}
+
+// MARK: - provision (service user + application credential)
+//
+// Idempotently creates the substation-mcp service user in the OpenStack
+// `service` domain (mirroring `nova_service_user`) and its application
+// credential, then prints a JSON result. Used by the Helm chart's provisioner
+// Job (post-install hook) to create the deployment's standing identity from
+// operator-supplied admin credentials. The admin token is resolved as:
+//   --admin-token > OS_AUTH_TOKEN > --app-cred-id/--app-cred-secret >
+//   --username/--password (OS_USERNAME/OS_PASSWORD).
+struct ProvisionCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "provision",
+        abstract: "Idempotently create the service user + application credential (prints JSON)."
+    )
+
+    @Option(name: .long, help: "Config file (YAML).") var config: String?
+    @Option(name: .long, help: "Cloud name (from clouds.yaml).") var cloud: String?
+    @Option(name: .long, help: "Username to create/reuse in the service domain.") var username: String = "substation"
+    @Option(name: .long, help: "Domain to create the user in.") var domain: String = "service"
+    @Option(name: .long, help: "Name of the application credential.") var appCredName: String = "substation-cred"
+    @Option(name: .long, help: "Comma-separated roles to grant (default: admin).") var roles: String = "admin"
+
+    // Admin token (resolved, see above):
+    @Option(name: .long, help: "Identity-admin token (X-Auth-Token).") var adminToken: String?
+    @Option(name: .long, help: "App-cred id to mint the admin token from.") var appCredID: String?
+    @Option(name: .long, help: "App-cred secret to mint the admin token from.") var appCredSecret: String?
+    @Option(name: .long, help: "Username (password auth to mint the admin token from).") var adminUser: String?
+    @Option(name: .long, help: "Domain of the admin user (password auth).") var adminUserDomain: String?
+    @Option(name: .long, help: "Password of the admin user (password auth).") var adminPassword: String?
+
+    @Option(name: .long, help: "Log level.") var logLevel: String = "info"
+
+    func run() async throws {
+        let cfg = ConfigLoader.load(args: ["config": config, "logLevel": logLevel])
+        let logger = makeLogger(level: cfg.logLevel, format: "logfmt", sink: .standardError)
+        let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+
+        let wiring = CloudWiring(config: cfg, cloud: cloudEntry, logger: logger)
+        defer { wiring.shutdown() }
+
+        // Resolve the admin token: explicit > OS_AUTH_TOKEN > app-cred mint > password mint.
+        let admin: String
+        if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
+            admin = t
+        } else if let id = appCredID ?? ProcessInfo.processInfo.environment["OS_APPLICATION_CREDENTIAL_ID"],
+                  let secret = appCredSecret ?? ProcessInfo.processInfo.environment["OS_APPLICATION_CREDENTIAL_SECRET"] {
+            let minter = LoginMinter(transport: wiring.transport, logger: logger)
+            let minted = try await minter.mint(method: .applicationCredential(id: id, secret: Array(secret.utf8).map { Int8($0) }))
+            admin = minted.id
+        } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
+                  let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
+            let minter = LoginMinter(transport: wiring.transport, logger: logger)
+            let minted = try await minter.mint(method: .password(userID: u, domain: adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "admin", password: p, projectName: nil))
+            admin = minted.id
+        } else {
+            throw CLIError(message: "provision: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred (--app-cred-id/--app-cred-secret), and no password (--admin-user/--admin-password) supplied")
+        }
+
+        do {
+            let roleList = roles.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let provisioner = ServiceProvisioner(
+                username: username,
+                domainName: domain,
+                appCredName: appCredName,
+                roles: roleList,
+                adminToken: admin,
+                transport: wiring.transport,
+                logger: logger
+            )
+            let result = try await provisioner.ensureServiceIdentity()
+
+            // Emit machine-readable JSON on stdout (the provisioner Job's sidecar
+            // captures it and writes the app-cred to a k8s Secret).
+            let secretValue: String = result.appCredSecret ?? ""
+            let json = """
+            {
+              "user_id": "\(result.userID)",
+              "username": "\(result.username)",
+              "domain": "\(result.domainName)",
+              "app_cred_id": "\(result.appCredID)",
+              "app_cred_name": "\(result.appCredName)",
+              "app_cred_secret": "\(secretValue)",
+              "app_cred_secret_created": \(result.appCredSecret != nil),
+              "user_reused": \(result.userReused),
+              "app_cred_reused": \(result.appCredReused)
+            }
+            """
+            print(json)
+        } catch {
+            throw CLIExit(code: 1, message: "provision: \(error)")
+        }
+    }
+}
+
+// MARK: - wait-secret (blocks until a key appears in a k8s Secret)
+//
+// Used as the provisioner Job's sidecar: after the Job's main container
+// (kustomize) writes the app-cred Secret, this blocks until the Secret (or a
+// specific key) exists, so the Job does not report success prematurely.
+struct WaitSecretCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "wait-secret",
+        abstract: "Block until a k8s Secret (and optionally a key) exists."
+    )
+
+    @Option(name: .long, help: "Name of the Secret to wait for.") var name: String
+    @Option(name: .long, help: "Key that must be present (optional).") var key: String?
+    @Option(name: .long, help: "Namespace (defaults to the pod's namespace).") var namespace: String?
+    @Option(name: .long, help: "Poll interval seconds.") var interval: Double = 2
+    @Option(name: .long, help: "Timeout seconds (0 = no timeout).") var timeout: Double = 300
+
+    func run() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let ns = namespace ?? env["POD_NAMESPACE"] ?? "default"
+        let tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        let caPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+        let deadline = timeout > 0 ? Date().addingTimeInterval(timeout) : nil
+        while true {
+            if let (present, hasKey) = try? await fetchSecret(name: name, key: key, namespace: ns, tokenPath: tokenPath, caPath: caPath),
+               present && (key == nil || hasKey) {
+                print("secret \(ns)/\(name) ready")
+                return
+            }
+            if let d = deadline, Date() >= d {
+                throw CLIExit(code: 1, message: "wait-secret: timed out after \(Int(timeout))s waiting for \(ns)/\(name)\(key.map { "/\($0)" } ?? "")")
+            }
+            try await Task.sleep(for: .seconds(interval))
+        }
+    }
+
+    /// GET the Secret via the in-cluster ServiceAccount token. Returns
+    /// (present, hasKey). Throws on transport/parse failure (caught by the
+    /// caller's `try?`).
+    private func fetchSecret(name: String, key: String?, namespace: String, tokenPath: String, caPath: String) async throws -> (present: Bool, hasKey: Bool) {
+        let token = try String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { _ = try? await elg.shutdownGracefully() }
+        let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+        defer { _ = try? await client.shutdown() }
+
+        let url = "https://kubernetes.default.svc/api/v1/namespaces/\(namespace)/secrets/\(name)"
+        var req = try HTTPClient.Request(url: url, method: .GET)
+        req.headers.add(name: "Authorization", value: "Bearer \(token)")
+        req.headers.add(name: "Accept", value: "application/json")
+
+        let response = try await client.execute(request: req, deadline: .now() + .seconds(10)).get()
+        let data = response.body.flatMap { Data(buffer: $0) } ?? Data()
+        guard response.status.code == 200 else {
+            return (false, false)
+        }
+        struct SecretData: Decodable { let data: [String: String]? }
+        guard let sd = try? JSONDecoder().decode(SecretData.self, from: data) else {
+            return (false, false)
+        }
+        return (true, key.map { sd.data?[ $0 ] != nil } ?? false)
     }
 }
 

@@ -763,8 +763,48 @@ public actor FakeState {
         public let url: String
     }
 
+    // MARK: - Keystone identity (domains/users/roles/app-creds) for provisioning
+
+    public struct FakeDomain: Sendable, Identifiable {
+        public let id: String
+        public let name: String
+    }
+
+    public struct FakeIdentityUser: Sendable, Identifiable {
+        public let id: String
+        public let name: String
+        public let domainID: String
+        public let enabled: Bool
+        /// The user's password (set at creation). Used for password-based token
+        /// minting of provisioned service users.
+        public let password: String?
+    }
+
+    public struct FakeRole: Sendable, Identifiable {
+        public let id: String
+        public let name: String
+    }
+
+    public struct FakeRoleAssignment: Sendable {
+        public let roleID: String
+        public let userID: String
+        public let domainID: String
+    }
+
+    public struct FakeAppCred: Sendable, Identifiable {
+        public let id: String
+        public let name: String
+        public let userID: String
+        public let secret: String
+    }
+
     public private(set) var services: [FakeService] = []
     public private(set) var endpoints: [FakeEndpoint] = []
+    public private(set) var identityDomains: [FakeDomain] = []
+    public private(set) var identityUsers: [FakeIdentityUser] = []
+    public private(set) var identityRoles: [FakeRole] = []
+    public private(set) var identityRoleAssignments: [FakeRoleAssignment] = []
+    public private(set) var identityAppCreds: [FakeAppCred] = []
 
     /// Delay applied before a server action settles to its final status
     /// (used by waiter tests to observe intermediate progress). Nil = instant.
@@ -1019,6 +1059,8 @@ public actor FakeState {
     private var imgIDCounter = 0
     private var serviceIDCounter = 0
     private var endpointIDCounter = 0
+    private var identityUserCounter = 0
+    private var identityAppCredCounter = 0
     private var _baseHost: String = "http://127.0.0.1:0"
 
     public var baseHost: String { _baseHost }
@@ -1294,6 +1336,19 @@ public actor FakeState {
         shares.append(FakeShare(id: "share-1", projectID: "proj-one", name: "fake-share", status: "available", shareSize: 10, shareType: "generic", isPublic: false))
         shareAccessIDCounter = 1
         shareAccesses.append(FakeShareAccess(id: "sa-1", projectID: "proj-one", shareID: "share-1", accessTo: "10.0.0.0/24", accessType: "ip", accessProtocol: "nfs", state: "accessible"))
+
+        // Keystone identity bootstrap: the standard domains + roles that every
+        // OpenStack cloud ships with, so provisioning tests are realistic.
+        identityDomains = [
+            FakeDomain(id: "default", name: "default"),
+            FakeDomain(id: "service", name: "service"),
+            FakeDomain(id: "admin", name: "admin"),
+        ]
+        identityRoles = [
+            FakeRole(id: "admin-role", name: "admin"),
+            FakeRole(id: "member-role", name: "member"),
+            FakeRole(id: "reader-role", name: "reader"),
+        ]
     }
 
     // MARK: - Token minting
@@ -1307,6 +1362,53 @@ public actor FakeState {
                 return entry.id == (userID ?? credID) && entry.secret == (password ?? secret)
             }
         }) else {
+            // Provisioned service users: support password auth (user + domain)
+            // and app-cred auth (id + secret) against the identity store so the
+            // provisioner can mint a token *as* the new service user to create
+            // its own application credential.
+            if let user = identityUsers.first(where: { $0.name == (userID ?? credID) && $0.enabled && ($0.password ?? "") == (password ?? "") && $0.password != nil }) {
+                let domainName = identityDomains.first { $0.id == user.domainID }?.name ?? "Default"
+                let roleNames = identityRoleAssignments.filter { $0.userID == user.id && $0.domainID == user.domainID }
+                    .compactMap { assignment in identityRoles.first { $0.id == assignment.roleID }?.name }
+                tokenIDCounter += 1
+                let tokenID = String(format: "fake-tok-%04d", tokenIDCounter)
+                let token = FakeToken(
+                    id: tokenID,
+                    projectID: "proj-one",
+                    projectName: "Project One",
+                    domainID: user.domainID,
+                    domainName: domainName,
+                    userID: user.id,
+                    userName: user.name,
+                    userDomain: user.domainID,
+                    roles: roleNames.isEmpty ? ["member"] : roleNames,
+                    expiresAt: Date().addingTimeInterval(3600)
+                )
+                tokens[tokenID] = token
+                return token
+            }
+            if let appCred = identityAppCreds.first(where: { $0.id == credID && $0.secret == secret }) {
+                guard let owner = identityUsers.first(where: { $0.id == appCred.userID }) else { return nil }
+                let domainName = identityDomains.first { $0.id == owner.domainID }?.name ?? "Default"
+                let roleNames = identityRoleAssignments.filter { $0.userID == owner.id && $0.domainID == owner.domainID }
+                    .compactMap { assignment in identityRoles.first { $0.id == assignment.roleID }?.name }
+                tokenIDCounter += 1
+                let tokenID = String(format: "fake-tok-%04d", tokenIDCounter)
+                let token = FakeToken(
+                    id: tokenID,
+                    projectID: "proj-one",
+                    projectName: "Project One",
+                    domainID: owner.domainID,
+                    domainName: domainName,
+                    userID: owner.id,
+                    userName: owner.name,
+                    userDomain: owner.domainID,
+                    roles: roleNames.isEmpty ? ["member"] : roleNames,
+                    expiresAt: Date().addingTimeInterval(3600)
+                )
+                tokens[tokenID] = token
+                return token
+            }
             return nil
         }
 
@@ -1392,6 +1494,79 @@ public actor FakeState {
         let ep = FakeEndpoint(id: id, serviceID: serviceID, interface: interface, regionID: regionID, url: url)
         endpoints.append(ep)
         return ep
+    }
+
+    // MARK: - Keystone identity CRUD (for provisioning)
+
+    public func listDomains(name: String? = nil) -> [FakeDomain] {
+        guard let name else { return identityDomains }
+        return identityDomains.filter { $0.name == name }
+    }
+
+    public func listIdentityUsers(name: String? = nil, domainID: String? = nil) -> [FakeIdentityUser] {
+        var result = identityUsers
+        if let name { result = result.filter { $0.name == name } }
+        if let domainID { result = result.filter { $0.domainID == domainID } }
+        return result
+    }
+
+    public func listRoles(name: String? = nil) -> [FakeRole] {
+        guard let name else { return identityRoles }
+        return identityRoles.filter { $0.name == name }
+    }
+
+    public func domain(name: String) -> FakeDomain? {
+        identityDomains.first { $0.name == name }
+    }
+
+    public func identityUser(name: String, domainID: String) -> FakeIdentityUser? {
+        identityUsers.first { $0.name == name && $0.domainID == domainID }
+    }
+
+    public func identityUser(id: String) -> FakeIdentityUser? {
+        identityUsers.first { $0.id == id }
+    }
+
+    @discardableResult
+    public func createIdentityUser(name: String, domainID: String, enabled: Bool = true, password: String? = nil) -> FakeIdentityUser {
+        identityUserCounter += 1
+        let id = "user-\(identityUserCounter)"
+        let user = FakeIdentityUser(id: id, name: name, domainID: domainID, enabled: enabled, password: password)
+        identityUsers.append(user)
+        return user
+    }
+
+    public func role(name: String) -> FakeRole? {
+        identityRoles.first { $0.name == name }
+    }
+
+    public func roleAssigned(userID: String, roleID: String, domainID: String) -> Bool {
+        identityRoleAssignments.contains { $0.userID == userID && $0.roleID == roleID && $0.domainID == domainID }
+    }
+
+    public func roleAssignments(userID: String, domainID: String) -> [FakeRoleAssignment] {
+        identityRoleAssignments.filter { $0.userID == userID && $0.domainID == domainID }
+    }
+
+    public func addRoleAssignment(roleID: String, userID: String, domainID: String) {
+        identityRoleAssignments.append(FakeRoleAssignment(roleID: roleID, userID: userID, domainID: domainID))
+    }
+
+    public func appCred(name: String, userID: String) -> FakeAppCred? {
+        identityAppCreds.first { $0.name == name && $0.userID == userID }
+    }
+
+    public func appCreds(userID: String) -> [FakeAppCred] {
+        identityAppCreds.filter { $0.userID == userID }
+    }
+
+    @discardableResult
+    public func createAppCred(name: String, userID: String, secret: String) -> FakeAppCred {
+        identityAppCredCounter += 1
+        let id = "appcred-\(identityAppCredCounter)"
+        let cred = FakeAppCred(id: id, name: name, userID: userID, secret: secret)
+        identityAppCreds.append(cred)
+        return cred
     }
 
     // MARK: - Server CRUD
