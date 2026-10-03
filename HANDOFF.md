@@ -26,6 +26,13 @@
   **confirmed sent** (`X-OpenStack-Nova-API-Version: 2.100`). See
   `.superpowers/sdd/version-negotiation-plan.md`.
 
+## Backlog
+
+- **License: MIT.** `substation-mcp` is to be licensed MIT. The `LICENSE` file has been
+  added (Copyright (c) 2026 Kevin Carter). Still to do: add the license badge/section to the
+  README and confirm the project rename from `openstack-mcp` → `substation-mcp` is complete
+  (target remote `cloudnull/substation-mcp`).
+
 ## Post-Phase-1 Work (Phase 2/3 → Versioning)
 
 Added after Phase 1, each validated against real clouds and committed on main:

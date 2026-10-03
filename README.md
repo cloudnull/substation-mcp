@@ -528,3 +528,7 @@ scripts/
   swift                   # container wrapper (docker/podman/Apple container)
   build.sh                # release build
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
