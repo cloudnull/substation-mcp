@@ -57,9 +57,13 @@ metadata:
 spec:
   hostnames:
     - "{{ $gw.fqdn }}"
-  parents:
+  # Gateway API v1 uses `parentRefs` (NOT `parents` — that field is ignored and
+  # leaves the route unattached to any Gateway, so no traffic is routed).
+  parentRefs:
     - name: {{ $gw.gatewayName }}
       namespace: {{ $gw.namespace }}
+      group: gateway.networking.k8s.io
+      kind: Gateway
       {{- if $gw.useExistingListener }}
       sectionName: {{ $gw.listenerName }}
       {{- end }}
