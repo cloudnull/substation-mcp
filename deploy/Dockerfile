@@ -72,6 +72,14 @@ RUN printf '[epel]\nname=Extra Packages for Enterprise Linux 10\nbaseurl=https:/
 RUN microdnf install -y libicu glibc-langpack-en shadow-utils \
     && microdnf clean all
 
+# Deterministic name resolution for Swift NIO / AsyncHTTPClient.
+# The ubi10-minimal base ships no /etc/nsswitch.conf; without it, getaddrinfo
+# falls back to a compiled-in default and, combined with a Kubernetes
+# /etc/resolv.conf carrying multiple search domains + ndots:5, NIO's resolver
+# can hang on a search-expanded name while the C library `getent` short-circuits.
+# Pinning `hosts: files dns` makes resolution deterministic (matches getent).
+RUN printf 'hosts: files dns\n' > /etc/nsswitch.conf
+
 # Non-root user.
 RUN groupadd -g 10001 substation-mcp \
     && useradd -u 10001 -g substation-mcp -m -s /sbin/nologin substation-mcp

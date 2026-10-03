@@ -61,7 +61,11 @@ public actor Transport {
                     retainHTTPMethodAndBodyOn302: false
                 )),
                 timeout: .init(
-                    connect: .seconds(10),
+                    // 30 s connect: in some CNI/Kube-OVN pod networks the
+                    // kernel completes the TCP handshake but NIO's event-loop
+                    // connect-completion is slow to post; 10 s fired
+                    // connectTimeout while the connection was actually usable.
+                    connect: .seconds(30),
                     read: .seconds(max(timeoutSeconds, 1))
                 ),
                 connectionPool: .init(
