@@ -363,11 +363,13 @@ docker run --rm -p 8080:8080 \
 ```
 
 The container runs as non-root user `substation-mcp` (uid 10001) on
-`ubi10-minimal`. The builder stage is `swift:6.4-rhel-ubi10` (same as
-`scripts/swift`).
+`almalinux:10` (public RHEL 10-compatible base). The builder stage is
+`swift:6.4-rhel-ubi10` (same as `scripts/swift`). The dynamic release binary
+is bundled with the Swift runtime and its runtime libraries.
 
-> **Note:** the runtime is UBI10 (RHEL 10 compatible), not Rocky 9. UBI10 is
-> the base of the Swift 6.4 toolchain image.
+> **Note:** the runtime is a RHEL 10-compatible image. We use the public
+> `almalinux:10` base instead of `ubi10-minimal` because the UBI10 images
+> require a Red Hat subscription login that a public CI runner does not have.
 
 ### systemd
 

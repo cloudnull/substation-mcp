@@ -1,7 +1,8 @@
 # OpenStack MCP — multi-stage build (spec §13)
 #
 # Builder: swift:6.4-rhel-ubi10 (same toolchain used by scripts/swift).
-# Runtime: ubi10-minimal + ca-certificates. Non-root user uid 10001.
+# Runtime: almalinux:10 (public RHEL10-compatible base) + ca-certificates +
+# the dynamic Swift runtime. Non-root user uid 10001.
 #
 # Build (from repo root):
 #   docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
@@ -12,10 +13,13 @@
 #     -v /path/to/config.yaml:/etc/substation-mcp/config.yaml:ro \
 #     substation-mcp:local
 #
-# NOTE: the runtime is UBI10 (RHEL 10 compatible), not Rocky 9 as originally
-# sketched in the spec. UBI10 is the base of the Swift 6.4 toolchain image and
-# is what the container build produces; Rocky 9 is not available for the
-# static-swift-stdlib target triple. This is a documented deviation.
+# NOTE on the runtime base: the runtime is a RHEL 10-compatible image. We use
+# docker.io/almalinux:10 (public, no registry auth) rather than
+# registry.access.redhat.com/ubi10/ubi10-minimal — the UBI10 images require a
+# Red Hat subscription login, which a public CI runner does not have, so the
+# build would fail with 401. AlmaLinux 10 is binary-compatible with RHEL 10
+# and provides the same glibc/dnf runtime the dynamic Swift binary needs. The
+# *builder* stage still uses the official swift:6.4-rhel-ubi10 toolchain image.
 
 # ── Stage 1: build ──────────────────────────────────────────────────────────────
 FROM --platform=linux/amd64 swift:6.4-rhel-ubi10 AS builder
@@ -39,13 +43,13 @@ RUN set -eux; \
     test -x /build/release/substation-mcp
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────────
-FROM registry.access.redhat.com/ubi10/ubi10-minimal:latest AS runtime
+FROM docker.io/library/almalinux:10 AS runtime
 
 # TLS roots + every runtime lib the (dynamically-linked) Swift binary needs.
 # From `ldd` of the release binary: glibc stack, libstdc++, libicu (Foundation
 # ICU backend), libcurl + libnghttp2, openssl (libssl/libcrypto), and the
 # curl→krb5/unistring/selinux/pcre2/z transitive set. ca-certificates for
-# TLS roots. ubi10-minimal ships none of these, so install them explicitly.
+# TLS roots. almalinux:10 ships none of these, so install them explicitly.
 RUN dnf install -y \
         ca-certificates \
         glibc glibc-langpack-en \
