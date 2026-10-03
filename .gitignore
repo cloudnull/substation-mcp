@@ -8,3 +8,4 @@ xcuserdata/
 .pi/
 .opencode/
 .openstack-credentials.md
+dist/
