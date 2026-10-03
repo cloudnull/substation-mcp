@@ -67,8 +67,9 @@ RUN printf '[epel]\nname=Extra Packages for Enterprise Linux 10\nbaseurl=https:/
 # The ubi10-minimal base already ships libcurl, libstdc++, libssl, libnghttp2,
 # krb5 and glibc (verified via ldconfig). The only runtime libs the dynamic
 # Swift binary additionally needs are the ICU data/lib (Foundation's ICU
-# backend) and the English locale pack. Install just those.
-RUN microdnf install -y libicu glibc-langpack-en \
+# backend) and the English locale pack. shadow-utils provides groupadd/useradd
+# (the -minimal image strips it, so the non-root user step needs it).
+RUN microdnf install -y libicu glibc-langpack-en shadow-utils \
     && microdnf clean all
 
 # Non-root user.
