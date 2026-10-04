@@ -252,6 +252,21 @@ struct CLIExit: Error, CustomStringConvertible {
     var description: String { message }
 }
 
+/// Returns a usable app-cred (id, secret) pair, or `nil` if either is missing,
+/// empty, or a Helm-chart placeholder (`__IDENTITY_APPCRED_ID__` /
+/// `__IDENTITY_APPCRED_SECRET__`). The provisioner Job runs BEFORE the
+/// Deployment's initContainer fills the placeholders in clouds.yaml, so a
+/// clouds entry loaded from the base `-clouds` Secret still carries the
+/// placeholder strings. Treating them as a real credential would (a) try to
+/// mint with them via the in-process transport (404 / SSL errors) and (b)
+/// shadow the operator's password-auth fallback. Callers should skip the
+/// app-cred branch when this returns `nil`.
+func usableAppCred(_ id: String?, _ secret: String?) -> (id: String, secret: String)? {
+    guard let id, let secret, !id.isEmpty, !secret.isEmpty else { return nil }
+    if id.contains("__IDENTITY") || secret.contains("__IDENTITY") { return nil }
+    return (id, secret)
+}
+
 // MARK: - access-rules (spec §11.3)
 
 struct AccessRulesCommand: AsyncParsableCommand {
@@ -358,7 +373,7 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         let mintEndpoint = (mintURL?.isEmpty == false ? mintURL : nil) ?? cloudEntry.authURL?.absoluteString ?? ""
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
             admin = t
-        } else if let credID = cloudEntry.appCredID, let secret = cloudEntry.appCredSecret {
+        } else if let (credID, secret) = usableAppCred(cloudEntry.appCredID, cloudEntry.appCredSecret) {
             let minter = LoginMinter(transport: wiring.transport, logger: logger)
             let minted = try await minter.mint(method: .applicationCredential(id: credID, secret: Array(secret.utf8).map { Int8($0) }))
             admin = minted.id
