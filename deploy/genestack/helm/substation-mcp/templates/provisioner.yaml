@@ -106,9 +106,11 @@ spec:
                 MINT_BODY=$(printf '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"%s","domain":{"name":"%s"},"password":"%s"}}},"scope":{"domain":{"name":"%s"}}}}' \
                   "{{ .Values.serviceUser.auth.password.username }}" "$ADOM" \
                   "{{ .Values.serviceUser.auth.password.password }}" "$ADOM")
+                AUTH_URL="{{ .Values.clouds.sat0.auth.auth_url }}"
+                AUTH_URL="${AUTH_URL%/}"
                 TOK_HDR=$(mktemp)
                 curl -sS -m 30 -D "$TOK_HDR" -o /dev/null \
-                  -X POST "{{ .Values.clouds.sat0.auth.auth_url % / }}/v3/auth/tokens" \
+                  -X POST "${AUTH_URL}/v3/auth/tokens" \
                   -H 'Content-Type: application/json' \
                   --data "$MINT_BODY"
                 export OS_AUTH_TOKEN=$(grep -i '^x-subject-token:' "$TOK_HDR" | tr -d '\r' | awk '{print $2}')
