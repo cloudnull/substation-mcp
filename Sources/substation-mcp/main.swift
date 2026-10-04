@@ -708,6 +708,9 @@ struct ProvisionCommand: AsyncParsableCommand {
             process.waitUntilExit()
             let raw = outPipe.fileHandleForReading.readDataToEndOfFile()
             let text = String(decoding: raw, as: UTF8.self)
+            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+                FileHandle.standardError.write("PROVISION_DEBUG curlIdentity url: \(url) method: \(method) tokenLen: \((token ?? "").count) exit: \(process.terminationStatus) textLen: \(text.count) tail: \(String(text.suffix(80)))\n".data(using: .utf8)!)
+            }
             // Split off the trailing "\n__HTTPSTATUS__<code>" marker.
             guard let marker = text.range(of: "\n__HTTPSTATUS__") else {
                 throw CLIError(message: "provision: curl identity request missing status marker (output: \(text.prefix(300)))")
