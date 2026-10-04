@@ -623,8 +623,14 @@ struct ProvisionCommand: AsyncParsableCommand {
             }
             let hdrData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let headerText = String(decoding: hdrData, as: UTF8.self)
+            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+                FileHandle.standardError.write("PROVISION_DEBUG headerText (len \(headerText.count)):\n\(headerText.prefix(600))\n".data(using: .utf8)!)
+            }
             guard let token = Self.parseSubjectToken(fromHeaders: headerText) else {
                 throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")
+            }
+            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+                FileHandle.standardError.write("PROVISION_DEBUG parsed token (len \(token.count)): \(token.prefix(40))...\n".data(using: .utf8)!)
             }
             return token
         }
