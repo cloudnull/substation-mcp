@@ -513,6 +513,9 @@ struct ProvisionCommand: AsyncParsableCommand {
         } else {
             throw CLIError(message: "provision: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred (--app-cred-id/--app-cred-secret), and no password (--admin-user/--admin-password) supplied")
         }
+        if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+            FileHandle.standardError.write("PROVISION_DEBUG admin token len: \(admin.count) head: \(admin.prefix(24))...\n".data(using: .utf8)!)
+        }
 
         do {
             let roleList = roles.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -597,6 +600,9 @@ struct ProvisionCommand: AsyncParsableCommand {
             // (in-cluster: http://keystone:5000 ; public: https://k/v3). Append
             // only what's missing so we never produce /v3/v3/auth/tokens (404).
             let tokenPath = base.hasSuffix("/v3") ? "\(base)/auth/tokens" : "\(base)/v3/auth/tokens"
+            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+                FileHandle.standardError.write("PROVISION_DEBUG mint body: \(body.prefix(300))\nPROVISION_DEBUG mint url: \(tokenPath)\n".data(using: .utf8)!)
+            }
             process.arguments = [
                 "-sS", "-m", "30",
                 "-D", "-", "-o", "/dev/null",
