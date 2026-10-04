@@ -577,10 +577,14 @@ struct ProvisionCommand: AsyncParsableCommand {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             let base = authURL.hasSuffix("/") ? String(authURL.dropLast()) : authURL
+            // The auth_url may or may not already include the /v3 prefix
+            // (in-cluster: http://keystone:5000 ; public: https://k/v3). Append
+            // only what's missing so we never produce /v3/v3/auth/tokens (404).
+            let tokenPath = base.hasSuffix("/v3") ? "\(base)/auth/tokens" : "\(base)/v3/auth/tokens"
             process.arguments = [
                 "-sS", "-m", "30",
                 "-D", "-", "-o", "/dev/null",
-                "-X", "POST", "\(base)/v3/auth/tokens",
+                "-X", "POST", tokenPath,
                 "-H", "Content-Type: application/json",
                 "--data", body,
             ]
@@ -597,16 +601,27 @@ struct ProvisionCommand: AsyncParsableCommand {
             }
             let hdrData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let headerText = String(decoding: hdrData, as: UTF8.self)
-            // The X-Subject-Token header is the minted token id.
-            guard let line = headerText.split(separator: "\n").first(where: { $0.lowercased().hasPrefix("x-subject-token:") }) else {
+            guard let token = Self.parseSubjectToken(fromHeaders: headerText) else {
                 throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")
-            }
-            let token = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !token.isEmpty else {
-                throw CLIError(message: "provision: empty token from curl mint")
             }
             return token
         }
+    }
+
+    /// Extract the minted token id from a block of HTTP response headers
+    /// (the `X-Subject-Token` header). Robust to HTTP/1.1 vs HTTP/2 line
+    /// endings (\n vs \r\n), header-name casing, and the header appearing
+    /// anywhere in the text (e.g. mixed with stderr). Returns nil if the
+    /// header is absent or empty.
+    static func parseSubjectToken(fromHeaders headerText: String) -> String? {
+        guard let lower = headerText.lowercased().range(of: "x-subject-token:") else {
+            return nil
+        }
+        let afterColon = headerText[headerText.index(after: lower.upperBound)...]
+        let token = afterColon
+            .prefix { $0 != "\n" && $0 != "\r" }
+            .trimmingCharacters(in: .whitespaces)
+        return token.isEmpty ? nil : token
     }
 }
 
