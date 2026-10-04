@@ -257,12 +257,19 @@ public struct ServiceProvisioner {
     // MARK: - helpers
 
     private func fetchDomainID(name: String) async throws -> String {
-        let (status, body) = try await identityRequest(method: "GET", path: "/v3/domains", query: [URLQueryItem(name: "name", value: name)])
+        // Query without a name filter and match client-side: Keystone domain
+        // names are case-sensitive in the API but the convention varies (the
+        // default domain's *name* is "Default" while its *id* is "default", and
+        // clouds like sat0 expose only that one). Filtering server-side by
+        // `?name=<id>` returns empty when the id and name differ in case, which
+        // is what made the provisioner report "domain 'default' not found" on
+        // sat0. Match on id OR case-insensitive name.
+        let (status, body) = try await identityRequest(method: "GET", path: "/v3/domains")
         struct Domain: Decodable { let id: String; let name: String? }
         struct DomainList: Decodable { let domains: [Domain] }
         guard status == 200,
               let list = try? JSONDecoder().decode(DomainList.self, from: body),
-              let domain = list.domains.first(where: { $0.name == name }) else {
+              let domain = list.domains.first(where: { $0.id == name || $0.name?.caseInsensitiveCompare(name) == .orderedSame }) else {
             throw ServiceProvisionerError.domainNotFound(name)
         }
         return domain.id
