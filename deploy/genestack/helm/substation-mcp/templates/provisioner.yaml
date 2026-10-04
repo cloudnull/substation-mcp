@@ -41,11 +41,10 @@ spec:
         - name: provision
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Reuse the chart's securityContext (numeric runAsUser: 10001) so
+          # runAsNonRoot can be verified against the image's named user.
           securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
+            {{- toYaml .Values.securityContext | nindent 12 }}
           env:
             # ── Operator admin credential (input; used only to mint a token) ──
             {{- with .Values.serviceUser.auth.appCred.id }}
