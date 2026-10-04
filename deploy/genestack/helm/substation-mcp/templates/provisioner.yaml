@@ -90,6 +90,37 @@ spec:
               CLOUD="{{ .Values.serviceUser.cloud }}"
               IDENTITY_SECRET="${FULLNAME}-service-identity"
               CLOUDS_SECRET="${FULLNAME}-clouds"
+
+              # 0. Mint the admin bootstrap token once, shared by provision and
+              #    register-catalog (both use OS_AUTH_TOKEN when present).
+              #    For password auth we mint with curl: some Keystones reject the
+              #    in-process AsyncHTTPClient password-mint POST with a spurious
+              #    400 even though the body is byte-identical to a curl request
+              #    that succeeds. Domain-scoped so the token carries domain-level
+              #    privileges (an unscoped token 403s on identity operations).
+              #    For app-cred auth, OS_AUTH_TOKEN stays unset and each command
+              #    mints from the app-cred (the reliable in-process path).
+              {{- if and .Values.serviceUser.auth.password.username .Values.serviceUser.auth.password.password }}
+              if [ -z "${OS_AUTH_TOKEN:-}" ]; then
+                ADOM="{{ .Values.serviceUser.auth.password.domain | default "default" }}"
+                MINT_BODY=$(printf '{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"%s","domain":{"name":"%s"},"password":"%s"}}},"scope":{"domain":{"name":"%s"}}}}' \
+                  "{{ .Values.serviceUser.auth.password.username }}" "$ADOM" \
+                  "{{ .Values.serviceUser.auth.password.password }}" "$ADOM")
+                TOK_HDR=$(mktemp)
+                curl -sS -m 30 -D "$TOK_HDR" -o /dev/null \
+                  -X POST "{{ .Values.clouds.sat0.auth.auth_url % / }}/v3/auth/tokens" \
+                  -H 'Content-Type: application/json' \
+                  --data "$MINT_BODY"
+                export OS_AUTH_TOKEN=$(grep -i '^x-subject-token:' "$TOK_HDR" | tr -d '\r' | awk '{print $2}')
+                rm -f "$TOK_HDR"
+                if [ -z "$OS_AUTH_TOKEN" ]; then
+                  echo "ERROR: failed to mint admin token via curl" >&2
+                  exit 1
+                fi
+                echo "minted admin bootstrap token via curl (len ${#OS_AUTH_TOKEN})" >&2
+              fi
+              {{- end }}
+
               # 1. Provision the service user + app-cred (idempotent). Capture the
               #    JSON result (user_id, app_cred_id, app_cred_secret, ...).
               #    (No 2>/dev/null: if this fails we WANT the error in the logs.)

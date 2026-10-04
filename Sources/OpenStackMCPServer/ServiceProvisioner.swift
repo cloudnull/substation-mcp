@@ -43,6 +43,17 @@ public struct ServiceProvisioner {
     private let adminToken: String
     private let transport: Transport
     private let logger: Logger
+    /// Mints a token as the given (password-authenticated) user. Used to create
+    /// the application credential under the service user's ownership.
+    ///
+    /// Defaults to the in-process `LoginMinter` password mint. Some Keystones
+    /// (e.g. the Genestack/RDO in-cluster one) reject the in-process
+    /// AsyncHTTPClient password-mint POST with a spurious 400 even though the
+    /// body is byte-identical to a curl request that succeeds — so the
+    /// `provision` command can inject a `curl`-based minter (the runtime image
+    /// ships curl) to work around that. The signature is
+    /// (userID, domain, password) -> tokenID.
+    private let passwordTokenMinter: (String, String?, String) async throws -> String
 
     public init(
         username: String,
@@ -51,7 +62,8 @@ public struct ServiceProvisioner {
         roles: [String] = ["admin"],
         adminToken: String,
         transport: Transport,
-        logger: Logger = Logger(label: "service-provisioner")
+        logger: Logger = Logger(label: "service-provisioner"),
+        passwordTokenMinter: ((String, String?, String) async throws -> String)? = nil
     ) {
         self.username = username
         self.domainName = domainName
@@ -60,6 +72,14 @@ public struct ServiceProvisioner {
         self.adminToken = adminToken
         self.transport = transport
         self.logger = logger
+        if let minter = passwordTokenMinter {
+            self.passwordTokenMinter = minter
+        } else {
+            let m = LoginMinter(transport: transport, logger: logger)
+            self.passwordTokenMinter = { id, domain, password in
+                try await m.mint(method: .password(userID: id, domain: domain, password: password, projectName: nil)).id
+            }
+        }
     }
 
     /// Ensure the service user + app credential exist (idempotent).
@@ -216,9 +236,7 @@ public struct ServiceProvisioner {
         // (user was reused) — acceptable on clouds that honor an explicit owner.
         let token: String
         if let pw = userPassword {
-            let minter = LoginMinter(transport: transport, logger: logger)
-            let minted = try await minter.mint(method: .password(userID: username, domain: domainName, password: pw, projectName: nil))
-            token = minted.id
+            token = try await passwordTokenMinter(username, domainName, pw)
         } else {
             logger.warning("Service user reused without a known password; creating app-cred under the admin token", metadata: ["user": .string(userID)])
             token = adminToken

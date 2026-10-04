@@ -409,6 +409,16 @@ struct ProvisionCommand: AsyncParsableCommand {
         defer { wiring.shutdown() }
 
         // Resolve the admin token: explicit > OS_AUTH_TOKEN > app-cred mint > password mint.
+        //
+        // Password mints use curl (not the in-process LoginMinter) because some
+        // Keystones (e.g. the Genestack/RDO in-cluster one) reject the
+        // AsyncHTTPClient password-mint POST with a spurious 400 even though the
+        // body is byte-identical to a curl request that succeeds. curl ships in
+        // the runtime image and is proven to work against that Keystone. App-cred
+        // mints use the in-process minter (that path works).
+        let authURL = cloudEntry.authURL?.absoluteString ?? ""
+        let mintViaCurl = Self.curlPasswordMinter(authURL: authURL, logger: logger)
+
         let admin: String
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
             admin = t
@@ -419,15 +429,16 @@ struct ProvisionCommand: AsyncParsableCommand {
             admin = minted.id
         } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
                   let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
-            let minter = LoginMinter(transport: wiring.transport, logger: logger)
-            let minted = try await minter.mint(method: .password(userID: u, domain: adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "admin", password: p, projectName: nil))
-            admin = minted.id
+            let d = adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "admin"
+            admin = try await mintViaCurl(u, d, p)
         } else {
             throw CLIError(message: "provision: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred (--app-cred-id/--app-cred-secret), and no password (--admin-user/--admin-password) supplied")
         }
 
         do {
             let roleList = roles.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            // Inject the curl password minter so the service-user token mint
+            // (for app-cred ownership) also avoids the in-process 400.
             let provisioner = ServiceProvisioner(
                 username: username,
                 domainName: domain,
@@ -435,7 +446,8 @@ struct ProvisionCommand: AsyncParsableCommand {
                 roles: roleList,
                 adminToken: admin,
                 transport: wiring.transport,
-                logger: logger
+                logger: logger,
+                passwordTokenMinter: mintViaCurl
             )
             let result = try await provisioner.ensureServiceIdentity()
 
@@ -458,6 +470,60 @@ struct ProvisionCommand: AsyncParsableCommand {
             print(json)
         } catch {
             throw CLIExit(code: 1, message: "provision: \(error)")
+        }
+    }
+
+    /// Build a closure that mints a Keystone token via a `curl` subprocess.
+    ///
+    /// Used as a fallback for password mints: some Keystones reject the
+    /// in-process AsyncHTTPClient password-mint POST with a spurious 400
+    /// "Expecting to find password in identity" even though the body is
+    /// byte-identical to a curl request that succeeds (verified against the
+    /// Genestack/RDO in-cluster Keystone). curl ships in the UBI10 runtime image.
+    /// Domain-scoped so the token carries domain-level privileges.
+    static func curlPasswordMinter(
+        authURL: String,
+        logger: Logger
+    ) -> (String, String?, String) async throws -> String {
+        return { userID, domain, password in
+            let dom = domain ?? "default"
+            // Build the JSON body without any interpolation that could be
+            // broken by shell quoting — curl reads the body from stdin.
+            let body = """
+            {"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"\(userID)","domain":{"name":"\(dom)","password":"\(password)"}}}},"scope":{"domain":{"name":"\(dom)"}}}}
+            """
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            let base = authURL.hasSuffix("/") ? String(authURL.dropLast()) : authURL
+            process.arguments = [
+                "-sS", "-m", "30",
+                "-D", "-", "-o", "/dev/null",
+                "-X", "POST", "\(base)/v3/auth/tokens",
+                "-H", "Content-Type: application/json",
+                "--data", body,
+            ]
+            let outPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = outPipe
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+                logger.error("curl mint failed (exit \(process.terminationStatus))", metadata: ["output": .string(String(String(decoding: data, as: UTF8.self).prefix(300)))])
+                throw CLIError(message: "provision: curl token mint failed (exit \(process.terminationStatus))")
+            }
+            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let headerText = String(decoding: data, as: UTF8.self)
+            // The X-Subject-Token header is the minted token id.
+            guard let line = headerText.split(separator: "\n").first(where: { $0.lowercased().hasPrefix("x-subject-token:") }) else {
+                throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")
+            }
+            let token = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !token.isEmpty else {
+                throw CLIError(message: "provision: empty token from curl mint")
+            }
+            return token
         }
     }
 }
