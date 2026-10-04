@@ -652,12 +652,14 @@ struct ProvisionCommand: AsyncParsableCommand {
         baseURL: String,
         logger: Logger
     ) -> (String, String, [URLQueryItem], String?, String?) async throws -> (status: Int, body: Data) {
+        // Strip a trailing slash so `base + "/v3/..."` never double-slashes.
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         return { method, path, query, body, token in
-            var url = baseURL
-            if let clean = path.first, clean == "/" {
-                url = baseURL + String(path.dropFirst())
+            var url = base
+            if path.hasPrefix("/") {
+                url = base + path
             } else {
-                url = baseURL + "/" + path
+                url = base + "/" + path
             }
             // Append query items (URL-encoded).
             if !query.isEmpty {
