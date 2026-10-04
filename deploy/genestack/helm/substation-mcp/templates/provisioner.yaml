@@ -115,7 +115,7 @@ spec:
               # 2. Write the app-cred to the identity Secret (create or preserve).
               substation-mcp write-secret \
                 --name "$IDENTITY_SECRET" \
-                --json "$PROVISION_JSON" \
+                "$PROVISION_JSON" \
                 --log-level info
 
               # 3. Register the mcp catalog service + public/internal/admin
