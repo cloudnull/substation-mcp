@@ -167,10 +167,23 @@ public actor Transport {
         var req = try HTTPClient.Request(url: url.absoluteString, method: .init(rawValue: method))
         if let token, !token.isEmpty {
             req.headers.add(name: "X-Auth-Token", value: token)
-            // Some Keystone versions (e.g. 3.14) only honor the token on the
-            // whoami endpoint when it is also sent as X-Subject-Token; sending
-            // both is standard and compatible across Keystone versions.
-            req.headers.add(name: "X-Subject-Token", value: token)
+            // Send X-Subject-Token ONLY on the whoami endpoint
+            // (GET /v3/auth/tokens). Some Keystone versions (e.g. 3.14) honor
+            // the token on whoami only when it is also sent as X-Subject-Token.
+            //
+            // It must NOT be sent on any other request: X-Subject-Token names
+            // the token that was just minted within the same exchange, and is
+            // tied to that minting session. Reusing a pre-minted / standing
+            // token (e.g. one from OS_AUTH_TOKEN, or the provisioner's
+            // admin/service-user tokens) as X-Subject-Token makes Keystone
+            // reject the request — observed as spurious 400s/403s and empty
+            // responses on the Genestack/RDO in-cluster Keystone. Every
+            // non-whoami request (catalog writes, identity writes, service
+            // calls) authenticates with X-Auth-Token alone.
+            let isWhoami = method.uppercased() == "GET" && cleanPath == "v3/auth/tokens"
+            if isWhoami {
+                req.headers.add(name: "X-Subject-Token", value: token)
+            }
         }
         req.headers.add(name: "Accept", value: "application/json")
         req.headers.add(name: "Content-Type", value: "application/json")

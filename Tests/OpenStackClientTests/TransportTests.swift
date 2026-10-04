@@ -49,11 +49,14 @@ struct TransportTests {
         #expect(requestID == rid)
     }
 
-    // Some Keystone versions (e.g. 3.14) only honor the token on the whoami
-    // endpoint (GET /v3/auth/tokens) when it is sent as X-Subject-Token; they
-    // ignore it on X-Auth-Token there. The transport must therefore present the
-    // token on BOTH headers so the server-side validator works everywhere.
-    @Test func presentsTokenOnXSubjectTokenToo() async throws {
+    // X-Subject-Token is sent ONLY on the whoami endpoint (GET /v3/auth/tokens).
+    // Some Keystone versions (e.g. 3.14) honor the token on whoami only when it
+    // is also sent as X-Subject-Token. On every other request it must be
+    // ABSENT: X-Subject-Token names the token just minted within the same
+    // exchange, and reusing a standing/pre-minted token as X-Subject-Token makes
+    // Keystone reject the request (observed on the Genestack/RDO in-cluster
+    // Keystone as spurious 400/403 + empty responses).
+    @Test func presentsTokenOnXSubjectTokenOnlyForWhoami() async throws {
         let server = TestServer()
         try server.start()
         defer { server.stop() }
@@ -64,16 +67,34 @@ struct TransportTests {
             """
             return (200, json, [("Content-Type", "application/json")])
         }
+        // The whoami path, relative to the test server's base.
+        server.addHandler("/v3/auth/tokens") { req in
+            let json = """
+            {"x-auth-token":"\(req.headers["x-auth-token"] ?? "")","x-subject-token":"\(req.headers["x-subject-token"] ?? "")"}
+            """
+            return (200, json, [("Content-Type", "application/json")])
+        }
 
         let transport = makeTransport(baseURL: server.baseURL)
         defer { transport.syncShutdown() }
-        let (status, body, _) = try await transport.request(
+
+        // whoami (GET /v3/auth/tokens) -> BOTH headers.
+        let (ws, wbody, _) = try await transport.request(
+            method: "GET", service: "test", path: "/v3/auth/tokens"
+        )
+        #expect(ws == 200)
+        let wjson = try JSONSerialization.jsonObject(with: wbody) as! [String: String]
+        #expect(wjson["x-auth-token"] == "tok-123")
+        #expect(wjson["x-subject-token"] == "tok-123", "whoami must also send X-Subject-Token")
+
+        // non-whoami (GET /headers) -> X-Auth-Token only, NO X-Subject-Token.
+        let (ns, nbody, _) = try await transport.request(
             method: "GET", service: "test", path: "/headers"
         )
-        #expect(status == 200)
-        let json = try JSONSerialization.jsonObject(with: body) as! [String: String]
-        #expect(json["x-auth-token"] == "tok-123")
-        #expect(json["x-subject-token"] == "tok-123", "token must also be sent as X-Subject-Token")
+        #expect(ns == 200)
+        let njson = try JSONSerialization.jsonObject(with: nbody) as! [String: String]
+        #expect(njson["x-auth-token"] == "tok-123")
+        #expect(njson["x-subject-token"] == "", "non-whoami must NOT send X-Subject-Token")
     }
 
     @Test func noTokenMeansNoXSubjectTokenHeader() async throws {
