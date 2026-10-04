@@ -631,7 +631,7 @@ struct ProvisionCommand: AsyncParsableCommand {
             }
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
                 let afterColon = headerText[headerText.index(after: headerText.lowercased().range(of: "x-subject-token:")!.upperBound)...]
-                let first5 = afterColon.prefix(8).map { String(format: "%d", $0.asciiValue ?? -1) }.joined(separator: ",")
+                let first5 = afterColon.prefix(8).map { $0.asciiValue.map { String($0) } ?? "?" }.joined(separator: ",")
                 FileHandle.standardError.write("PROVISION_DEBUG afterColon first8 ascii: [\(first5)] totalLen=\(afterColon.count)\n".data(using: .utf8)!)
                 FileHandle.standardError.write("PROVISION_DEBUG parsed token (len \(token.count)): \(token.prefix(40))...\n".data(using: .utf8)!)
             }
