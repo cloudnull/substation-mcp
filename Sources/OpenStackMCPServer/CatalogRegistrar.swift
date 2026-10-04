@@ -35,6 +35,18 @@ public struct CatalogRegistrar {
     /// Admin token used for the identity write calls (X-Auth-Token).
     private let adminToken: String
     private let logger: Logger
+    /// Executes an identity API request, returning (status, body), with the
+    /// given token as X-Auth-Token. Defaults to the in-process `Transport`.
+    /// The `register-catalog` command injects a `curl`-based client instead:
+    /// some Apache-fronted Keystones return responses the AsyncHTTPClient fails
+    /// to parse, while curl handles them reliably.
+    private let identityClient: (
+        _ method: String,
+        _ path: String,
+        _ query: [URLQueryItem],
+        _ body: String?,
+        _ token: String?
+    ) async throws -> (status: Int, body: Data)
 
     public init(
         transport: Transport,
@@ -43,7 +55,8 @@ public struct CatalogRegistrar {
         internalURL: String? = nil,
         adminURL: String? = nil,
         adminToken: String,
-        logger: Logger = Logger(label: "catalog-registrar")
+        logger: Logger = Logger(label: "catalog-registrar"),
+        identityClient: ((String, String, [URLQueryItem], String?, String?) async throws -> (status: Int, body: Data))? = nil
     ) {
         self.transport = transport
         self.region = region
@@ -52,6 +65,17 @@ public struct CatalogRegistrar {
         self.adminURL = adminURL ?? publicURL
         self.adminToken = adminToken
         self.logger = logger
+        if let client = identityClient {
+            self.identityClient = client
+        } else {
+            self.identityClient = { method, path, query, body, token in
+                let (status, bodyData, _) = try await transport.request(
+                    method: method, service: "identity", path: path,
+                    query: query, body: body.map { Data($0.utf8) }, tokenOverride: token
+                )
+                return (status: status, body: bodyData)
+            }
+        }
     }
 
     /// The endpoint URL for a given interface role.
@@ -91,11 +115,10 @@ public struct CatalogRegistrar {
             let type: String?
             let name: String?
         }
-        let (status, body, _) = try await transport.request(
-            method: "GET", service: "identity",
-            path: "/v3/services",
-            query: [URLQueryItem(name: "limit", value: "1000")],
-            tokenOverride: adminToken
+        let (status, body) = try await identityClient(
+            "GET", "/v3/services",
+            [URLQueryItem(name: "limit", value: "1000")],
+            nil, adminToken
         )
         guard status == 200 else {
             throw CatalogRegistrarError.identityHTTP(status)
@@ -110,11 +133,9 @@ public struct CatalogRegistrar {
         let createBody = """
         {"service":{"type":"\(Self.serviceType)","name":"mcp","description":"Model Context Protocol endpoint for the OpenStack cloud"}}
         """
-        let (cStatus, cBody, _) = try await transport.request(
-            method: "POST", service: "identity",
-            path: "/v3/services",
-            body: Data(createBody.utf8),
-            tokenOverride: adminToken
+        let (cStatus, cBody) = try await identityClient(
+            "POST", "/v3/services",
+            [], createBody, adminToken
         )
         guard cStatus == 201 else {
             throw CatalogRegistrarError.identityHTTP(cStatus)
@@ -138,14 +159,13 @@ public struct CatalogRegistrar {
             let interface: String?
             let region_id: String?
         }
-        let (status, body, _) = try await transport.request(
-            method: "GET", service: "identity",
-            path: "/v3/endpoints",
-            query: [
+        let (status, body) = try await identityClient(
+            "GET", "/v3/endpoints",
+            [
                 URLQueryItem(name: "service_id", value: serviceID),
                 URLQueryItem(name: "limit", value: "1000"),
             ],
-            tokenOverride: adminToken
+            nil, adminToken
         )
         guard status == 200 else {
             throw CatalogRegistrarError.identityHTTP(status)
@@ -164,11 +184,9 @@ public struct CatalogRegistrar {
         let createBody = """
         {"endpoint":{"interface":"\(interface)","region_id":"\(region)","url":"\(url)"}}
         """
-        let (cStatus, cBody, _) = try await transport.request(
-            method: "POST", service: "identity",
-            path: "/v3/services/\(serviceID)/endpoints",
-            body: Data(createBody.utf8),
-            tokenOverride: adminToken
+        let (cStatus, cBody) = try await identityClient(
+            "POST", "/v3/services/\(serviceID)/endpoints",
+            [], createBody, adminToken
         )
         guard cStatus == 201 else {
             throw CatalogRegistrarError.identityHTTP(cStatus)

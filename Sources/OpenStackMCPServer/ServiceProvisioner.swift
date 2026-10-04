@@ -43,6 +43,23 @@ public struct ServiceProvisioner {
     private let adminToken: String
     private let transport: Transport
     private let logger: Logger
+    /// Executes an identity API request, returning (status, body). Sent with the
+    /// given token (or the admin token when nil) as X-Auth-Token, against the
+    /// base URL + the (leading-slash-stripped) path.
+    ///
+    /// Defaults to the in-process `Transport`. The `provision` command injects
+    /// a `curl`-based client instead: some Keystones (e.g. the Genestack/RDO
+    /// in-cluster one, Apache/mod_wsgi-fronted) return responses the
+    /// AsyncHTTPClient fails to parse (`invalidHeaderFieldValues`) for
+    /// authenticated calls like GET /v3/domains, while curl handles them
+    /// reliably. The signature mirrors `Transport.request`'s useful surface.
+    private let identityClient: (
+        _ method: String,
+        _ path: String,
+        _ query: [URLQueryItem],
+        _ body: String?,
+        _ token: String?
+    ) async throws -> (status: Int, body: Data)
     /// Mints a token as the given (password-authenticated) user. Used to create
     /// the application credential under the service user's ownership.
     ///
@@ -63,7 +80,8 @@ public struct ServiceProvisioner {
         adminToken: String,
         transport: Transport,
         logger: Logger = Logger(label: "service-provisioner"),
-        passwordTokenMinter: ((String, String?, String) async throws -> String)? = nil
+        passwordTokenMinter: ((String, String?, String) async throws -> String)? = nil,
+        identityClient: ((String, String, [URLQueryItem], String?, String?) async throws -> (status: Int, body: Data))? = nil
     ) {
         self.username = username
         self.domainName = domainName
@@ -78,6 +96,21 @@ public struct ServiceProvisioner {
             let m = LoginMinter(transport: transport, logger: logger)
             self.passwordTokenMinter = { id, domain, password in
                 try await m.mint(method: .password(userID: id, domain: domain, password: password, projectName: nil)).id
+            }
+        }
+        if let client = identityClient {
+            self.identityClient = client
+        } else {
+            self.identityClient = { method, path, query, body, token in
+                let (status, bodyData, _) = try await transport.request(
+                    method: method,
+                    service: "identity",
+                    path: path,
+                    query: query,
+                    body: body.map { Data($0.utf8) },
+                    tokenOverride: token
+                )
+                return (status: status, body: bodyData)
             }
         }
     }
@@ -292,14 +325,7 @@ public struct ServiceProvisioner {
         as token: String? = nil
     ) async throws -> (Int, Data) {
         do {
-            let (status, bodyData, _) = try await transport.request(
-                method: method,
-                service: "identity",
-                path: path,
-                query: query,
-                body: body.map { Data($0.utf8) },
-                tokenOverride: token ?? adminToken
-            )
+            let (status, bodyData) = try await identityClient(method, path, query, body, token ?? adminToken)
             return (status, bodyData)
         } catch {
             throw ServiceProvisionerError.transport(error)

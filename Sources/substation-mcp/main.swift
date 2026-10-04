@@ -379,7 +379,11 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
                 internalURL: internalURL,
                 adminURL: adminURL,
                 adminToken: admin,
-                logger: logger
+                logger: logger,
+                identityClient: ProvisionCommand.curlIdentityClient(
+                    baseURL: cloudEntry.authURL?.absoluteString ?? "",
+                    logger: logger
+                )
             )
             let result = try await registrar.ensureCatalog()
             print("service: \(result.serviceID)")
@@ -512,8 +516,12 @@ struct ProvisionCommand: AsyncParsableCommand {
 
         do {
             let roleList = roles.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            // Inject the curl password minter so the service-user token mint
-            // (for app-cred ownership) also avoids the in-process 400.
+            // Inject the curl-based identity client + password minter so the
+            // provisioner avoids the in-process AsyncHTTPClient's response-parse
+            // failures (invalidHeaderFieldValues) against the Apache-fronted
+            // in-cluster keystone. Identity ops hit the cloud's auth_url
+            // (in-cluster); mints hit --mint-url (public).
+            let identityBase = cloudEntry.authURL?.absoluteString ?? ""
             let provisioner = ServiceProvisioner(
                 username: username,
                 domainName: domain,
@@ -522,7 +530,8 @@ struct ProvisionCommand: AsyncParsableCommand {
                 adminToken: admin,
                 transport: wiring.transport,
                 logger: logger,
-                passwordTokenMinter: userMintViaCurl
+                passwordTokenMinter: userMintViaCurl,
+                identityClient: Self.curlIdentityClient(baseURL: identityBase, logger: logger)
             )
             let result = try await provisioner.ensureServiceIdentity()
 
@@ -629,6 +638,67 @@ struct ProvisionCommand: AsyncParsableCommand {
             .prefix { $0 != "\n" && $0 != "\r" }
             .trimmingCharacters(in: .whitespaces)
         return token.isEmpty ? nil : token
+    }
+
+    /// Build a closure that runs an identity API request via a `curl`
+    /// subprocess against `baseURL` (the cloud's auth_url, e.g. the in-cluster
+    /// keystone svc). Used as the `ServiceProvisioner`'s identity client: some
+    /// Keystones (Apache/mod_wsgi-fronted, e.g. Genestack/RDO) return responses
+    /// the in-process AsyncHTTPClient fails to parse (`invalidHeaderFieldValues`)
+    /// for authenticated calls, while curl handles them reliably. The request
+    /// sends `token` (or none when empty) as X-Auth-Token, appends `query`
+    /// items, and POSTs/PUTs `body` when present. Returns (status, body).
+    static func curlIdentityClient(
+        baseURL: String,
+        logger: Logger
+    ) -> (String, String, [URLQueryItem], String?, String?) async throws -> (status: Int, body: Data) {
+        return { method, path, query, body, token in
+            var url = baseURL
+            if let clean = path.first, clean == "/" {
+                url = baseURL + String(path.dropFirst())
+            } else {
+                url = baseURL + "/" + path
+            }
+            // Append query items (URL-encoded).
+            if !query.isEmpty {
+                var comps = URLComponents(string: url)
+                comps?.queryItems = query
+                url = comps?.string ?? url
+            }
+            var args: [String] = ["-sS", "-m", "30", "-X", method,
+                                   "-w", "\n__HTTPSTATUS__%{http_code}"]
+            if let token, !token.isEmpty {
+                args += ["-H", "X-Auth-Token: \(token)"]
+            }
+            if let body {
+                args += ["-H", "Content-Type: application/json", "--data", body]
+            }
+            args.append(url)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            process.arguments = args
+            let outPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError = outPipe
+            process.standardInput = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            let raw = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let text = String(decoding: raw, as: UTF8.self)
+            // Split off the trailing "\n__HTTPSTATUS__<code>" marker.
+            guard let marker = text.range(of: "\n__HTTPSTATUS__") else {
+                throw CLIError(message: "provision: curl identity request missing status marker (output: \(text.prefix(300)))")
+            }
+            let bodyStr = String(text[text.startIndex..<marker.lowerBound])
+            let codeStr = text[text.index(after: marker.upperBound)...].trimmingCharacters(in: .whitespaces)
+            guard let status = Int(codeStr) else {
+                throw CLIError(message: "provision: curl identity request bad status '\(codeStr)'")
+            }
+            if process.terminationStatus != 0 {
+                logger.error("curl identity request failed", metadata: ["method": .string(method), "path": .string(path), "exit": .string(String(process.terminationStatus)), "status": .string(String(status))])
+            }
+            return (status: status, body: Data(bodyStr.utf8))
+        }
     }
 }
 
