@@ -28,6 +28,10 @@ public struct CatalogRegistrar {
     private let transport: Transport
     private let region: String
     private let publicURL: String
+    /// Per-interface endpoint URLs. When unset, they default to `publicURL` so
+    /// a single-URL deployment still works.
+    private let internalURL: String
+    private let adminURL: String
     /// Admin token used for the identity write calls (X-Auth-Token).
     private let adminToken: String
     private let logger: Logger
@@ -36,14 +40,27 @@ public struct CatalogRegistrar {
         transport: Transport,
         region: String,
         publicURL: String,
+        internalURL: String? = nil,
+        adminURL: String? = nil,
         adminToken: String,
         logger: Logger = Logger(label: "catalog-registrar")
     ) {
         self.transport = transport
         self.region = region
         self.publicURL = publicURL
+        self.internalURL = internalURL ?? publicURL
+        self.adminURL = adminURL ?? publicURL
         self.adminToken = adminToken
         self.logger = logger
+    }
+
+    /// The endpoint URL for a given interface role.
+    private func url(for interface: String) -> String {
+        switch interface {
+        case "internal": return internalURL
+        case "admin": return adminURL
+        default: return publicURL
+        }
     }
 
     /// Ensure the `mcp` service and its public/internal/admin endpoints exist
@@ -57,7 +74,7 @@ public struct CatalogRegistrar {
             let (id, created) = try await ensureEndpoint(
                 serviceID: serviceID,
                 interface: interface,
-                url: publicURL
+                url: url(for: interface)
             )
             endpointIDs.append(id)
             if !created { reused.append(id) }

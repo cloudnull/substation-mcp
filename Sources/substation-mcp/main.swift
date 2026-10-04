@@ -1,11 +1,13 @@
 import ArgumentParser
 import AsyncHTTPClient
 import Foundation
+import HTTPTypes
 import Hummingbird
 import HummingbirdMCP
 import Logging
 import MCP
 import NIOCore
+import NIOHTTP1
 import NIOPosix
 import OpenStackClient
 import OpenStackMCPServer
@@ -27,6 +29,9 @@ struct OpenStackMCP: AsyncParsableCommand {
             RegisterCatalogCommand.self,
             ProvisionCommand.self,
             WaitSecretCommand.self,
+            WriteSecretCommand.self,
+            MarkSecretCommand.self,
+            ReadSecretCommand.self,
             ConformanceCommand.self,
         ],
         defaultSubcommand: nil
@@ -312,6 +317,8 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Cloud name (from clouds.yaml).") var cloud: String?
     @Option(name: .long, help: "Region to register endpoints in.") var region: String
     @Option(name: .long, help: "Public URL of the MCP endpoint.") var publicURL: String
+    @Option(name: .long, help: "Internal URL (defaults to --public-url).") var internalURL: String?
+    @Option(name: .long, help: "Admin URL (defaults to --public-url).") var adminURL: String?
     @Option(name: .long, help: "Identity-admin token (X-Auth-Token). Defaults to OS_AUTH_TOKEN. If unset, mints one from the cloud's application credential (a service-domain user) and discards it after.") var adminToken: String?
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
@@ -344,6 +351,8 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
                 transport: wiring.transport,
                 region: region,
                 publicURL: publicURL,
+                internalURL: internalURL,
+                adminURL: adminURL,
                 adminToken: admin,
                 logger: logger
             )
@@ -517,6 +526,211 @@ struct WaitSecretCommand: AsyncParsableCommand {
         }
         return (true, key.map { sd.data?[ $0 ] != nil } ?? false)
     }
+}
+
+// MARK: - write-secret (upsert a k8s Secret from a JSON result)
+//
+// Used by the provisioner Job: after `provision` prints its JSON result, this
+// writes the app-cred (and other fields) into the `<fullname>-service-identity`
+// Secret. It PRESERVES an existing `app_cred_secret` when the new result has no
+// secret (i.e. the app-cred was reused and its secret is not recoverable).
+struct WriteSecretCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "write-secret",
+        abstract: "Upsert a k8s Secret's string data from a JSON result (preserves an existing app_cred_secret when the new result omits it)."
+    )
+
+    @Option(name: .long, help: "Name of the Secret to write.") var name: String
+    @Option(name: .long, help: "Namespace (defaults to the pod's namespace).") var namespace: String?
+    @Argument(help: "The JSON result to write (each top-level key becomes a Secret string key).") var json: String
+
+    func run() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let ns = namespace ?? env["POD_NAMESPACE"] ?? "default"
+
+        struct Result: Decodable {
+            let user_id: String?
+            let username: String?
+            let domain: String?
+            let app_cred_id: String?
+            let app_cred_name: String?
+            let app_cred_secret: String?
+            let app_cred_secret_created: Bool?
+            let user_reused: Bool?
+            let app_cred_reused: Bool?
+        }
+        guard let data = json.data(using: .utf8),
+              let result = try? JSONDecoder().decode(Result.self, from: data) else {
+            throw CLIExit(code: 1, message: "write-secret: could not parse the JSON result")
+        }
+
+        // Build the desired string data (skip nils / empty secrets).
+        var desired: [String: String] = [:]
+        if let v = result.user_id, !v.isEmpty { desired["user_id"] = v }
+        if let v = result.username, !v.isEmpty { desired["username"] = v }
+        if let v = result.domain, !v.isEmpty { desired["domain"] = v }
+        if let v = result.app_cred_id, !v.isEmpty { desired["app_cred_id"] = v }
+        if let v = result.app_cred_name, !v.isEmpty { desired["app_cred_name"] = v }
+        if let v = result.app_cred_secret, !v.isEmpty { desired["app_cred_secret"] = v }
+
+        // Read the existing secret (if any) to preserve app_cred_secret when the
+        // app-cred was reused (new result has no secret).
+        if desired["app_cred_secret"] == nil,
+           let existing = try? await readSecretString(name: name, namespace: ns),
+           let prev = existing["app_cred_secret"] {
+            desired["app_cred_secret"] = prev
+        }
+
+        try await putSecret(name: name, namespace: ns, data: desired)
+        print("wrote secret \(ns)/\(name) (\(desired.count) keys)")
+    }
+}
+
+// MARK: - mark-secret (set a single key in a k8s Secret)
+//
+// Used by the provisioner Job to flip `<fullname>-clouds` `provisioned: "true"`
+// after the identity is written, which changes the clouds.yaml Secret's
+// checksum and rolls the Deployment (now that it can carry the app-cred).
+struct MarkSecretCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mark-secret",
+        abstract: "Set a single key in a k8s Secret (preserving other keys)."
+    )
+
+    @Option(name: .long, help: "Name of the Secret to update.") var name: String
+    @Option(name: .long, help: "Namespace (defaults to the pod's namespace).") var namespace: String?
+    @Option(name: .long, help: "Key to set.") var key: String
+    @Option(name: .long, help: "Value to set.") var value: String
+
+    func run() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let ns = namespace ?? env["POD_NAMESPACE"] ?? "default"
+
+        // Read existing data so we preserve all other keys (e.g. clouds.yaml).
+        var existing = (try? await readSecretString(name: name, namespace: ns)) ?? [:]
+        existing[key] = value
+        try await putSecret(name: name, namespace: ns, data: existing)
+        print("marked secret \(ns)/\(name) [\(key)=\(value)]")
+    }
+}
+
+// MARK: - shared k8s Secret helpers (in-cluster, via the SA token)
+
+/// Read a k8s Secret's data (base64-decoded) as [String: String].
+func readSecretString(name: String, namespace: String) async throws -> [String: String] {
+    let (present, data) = try await fetchSecretData(name: name, namespace: namespace)
+    guard present else { return [:] }
+    var out: [String: String] = [:]
+    for (k, v) in data {
+        if let d = Data(base64Encoded: v), let s = String(data: d, encoding: .utf8) {
+            out[k] = s
+        }
+    }
+    return out
+}
+
+/// PUT/POST a k8s Secret (string data). Creates if absent, updates if present.
+func putSecret(name: String, namespace: String, data: [String: String]) async throws {
+    let tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    let token = try String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+
+    // base64-encode the string data (k8s Secret .data is base64).
+    var b64: [String: String] = [:]
+    for (k, v) in data {
+        b64[k] = Data(v.utf8).base64EncodedString()
+    }
+
+    let base = "https://kubernetes.default.svc/api/v1/namespaces/\(namespace)/secrets"
+    let exists = (try? await fetchSecretData(name: name, namespace: namespace).0) ?? false
+
+    let payload: String
+    if exists {
+        // PATCH (merge) so we don't clobber resourceVersion.
+        payload = """
+        {"data":\(try jsonDict(b64))}
+        """
+    } else {
+        payload = """
+        {"apiVersion":"v1","kind":"Secret","metadata":{"name":"\(name)","namespace":"\(namespace)"},"type":"Opaque","stringData":\(try jsonDict(data))}
+        """
+    }
+
+    let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    defer { _ = try? await elg.shutdownGracefully() }
+    let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+    defer { _ = try? await client.shutdown() }
+
+    let method: HTTPMethod = exists ? .PATCH : .POST
+    var req = try HTTPClient.Request(url: exists ? "\(base)/\(name)" : base, method: method)
+    req.headers.add(name: "Authorization", value: "Bearer \(token)")
+    req.headers.add(name: "Content-Type", value: "application/merge-patch+json")
+    req.headers.add(name: "Accept", value: "application/json")
+    req.body = .bytes([UInt8](payload.utf8))
+
+    let response = try await client.execute(request: req, deadline: .now() + .seconds(15)).get()
+    guard response.status.code == 200 || response.status.code == 201 else {
+        let body = response.body.flatMap { String(decoding: Data(buffer: $0), as: UTF8.self) } ?? ""
+        throw CLIExit(code: 1, message: "k8s secret write \(method) \(name) -> HTTP \(response.status.code): \(body)")
+    }
+}
+
+/// Fetch a k8s Secret's raw .data (base64 map) via the SA token.
+func fetchSecretData(name: String, namespace: String) async throws -> (present: Bool, data: [String: String]) {
+    let tokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    let token = try String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    let url = "https://kubernetes.default.svc/api/v1/namespaces/\(namespace)/secrets/\(name)"
+
+    let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    defer { _ = try? await elg.shutdownGracefully() }
+    let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+    defer { _ = try? await client.shutdown() }
+
+    var req = try HTTPClient.Request(url: url, method: .GET)
+    req.headers.add(name: "Authorization", value: "Bearer \(token)")
+    req.headers.add(name: "Accept", value: "application/json")
+    let response = try await client.execute(request: req, deadline: .now() + .seconds(10)).get()
+    let data = response.body.flatMap { Data(buffer: $0) } ?? Data()
+    guard response.status.code == 200 else { return (false, [:]) }
+    struct SecretData: Decodable { let data: [String: String]? }
+    guard let sd = try? JSONDecoder().decode(SecretData.self, from: data) else { return (false, [:]) }
+    return (true, sd.data ?? [:])
+}
+
+// MARK: - read-secret (print one key from a k8s Secret via the SA token)
+//
+// Used by the Deployment's initContainer to read the provisioned app-cred from
+// the identity Secret (via the k8s API, not a volume mount — the Secret may not
+// exist when the pod starts, and an optional Secret volume is not reliably
+// populated in place). Prints the decoded value of `--key` to stdout.
+struct ReadSecretCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "read-secret",
+        abstract: "Print one decoded key from a k8s Secret (in-cluster, via the SA token)."
+    )
+
+    @Option(name: .long, help: "Name of the Secret.") var name: String
+    @Option(name: .long, help: "Key to print.") var key: String
+    @Option(name: .long, help: "Namespace (defaults to the pod's namespace).") var namespace: String?
+
+    func run() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let ns = namespace ?? env["POD_NAMESPACE"] ?? "default"
+        let (present, data) = try await fetchSecretData(name: name, namespace: ns)
+        guard present, let b64 = data[key],
+              let decoded = Data(base64Encoded: b64),
+              let value = String(data: decoded, encoding: .utf8) else {
+            throw CLIExit(code: 1, message: "read-secret: key '\(key)' not found in \(ns)/\(name)")
+        }
+        print(value)
+    }
+}
+
+/// Encode a [String: String] as a JSON object literal (for embedding in a body).
+func jsonDict(_ dict: [String: String]) throws -> String {
+    var out: [String: Any] = [:]
+    for (k, v) in dict { out[k] = v }
+    let data = try JSONSerialization.data(withJSONObject: out, options: [])
+    return String(decoding: data, as: UTF8.self)
 }
 
 // MARK: - conformance (hidden; spec §14.5 conformance-HTTP-smoke)

@@ -92,6 +92,8 @@ let package = Package(
                 .target(name: "OpenStackMCPServer"),
                 .target(name: "HummingbirdMCP"),
                 .target(name: "OpenStackClient"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Configuration", package: "swift-configuration"),

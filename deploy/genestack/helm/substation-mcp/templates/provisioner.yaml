@@ -1,0 +1,142 @@
+{{- if .Values.serviceUser.enabled }}
+{{- $fullname := include "substation-mcp.fullname" . -}}
+{{- $ns := include "substation-mcp.namespace" . -}}
+# The provisioner Job: a Helm post-install/post-upgrade hook that creates the
+# deployment's standing identity (service user + application credential in the
+# OpenStack `service` domain) and the `mcp` catalog entry (public/internal/admin
+# endpoints), then writes the app-cred to the `<fullname>-service-identity`
+# Secret and marks `<fullname>-clouds` as provisioned (which rolls the
+# Deployment, now that clouds.yaml can carry the app-cred).
+#
+# It is IDEMPOTENT: on re-run it reuses the existing user + app-cred (no
+# duplicates) and preserves the secret already in the identity Secret (a reused
+# app-cred's secret is not recoverable).
+#
+# The operator's admin credential (app-cred or user/password) is read from
+# environment variables (injected from `serviceUser.auth` below) and is used
+# ONLY to mint a short-lived admin token — it is never written to any Secret.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-provision
+  namespace: {{ $ns }}
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 1800
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $fullname }}-provisioner
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provision
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # ── Operator admin credential (input; used only to mint a token) ──
+            {{- with .Values.serviceUser.auth.appCred.id }}
+            - name: OS_APPLICATION_CREDENTIAL_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.serviceUser.auth.appCred.secret }}
+            - name: OS_APPLICATION_CREDENTIAL_SECRET
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.serviceUser.auth.password.username }}
+            - name: OS_USERNAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.serviceUser.auth.password.password }}
+            - name: OS_PASSWORD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.serviceUser.auth.password.domain }}
+            - name: OS_USER_DOMAIN_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            # ── Clouds.yaml (read-only; tells the binary where Keystone is) ───
+            - name: OS_CLIENT_CONFIG_FILE
+              value: /etc/openstack/clouds.yaml
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack/clouds.yaml
+              subPath: clouds.yaml
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -euo pipefail
+              FULLNAME={{ $fullname }}
+              IDENTITY_SECRET="${FULLNAME}-service-identity"
+              CLOUDS_SECRET="${FULLNAME}-clouds"
+              # 1. Provision the service user + app-cred (idempotent). Capture the
+              #    JSON result (user_id, app_cred_id, app_cred_secret, ...).
+              PROVISION_JSON=$(substation-mcp provision \
+                --username "{{ .Values.serviceUser.username }}" \
+                --domain "{{ .Values.serviceUser.domain }}" \
+                --app-cred-name "{{ .Values.serviceUser.appCredName }}" \
+                --roles "{{ range $i, $r := .Values.serviceUser.roles }}{{ if $i }},{{ end }}{{ $r }}{{ end }}" \
+                --log-level info 2>/dev/null)
+              echo "provision result:" >&2
+              printf '%s\n' "$PROVISION_JSON" >&2
+
+              # 2. Write the app-cred to the identity Secret (create or preserve).
+              substation-mcp write-secret \
+                --name "$IDENTITY_SECRET" \
+                --json "$PROVISION_JSON" \
+                --log-level info
+
+              # 3. Register the mcp catalog service + public/internal/admin
+              #    endpoints (idempotent).
+              substation-mcp register-catalog \
+                --region "{{ .Values.serviceUser.region }}" \
+                --public-url "{{ .Values.serviceUser.catalog.publicURL }}" \
+                --internal-url "{{ .Values.serviceUser.catalog.internalURL }}" \
+                --admin-url "{{ .Values.serviceUser.catalog.adminURL }}" \
+                --log-level info
+
+              # 4. Mark the clouds Secret as provisioned so the Deployment rolls.
+              substation-mcp mark-secret \
+                --name "$CLOUDS_SECRET" \
+                --key provisioned \
+                --value "true" \
+                --log-level info
+              echo "provisioner complete" >&2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: clouds
+          secret:
+            secretName: {{ $fullname }}-clouds
+            items:
+              - key: clouds.yaml
+                path: clouds.yaml
+        - name: tmp
+          emptyDir: {}
+{{- end }}

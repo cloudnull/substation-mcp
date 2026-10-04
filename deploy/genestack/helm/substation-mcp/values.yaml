@@ -167,16 +167,62 @@ clouds:
     interface: public
     verify: true
 
-# ── Application credential (optional; powers /v1/login URL-mode page) ─────────
-# When enabled, the chart renders `application_credential_id` +
-# `application_credential_secret` from these values into the clouds.yaml
-# Secret. If the login page is disabled (config.auth.loginPageEnabled: false)
-# and clients present their own Bearer tokens, leave `enabled: false` — the
-# clouds.yaml app-cred fields stay empty.
-appCred:
-  enabled: false
-  id: ""
-  secret: ""
+# ── Service user + application credential (REQUIRED deployment step) ──────────
+#
+# The deployment's standing identity: a service user in the OpenStack `service`
+# domain (mirroring `nova_service_user`) with the admin role and an application
+# credential. This credential powers catalog registration, the /v1/login
+# URL-mode page, and (optionally) conformance — it is reusable and never
+# expires, unlike a one-shot token.
+#
+# Provisioning is done automatically by a Helm post-install/post-upgrade Job
+# (templates/provisioner.yaml) which runs `substation-mcp provision` +
+# `register-catalog` against the cloud, then writes the app-cred to the
+# `<fullname>-service-identity` k8s Secret and marks `<fullname>-clouds`
+# complete (rolling the Deployment). It is IDEMPOTENT: on re-run it reuses the
+# existing user/app-cred (no duplicates) and no longer knows the secret, so it
+# preserves the value already in the identity Secret.
+#
+# You MUST supply the operator's admin credential (used only by the provisioner
+# to mint a short-lived admin token, never stored) via ONE of:
+#   auth.appCred:   application_credential_id + application_credential_secret
+#   auth.password:  username + password + domain (default "admin")
+#
+# The PROVISIONED app-cred's output is written to a k8s Secret — you do NOT
+# type it in. It is then injected into the clouds.yaml Secret for the server.
+serviceUser:
+  enabled: false          # flip to true to auto-provision (required for Genestack)
+  username: substation    # service-domain username to create/reuse
+  domain: service         # OpenStack domain (default "service")
+  appCredName: substation-cred   # name of the application credential
+  roles: [admin]          # roles to grant on the domain (comma list or array)
+  # The region the mcp catalog endpoints are registered in (see catalog.region
+  # below — kept here as the single source; catalog.region defaults to this).
+  region: SAT0
+  # ── Catalog endpoints (public/internal/admin URLs — user-definable) ─────────
+  # All three default to the same public URL; split them if your cloud exposes
+  # different endpoints per interface.
+  catalog:
+    publicURL: "https://substation-mcp.example.com"
+    internalURL: "https://substation-mcp.example.com"
+    adminURL: "https://substation-mcp.example.com"
+  # ── Operator admin credential (input, for the provisioner only) ─────────────
+  auth:
+    # Option A: application credential
+    appCred:
+      id: ""
+      secret: ""
+    # Option B: user password
+    password:
+      username: ""
+      password: ""
+      domain: "admin"
+  # ── Output (do not edit — written by the provisioner Job) ───────────────────
+  # Rendered into the clouds.yaml Secret's app-cred fields (see configmap.yaml).
+  # `secret` is populated from the identity Secret at render time.
+  output:
+    id: ""
+    secret: ""
 
 # ── Extra env vars (OSMCP_* form, higher precedence than the config file) ─────
 env: []

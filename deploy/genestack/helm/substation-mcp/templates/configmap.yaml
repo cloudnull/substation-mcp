@@ -37,9 +37,22 @@ stringData:
     clouds:
       {{- $appCredID := "" }}
       {{- $appCredSecret := "" }}
-      {{- if .Values.appCred.enabled }}
-      {{- $appCredID = .Values.appCred.id }}
-      {{- $appCredSecret = .Values.appCred.secret }}
+      {{- if .Values.serviceUser.enabled }}
+      {{- /*
+            When the provisioner is enabled, the app-cred is created at runtime,
+            so we render stable placeholders here. The Deployment's initContainer
+            substitutes them from the `<fullname>-service-identity` Secret before
+            the server starts (see deployment.yaml). If the operator pre-supplies
+            output.id/secret (e.g. importing an existing identity), use those
+            directly and skip the initContainer substitution.
+      */}}
+      {{- if .Values.serviceUser.output.id }}
+      {{- $appCredID = .Values.serviceUser.output.id }}
+      {{- $appCredSecret = .Values.serviceUser.output.secret }}
+      {{- else }}
+      {{- $appCredID = "__IDENTITY_APPCRED_ID__" }}
+      {{- $appCredSecret = "__IDENTITY_APPCRED_SECRET__" }}
+      {{- end }}
       {{- end }}
       {{- range $name, $cloud := .Values.clouds }}
       {{ $name }}:

@@ -36,6 +36,54 @@ spec:
       serviceAccountName: {{ include "substation-mcp.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.serviceUser.enabled }}
+      # Re-create the pod when the provisioned identity Secret changes (the
+      # app-cred id/secret), so the assembled clouds.yaml stays current.
+      initContainers:
+        - name: assemble-clouds
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          command:
+            - /bin/sh
+            - -c
+            - |
+              # Wait for the provisioner Job (a post-install/post-upgrade Helm
+              # hook) to write the identity Secret, THEN read the app-cred from
+              # the k8s API (not a volume — the Secret may not exist when the
+              # pod starts) and substitute the placeholders in clouds.yaml.
+              set -eu
+              IDENTITY_SECRET={{ include "substation-mcp.fullname" . }}-service-identity
+              substation-mcp wait-secret \
+                --name "$IDENTITY_SECRET" \
+                --key app_cred_id \
+                --timeout 600
+              ID=$(substation-mcp read-secret --name "$IDENTITY_SECRET" --key app_cred_id)
+              SEC=$(substation-mcp read-secret --name "$IDENTITY_SECRET" --key app_cred_secret)
+              if [ -z "$ID" ]; then
+                echo "ERROR: identity Secret has no app_cred_id" >&2
+                exit 1
+              fi
+              sed -e "s|__IDENTITY_APPCRED_ID__|${ID}|g" \
+                  -e "s|__IDENTITY_APPCRED_SECRET__|${SEC}|g" \
+                  /etc/clouds-in/clouds.yaml > /etc/clouds-out/clouds.yaml
+              echo "assembled clouds.yaml with app-cred ${ID:0:8}…" >&2
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: clouds-in
+              mountPath: /etc/clouds-in
+              readOnly: true
+            - name: clouds-assembled
+              mountPath: /etc/clouds-out
+      {{- end }}
       containers:
         - name: substation-mcp
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -62,10 +110,18 @@ spec:
               mountPath: /etc/substation-mcp/config.yaml
               subPath: config.yaml
               readOnly: true
+            {{- if .Values.serviceUser.enabled }}
+            # The assembled clouds.yaml (app-cred substituted by the initContainer).
+            - name: clouds-assembled
+              mountPath: /etc/openstack/clouds.yaml
+              subPath: clouds.yaml
+              readOnly: true
+            {{- else }}
             - name: clouds
               mountPath: /etc/openstack/clouds.yaml
               subPath: clouds.yaml
               readOnly: true
+            {{- end }}
             # scratch space (readOnlyRootFilesystem is true).
             - name: tmp
               mountPath: /tmp
@@ -97,6 +153,21 @@ spec:
             items:
               - key: clouds.yaml
                 path: clouds.yaml
+        {{- if .Values.serviceUser.enabled }}
+        # Raw clouds.yaml (template with placeholders) read by the initContainer.
+        - name: clouds-in
+          secret:
+            secretName: {{ include "substation-mcp.fullname" . }}-clouds
+            items:
+              - key: clouds.yaml
+                path: clouds.yaml
+        # The assembled clouds.yaml (written by the initContainer, read by the
+        # main container). The app-cred itself is read via the k8s API (the
+        # initContainer's `read-secret`), not a volume, because the identity
+        # Secret may not exist when the pod starts.
+        - name: clouds-assembled
+          emptyDir: {}
+        {{- end }}
         - name: tmp
           emptyDir: {}
       {{- with .Values.nodeSelector }}

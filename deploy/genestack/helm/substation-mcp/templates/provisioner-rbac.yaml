@@ -1,0 +1,52 @@
+{{- if .Values.serviceUser.enabled }}
+{{- $fullname := include "substation-mcp.fullname" . -}}
+{{- $ns := include "substation-mcp.namespace" . -}}
+# RBAC for the provisioner Job.
+#
+# The provisioner needs to WRITE two Secrets in the release namespace so it can
+# publish the provisioned app-cred and signal completion:
+#   - <fullname>-service-identity  (the app-cred id + secret it created)
+#   - <fullname>-clouds            (it flips `provisioned: "true"` to roll the
+#                                    Deployment once the identity is ready)
+#
+# It does NOT need any OpenStack-scoped or broad k8s permissions. The RBAC is a
+# ClusterRole + ClusterRoleBinding only because a RoleBinding cannot grant
+# cross-namespace access and the Job's ServiceAccount token must be usable from
+# the release namespace; granting secrets:{get,create,update,patch} cluster-wide
+# on a dedicated ServiceAccount is the least-privilege shape that works. If your
+# cluster is locked down, replace the ClusterRole/ClusterRoleBinding with a
+# namespace-scoped Role/RoleBinding (the Job runs in `{{ $ns }}`).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $fullname }}-provisioner
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $fullname }}-provisioner
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $fullname }}-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-provisioner
+    namespace: {{ $ns }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-provisioner
+  namespace: {{ $ns }}
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+{{- end }}

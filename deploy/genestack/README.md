@@ -14,13 +14,19 @@ This follows the same pattern as Genestack's built-in add-ons
 - A container registry the cluster can pull from (e.g. the cluster's own
   registry, quay.io, ghcr.io, etc.).
 - `kubectl`, `helm`, `yq` available on the Genestack controller node.
-- An OpenStack application credential (admin role) for `register-catalog`.
+- **An operator admin credential** (an application credential *or* a
+  user/password with the `admin` role) to bootstrap the deployment's standing
+  identity. This is the one **required, user-definable** input: the chart's
+  provisioner Job uses it (only to mint a short-lived admin token) to create
+  the `substation` service user + application credential in the OpenStack
+  `service` domain and to register the `mcp` catalog entry. It is never stored
+  in any Secret. See Step 4.
 
 ## Files
 
 | Path | Purpose |
 |------|---------|
-| `helm/substation-mcp/` | The Helm chart (Deployment, Service, config ConfigMap, clouds Secret, ServiceAccount, optional Gateway+HTTPRoute). |
+| `helm/substation-mcp/` | The Helm chart (Deployment, Service, config ConfigMap, clouds Secret, ServiceAccount, optional Gateway+HTTPRoute, and — when `serviceUser.enabled` — the provisioner Job + RBAC that auto-creates the service user + app-cred + `mcp` catalog entry). |
 | `kustomize/base/` | Kustomize base (namespace, common labels, `all.yaml` written by the post-renderer). |
 | `kustomize/overlay/` | Kustomize overlay (post-renderer target for the install script). |
 | `install-substation-mcp.sh` | The install/upgrade script (mirrors `bin/install-barbican-exporter.sh`). |
@@ -78,14 +84,61 @@ echo "  substation-mcp: 0.1.0" >> /etc/genestack/helm-chart-versions.yaml
 Edit `/opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml`:
 
 - **`image.repository` / `image.tag`** — your registry + tag.
-- **`config.server.publicUrl`** — the FQDN that will be exposed (must match
-  `gateway.fqdn` and the `PUBLIC_URL` used in `register-catalog`).
-- **`config.server.metricsToken`** — set a strong token to gate `/metrics`.
+- **`config.server.public_url`** — the FQDN that will be exposed (must match
+  `gateway.fqdn`).
+- **`config.auth.keystone_url`** — your Keystone URL (drives `readyz`).
+- **`config.server.metrics_token`** — set a strong token to gate `/metrics`.
 - **`config.clouds.default`** — your cloud name.
-- **`cloudsClouds.cloud_name.<name>.auth`** — your OpenStack auth details
-  (Keystone URL, region, etc.).
+- **`clouds.<name>.auth`** — your OpenStack auth details (Keystone URL,
+  region, etc.).
 - **`gateway.enabled` / `gateway.fqdn` / `gateway.gatewayClassName`** —
   external exposure via Gateway API (Envoy or Poundcake).
+- **`serviceUser`** — **required.** See below.
+
+### The `serviceUser` block (required deployment input)
+
+This provisions the deployment's standing identity — a service user in the
+OpenStack `service` domain (mirroring `nova_service_user`) with an application
+credential — and registers the `mcp` catalog entry (public/internal/admin
+endpoints). A Helm **post-install/post-upgrade** Job runs this automatically;
+the provisioned app-cred is written to the `<release>-service-identity`
+Secret, and an initContainer injects it into `clouds.yaml` before the server
+starts. The Job is idempotent (re-runs reuse the existing user/app-cred).
+
+You MUST set `serviceUser.enabled: true` and provide the operator's admin
+credential via `serviceUser.auth` (one of `appCred` or `password`):
+
+```yaml
+serviceUser:
+  enabled: true
+  username: substation            # service-domain user to create/reuse
+  domain: service                 # OpenStack domain
+  appCredName: substation-cred    # name of the application credential
+  roles: [admin]                  # roles to grant on the domain
+  region: SAT0                    # region the mcp catalog endpoints go in
+  catalog:                        # public/internal/admin endpoint URLs
+    publicURL: "https://substation.api.sat0.cloudnull.dev"
+    internalURL: "https://substation.api.sat0.cloudnull.dev"   # defaults to publicURL
+    adminURL: "https://substation.api.sat0.cloudnull.dev"      # defaults to publicURL
+  auth:
+    # Option A — application credential (preferred):
+    appCred:
+      id: "<operator app-cred id>"
+      secret: "<operator app-cred secret>"
+    # Option B — user password (mutually exclusive with appCred):
+    # password:
+    #   username: "admin"
+    #   password: "<admin password>"
+    #   domain: "admin"
+```
+
+> **Security:** the operator admin credential (`serviceUser.auth`) is injected
+> into the Job only as env vars and is used solely to mint a short-lived admin
+> token. It is **never written to any k8s Secret**. Only the *provisioned*
+> app-cred (the `substation` service user's own credential) is persisted — to
+> the `<release>-service-identity` Secret — and that is what the server uses.
+> Keep the override file containing `serviceUser.auth` to a tight ACL
+> (`chmod 600`); it holds the operator credential.
 
 For an operator-specific override with the highest precedence, drop a file
 into `/etc/genestack/helm-configs/substation-mcp/*.yaml`.
@@ -125,15 +178,44 @@ If you set `gateway.enabled=true`, the chart renders an `HTTPRoute` (and a
    mechanism to disable buffering on this route.
 4. The FQDN is reachable via MetalLB VIP (Genestack convention).
 
-## Step 6 — Register the MCP service in Keystone
+## Step 6 — Service user + catalog registration (automatic)
 
-One-time, as an operator with an admin token:
+When `serviceUser.enabled: true` (Step 3), the Helm chart's provisioner Job
+(a `post-install`/`post-upgrade` hook) runs automatically on every install and
+upgrade:
+
+1. **Provisions** the `substation` service user in the `service` domain + its
+   application credential (idempotent — reuses on re-run).
+2. **Writes** the app-cred to the `<release>-service-identity` Secret.
+3. **Registers** the `mcp` catalog service + public/internal/admin endpoints
+   at the `serviceUser.catalog.*` URLs (idempotent — reuses existing entries).
+4. **Rolls** the Deployment (the initContainer picks up the app-cred from the
+   identity Secret into `clouds.yaml`).
+
+Verify it ran:
+
+```sh
+# The provisioner Job completed:
+kubectl -n openstack get jobs | grep substation-mcp-provision
+# The identity Secret exists (the app-cred is in here — DO NOT print it):
+kubectl -n openstack get secret substation-mcp-service-identity
+# The pod is Ready (initContainer succeeded → server has the app-cred):
+kubectl -n openstack get pods -l app.kubernetes.io/name=substation-mcp
+# The catalog entry exists (as an OpenStack admin):
+openstack service list | grep -i mcp
+openstack endpoint list --service mcp
+```
+
+### Manual fallback
+
+If you'd rather manage the identity yourself (e.g. pre-create the service user
+and app-cred out-of-band), set `serviceUser.enabled: false` and run
+`register-catalog` directly:
 
 ```sh
 export OS_CLOUD=mycloud REGION=RegionOne
 export PUBLIC_URL=https://substation-mcp.example.com   # must match gateway.fqdn
 export OS_AUTH_TOKEN=<admin-keystone-token>
-
 ./deploy/register-catalog.sh
 ```
 
