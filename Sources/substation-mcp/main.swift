@@ -593,49 +593,48 @@ struct ProvisionCommand: AsyncParsableCommand {
                   let body = String(data: data, encoding: .utf8) else {
                 throw CLIError(message: "provision: could not build mint JSON body")
             }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             let base = authURL.hasSuffix("/") ? String(authURL.dropLast()) : authURL
             // The auth_url may or may not already include the /v3 prefix
             // (in-cluster: http://keystone:5000 ; public: https://k/v3). Append
             // only what's missing so we never produce /v3/v3/auth/tokens (404).
             let tokenPath = base.hasSuffix("/v3") ? "\(base)/auth/tokens" : "\(base)/v3/auth/tokens"
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG mint body: \(body.prefix(300))\nPROVISION_DEBUG mint url: \(tokenPath)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("PROVISION_DEBUG mint url: \(tokenPath)\n".data(using: .utf8)!)
             }
-            process.arguments = [
-                "-sS", "-m", "30",
-                "-D", "-", "-o", "/dev/null",
-                "-X", "POST", tokenPath,
-                "-H", "Content-Type: application/json",
-                "--data", body,
-            ]
+            // Run the mint + token extraction as a shell pipeline so the
+            // X-Subject-Token header is parsed by grep/awk/tr (bulletproof
+            // against line-ending quirks) rather than by Swift string parsing.
+            // The body is written to a temp file to avoid any shell-quoting of
+            // the password; curl reads it with --data @file.
+            let bodyFile = "/tmp/mint_body_\(UUID().uuidString).json"
+            do { try body.write(toFile: bodyFile, atomically: true, encoding: .utf8) } catch {
+                throw CLIError(message: "provision: could not write mint body: \(error)")
+            }
+            defer { try? FileManager.default.removeItem(atPath: bodyFile) }
+            let shellCmd = """
+            curl -sS -m 30 -D - -o /dev/null -X POST '\(tokenPath)' \
+              -H 'Content-Type: application/json' --data @\(bodyFile) \
+              | grep -i '^x-subject-token:' | head -n1 | awk '{print $2}' | tr -d '\\r\\n'
+            """
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", shellCmd]
             let outPipe = Pipe()
             process.standardOutput = outPipe
             process.standardError = outPipe
             process.standardInput = FileHandle.nullDevice
             try process.run()
             process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                let errData = outPipe.fileHandleForReading.readDataToEndOfFile()
-                logger.error("curl mint failed (exit \(process.terminationStatus))", metadata: ["output": .string(String(String(decoding: errData, as: UTF8.self).prefix(300)))])
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard process.terminationStatus == 0, !output.isEmpty else {
+                logger.error("curl mint failed", metadata: ["exit": .string(String(process.terminationStatus)), "output": .string(String(output.prefix(300)))])
                 throw CLIError(message: "provision: curl token mint failed (exit \(process.terminationStatus))")
             }
-            let hdrData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let headerText = String(decoding: hdrData, as: UTF8.self)
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG headerText (len \(headerText.count)):\n\(headerText.prefix(600))\n".data(using: .utf8)!)
+                FileHandle.standardError.write("PROVISION_DEBUG mint token len: \(output.count) head: \(output.prefix(30))...\n".data(using: .utf8)!)
             }
-            guard let token = Self.parseSubjectToken(fromHeaders: headerText) else {
-                throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")
-            }
-            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                let afterColon = headerText[headerText.index(after: headerText.lowercased().range(of: "x-subject-token:")!.upperBound)...]
-                let first5 = afterColon.prefix(8).map { $0.asciiValue.map { String($0) } ?? "?" }.joined(separator: ",")
-                FileHandle.standardError.write("PROVISION_DEBUG afterColon first8 ascii: [\(first5)] totalLen=\(afterColon.count)\n".data(using: .utf8)!)
-                FileHandle.standardError.write("PROVISION_DEBUG parsed token (len \(token.count)): \(token.prefix(40))...\n".data(using: .utf8)!)
-            }
-            return token
+            return output
         }
     }
 
