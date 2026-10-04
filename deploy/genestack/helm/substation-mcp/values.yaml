@@ -201,15 +201,18 @@ serviceUser:
   cloud: sat0
   # The region the mcp catalog endpoints are registered in.
   region: SAT0
-  # Identity endpoint the provisioner uses for its operations (mints +
-  # identity/catalog calls). Defaults to empty = the cloud's auth_url. On
-  # Genestack/RDO set this to the PUBLIC Keystone endpoint (e.g.
-  # https://keystone.api.sat0.cloudnull.dev/v3): the in-cluster keystone svc
-  # rejects scoped password mints (spurious 400 "invalid JSON") and may lack
-  # the full cross-domain admin API, while the public endpoint is pod-reachable,
-  # accepts scoped mints, and has the full API. The running server keeps the
-  # cloud's auth_url for token validation (unaffected).
-  authURL: ""
+  # Identity endpoint the curl token MINTS target. Separate from the cloud's
+  # auth_url (which the provisioner's identity OPS use). On Genestack/RDO set
+  # this to the PUBLIC Keystone endpoint (e.g.
+  # https://keystone.api.sat0.cloudnull.dev — keystone root, no /v3): the
+  # in-cluster keystone svc REJECTS scoped password mints (spurious 400
+  # "invalid JSON"), while the public endpoint accepts them and is pod-reachable.
+  # Tokens minted on public are valid on the in-cluster svc (same Keystone
+  # backend), so mints go to public and identity ops (create user, role grant,
+  # app-cred, catalog) go to the cloud's auth_url (in-cluster). The running
+  # server is unaffected (it keeps the cloud's auth_url for token validation).
+  # Defaults to empty = the cloud's auth_url.
+  mintURL: ""
   # ── Catalog endpoints (public/internal/admin URLs — user-definable) ─────────
   # All three default to the same public URL; split them if your cloud exposes
   # different endpoints per interface.

@@ -107,7 +107,7 @@ spec:
                 --app-cred-name "{{ .Values.serviceUser.appCredName }}" \
                 --roles "{{ range $i, $r := .Values.serviceUser.roles }}{{ if $i }},{{ end }}{{ $r }}{{ end }}" \
                 --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
-                --auth-url "{{ .Values.serviceUser.authURL }}" \
+                --mint-url "{{ .Values.serviceUser.mintURL }}" \
                 --log-level info)
               echo "provision result:" >&2
               printf '%s\n' "$PROVISION_JSON" >&2
@@ -130,7 +130,7 @@ spec:
                 --admin-user-domain "{{ .Values.serviceUser.auth.password.domain | default "" }}" \
                 --admin-password "{{ .Values.serviceUser.auth.password.password }}" \
                 --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
-                --auth-url "{{ .Values.serviceUser.authURL }}" \
+                --mint-url "{{ .Values.serviceUser.mintURL }}" \
                 --log-level info
 
               # 4. Mark the clouds Secret as provisioned so the Deployment rolls.

@@ -324,11 +324,8 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Domain of the admin user (password auth).") var adminUserDomain: String?
     @Option(name: .long, help: "Password of the admin user (password auth).") var adminPassword: String?
     @Option(name: .long, help: "Project to scope the admin token to (password auth) — the cloud's admin project for cross-domain privileges.") var adminProject: String?
-    /// Identity endpoint override for the catalog operations (e.g. the public
-    /// Keystone URL). When set, the registrar's transport targets this URL
-    /// instead of the cloud's auth_url. On Genestack/RDO the in-cluster keystone
-    /// svc may lack the full admin API surface; the public endpoint has it.
-    @Option(name: .long, help: "Identity endpoint override for catalog registration (e.g. the public Keystone URL). Defaults to the cloud's auth_url.") var authURL: String?
+    @Option(name: .long, help: "Identity endpoint override for catalog registration (e.g. the in-cluster Keystone URL, for the identity ops). Defaults to the cloud's auth_url.") var authURL: String?
+    @Option(name: .long, help: "Endpoint for the curl admin-token mint (e.g. the public Keystone URL, which accepts scoped mints the in-cluster svc rejects). Defaults to --auth-url / the cloud's auth_url.") var mintURL: String?
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
     func run() async throws {
@@ -358,7 +355,7 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         // The minted token is discarded once registration completes. Catalog
         // writes need the admin role; the service user is created with it.
         let admin: String
-        let mintURL = cloudEntry.authURL?.absoluteString ?? ""
+        let mintEndpoint = (mintURL?.isEmpty == false ? mintURL : nil) ?? cloudEntry.authURL?.absoluteString ?? ""
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
             admin = t
         } else if let credID = cloudEntry.appCredID, let secret = cloudEntry.appCredSecret {
@@ -368,7 +365,7 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
                   let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
             let d = adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "default"
-            let minter = ProvisionCommand.curlPasswordMinter(authURL: mintURL, project: adminProject, logger: logger)
+            let minter = ProvisionCommand.curlPasswordMinter(authURL: mintEndpoint, project: adminProject, logger: logger)
             admin = try await minter(u, d, p)
         } else {
             throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred, and no password (--admin-user/--admin-password) supplied")
@@ -431,14 +428,20 @@ struct ProvisionCommand: AsyncParsableCommand {
     /// domain-scoped (sees only its own domain).
     @Option(name: .long, help: "Project to scope the admin token to (password auth). Use the cloud's admin project for full cross-domain privileges.") var adminProject: String?
 
-    /// Optional override for the identity endpoint the provisioner uses for ALL
-    /// its operations (mints + identity/catalog calls). When set, the provisioner
-    /// builds its transport against this URL instead of the cloud's auth_url.
-    /// On Genestack/RDO the in-cluster keystone svc rejects scoped password mints
-    /// (spurious 400 "invalid JSON"), so point this at the PUBLIC endpoint
-    /// (pod-reachable, accepts scoped mints, full API). The running server is
-    /// unaffected (it keeps the in-cluster svc for token validation).
-    @Option(name: .long, help: "Identity endpoint override for provisioning (e.g. the public Keystone URL). Defaults to the cloud's auth_url.") var authURL: String?
+    /// Optional override for the identity endpoint the provisioner's TRANSPORT
+    /// (identity ops: create user, role grant, app-cred, catalog) uses. When
+    /// set, the provisioner builds its transport against this URL instead of
+    /// the cloud's auth_url. Defaults to the cloud's auth_url (the in-cluster
+    /// keystone svc), which accepts identity ops with a valid token.
+    @Option(name: .long, help: "Identity endpoint override for the provisioner's identity ops (the transport). Defaults to the cloud's auth_url.") var authURL: String?
+
+    /// Endpoint the curl token mints target. Separate from --auth-url because
+    /// on Genestack/RDO the in-cluster keystone svc REJECTS scoped password mints
+    /// (spurious 400 "invalid JSON") while the PUBLIC endpoint accepts them and
+    /// is pod-reachable. Tokens minted on public are valid on the in-cluster svc
+    /// (same Keystone backend), so mints go to public and identity ops go to
+    /// in-cluster. Defaults to --auth-url when unset.
+    @Option(name: .long, help: "Endpoint for the curl token mints (e.g. the public Keystone URL). Defaults to --auth-url / the cloud's auth_url.") var mintURL: String?
 
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
@@ -478,14 +481,18 @@ struct ProvisionCommand: AsyncParsableCommand {
         // body is byte-identical to a curl request that succeeds. curl ships in
         // the runtime image and is proven to work against that Keystone. App-cred
         // mints use the in-process minter (that path works).
-        let mintURL = cloudEntry.authURL?.absoluteString ?? ""
+        // The curl mints target --mint-url when given (and non-empty — the
+        // public endpoint, which accepts scoped password mints the in-cluster
+        // svc rejects), otherwise the transport's auth_url. Tokens minted on
+        // public are valid on the in-cluster svc (same Keystone backend).
+        let mintEndpoint = (mintURL?.isEmpty == false ? mintURL : nil) ?? cloudEntry.authURL?.absoluteString ?? ""
         // Admin token minter: project-scoped when --admin-project is given (the
         // full-privilege cross-domain credential), else domain-scoped.
-        let adminMintViaCurl = Self.curlPasswordMinter(authURL: mintURL, project: adminProject, logger: logger)
+        let adminMintViaCurl = Self.curlPasswordMinter(authURL: mintEndpoint, project: adminProject, logger: logger)
         // Service-user token minter: always domain-scoped to the user's domain
         // (used to mint a token AS the service user so the app-cred it creates
         // is owned by that user).
-        let userMintViaCurl = Self.curlPasswordMinter(authURL: mintURL, project: nil, logger: logger)
+        let userMintViaCurl = Self.curlPasswordMinter(authURL: mintEndpoint, project: nil, logger: logger)
 
         let admin: String
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
