@@ -630,6 +630,9 @@ struct ProvisionCommand: AsyncParsableCommand {
                 throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")
             }
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
+                let afterColon = headerText[headerText.index(after: headerText.lowercased().range(of: "x-subject-token:")!.upperBound)...]
+                let first5 = afterColon.prefix(8).map { String(format: "%d", $0.asciiValue ?? -1) }.joined(separator: ",")
+                FileHandle.standardError.write("PROVISION_DEBUG afterColon first8 ascii: [\(first5)] totalLen=\(afterColon.count)\n".data(using: .utf8)!)
                 FileHandle.standardError.write("PROVISION_DEBUG parsed token (len \(token.count)): \(token.prefix(40))...\n".data(using: .utf8)!)
             }
             return token
@@ -646,8 +649,15 @@ struct ProvisionCommand: AsyncParsableCommand {
             return nil
         }
         let afterColon = headerText[headerText.index(after: lower.upperBound)...]
-        let token = afterColon
-            .prefix { $0 != "\n" && $0 != "\r" }
+        // Explicitly find the first line break (avoids any ambiguity in the
+        // prefix(where:) overload resolution).
+        var idx = afterColon.startIndex
+        while idx < afterColon.endIndex {
+            let c = afterColon[idx]
+            if c == "\n" || c == "\r" { break }
+            idx = afterColon.index(after: idx)
+        }
+        let token = String(afterColon[afterColon.startIndex..<idx])
             .trimmingCharacters(in: .whitespaces)
         return token.isEmpty ? nil : token
     }
