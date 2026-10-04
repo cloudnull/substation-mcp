@@ -305,9 +305,6 @@ public struct ServiceProvisioner {
         // is what made the provisioner report "domain 'default' not found" on
         // sat0. Match on id OR case-insensitive name.
         let (status, body) = try await identityRequest(method: "GET", path: "/v3/domains")
-        if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-            logger.info("PROVISION_DEBUG fetchDomainID", metadata: ["status": .string(String(status)), "tokenLen": .string(String(adminToken.count)), "body": .string(String(decoding: body.prefix(500), as: UTF8.self))])
-        }
         struct Domain: Decodable { let id: String; let name: String? }
         struct DomainList: Decodable { let domains: [Domain] }
         guard status == 200,
