@@ -91,50 +91,11 @@ spec:
               IDENTITY_SECRET="${FULLNAME}-service-identity"
               CLOUDS_SECRET="${FULLNAME}-clouds"
 
-              # 0. Mint the admin bootstrap token once, shared by provision and
-              #    register-catalog (both use OS_AUTH_TOKEN when present).
-              #    For password auth we mint with curl (the in-process
-              #    AsyncHTTPClient mint is rejected by some Keystones). The token
-              #    is PROJECT-SCOPED to the cloud's admin project: that is the
-              #    full-privilege credential that can see/manage ALL domains
-              #    (service, heat, default) and create users + app-creds + role
-              #    grants. A domain-scoped or unscoped token only sees its own
-              #    domain and cannot provision cross-domain. For app-cred auth,
-              #    OS_AUTH_TOKEN stays unset and each command mints from the
-              #    app-cred (the reliable in-process path).
-              {{- if and .Values.serviceUser.auth.password.username .Values.serviceUser.auth.password.password }}
-              if [ -z "${OS_AUTH_TOKEN:-}" ]; then
-                AUSER="{{ .Values.serviceUser.auth.password.username }}"
-                ADOM="{{ .Values.serviceUser.auth.password.domain | default "default" }}"
-                APROJ="{{ .Values.serviceUser.auth.password.project | default "" }}"
-                APW="{{ .Values.serviceUser.auth.password.password }}"
-                # JSON-escape the password (backslash + double quote) so the body
-                # is always valid regardless of password contents.
-                APW_ESC=$(printf '%s' "$APW" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
-                # Identity endpoint for provisioning: prefer the serviceUser.authURL
-                # override (e.g. the public Keystone URL — pod-reachable, accepts
-                # scoped mints, full API), else fall back to the cloud's auth_url.
-                AUTH_URL="{{ .Values.serviceUser.authURL | default .Values.clouds.sat0.auth.auth_url }}"
-                AUTH_URL="${AUTH_URL%/}"
-                if [ -n "$APROJ" ]; then
-                  MINT_BODY='{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"'"$AUSER"'","domain":{"name":"'"$ADOM"'"},"password":"'"$APW_ESC"'"}}},"scope":{"project":{"name":"'"$APROJ"'","domain":{"name":"'"$ADOM"'"}}}}}'
-                else
-                  MINT_BODY='{"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"'"$AUSER"'","domain":{"name":"'"$ADOM"'"},"password":"'"$APW_ESC"'"}}},"scope":{"domain":{"name":"'"$ADOM"'"}}}'
-                fi
-                TOK_HDR=$(mktemp)
-                curl -sS -m 30 -D "$TOK_HDR" -o /dev/null \
-                  -X POST "${AUTH_URL}/v3/auth/tokens" \
-                  -H 'Content-Type: application/json' \
-                  --data "$MINT_BODY"
-                export OS_AUTH_TOKEN=$(grep -i '^x-subject-token:' "$TOK_HDR" | tr -d '\r' | awk '{print $2}')
-                rm -f "$TOK_HDR"
-                if [ -z "$OS_AUTH_TOKEN" ]; then
-                  echo "ERROR: failed to mint admin token via curl" >&2
-                  exit 1
-                fi
-                echo "minted admin bootstrap token via curl (len ${#OS_AUTH_TOKEN})" >&2
-              fi
-              {{- end }}
+              # Admin auth: provision and register-catalog each mint their own
+              # PROJECT-scoped admin token internally (JSON-safe curl minter, pod-reachable
+              # public endpoint) from OS_USERNAME/OS_PASSWORD/OS_USER_DOMAIN_NAME +
+              # --admin-project + --auth-url. (The in-cluster keystone svc rejects
+              # scoped password mints, so --auth-url points at the public endpoint.)
 
               # 1. Provision the service user + app-cred (idempotent). Capture the
               #    JSON result (user_id, app_cred_id, app_cred_secret, ...).
@@ -145,8 +106,8 @@ spec:
                 --domain "{{ .Values.serviceUser.domain }}" \
                 --app-cred-name "{{ .Values.serviceUser.appCredName }}" \
                 --roles "{{ range $i, $r := .Values.serviceUser.roles }}{{ if $i }},{{ end }}{{ $r }}{{ end }}" \
-                --admin-project "{{ .Values.serviceUser.auth.password.project | default \"\" }}" \
-                {{- if .Values.serviceUser.authURL }} --auth-url "{{ .Values.serviceUser.authURL }}"{{ end }} \
+                --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
+                --auth-url "{{ .Values.serviceUser.authURL }}" \
                 --log-level info)
               echo "provision result:" >&2
               printf '%s\n' "$PROVISION_JSON" >&2
@@ -165,7 +126,11 @@ spec:
                 --public-url "{{ .Values.serviceUser.catalog.publicURL }}" \
                 --internal-url "{{ .Values.serviceUser.catalog.internalURL }}" \
                 --admin-url "{{ .Values.serviceUser.catalog.adminURL }}" \
-                {{- if .Values.serviceUser.authURL }} --auth-url "{{ .Values.serviceUser.authURL }}"{{ end }} \
+                --admin-user "{{ .Values.serviceUser.auth.password.username }}" \
+                --admin-user-domain "{{ .Values.serviceUser.auth.password.domain | default "" }}" \
+                --admin-password "{{ .Values.serviceUser.auth.password.password }}" \
+                --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
+                --auth-url "{{ .Values.serviceUser.authURL }}" \
                 --log-level info
 
               # 4. Mark the clouds Secret as provisioned so the Deployment rolls.

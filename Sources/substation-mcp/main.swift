@@ -320,6 +320,10 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Internal URL (defaults to --public-url).") var internalURL: String?
     @Option(name: .long, help: "Admin URL (defaults to --public-url).") var adminURL: String?
     @Option(name: .long, help: "Identity-admin token (X-Auth-Token). Defaults to OS_AUTH_TOKEN. If unset, mints one from the cloud's application credential (a service-domain user) and discards it after.") var adminToken: String?
+    @Option(name: .long, help: "Username (password auth to mint the admin token from).") var adminUser: String?
+    @Option(name: .long, help: "Domain of the admin user (password auth).") var adminUserDomain: String?
+    @Option(name: .long, help: "Password of the admin user (password auth).") var adminPassword: String?
+    @Option(name: .long, help: "Project to scope the admin token to (password auth) — the cloud's admin project for cross-domain privileges.") var adminProject: String?
     /// Identity endpoint override for the catalog operations (e.g. the public
     /// Keystone URL). When set, the registrar's transport targets this URL
     /// instead of the cloud's auth_url. On Genestack/RDO the in-cluster keystone
@@ -354,14 +358,20 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         // The minted token is discarded once registration completes. Catalog
         // writes need the admin role; the service user is created with it.
         let admin: String
+        let mintURL = cloudEntry.authURL?.absoluteString ?? ""
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
             admin = t
         } else if let credID = cloudEntry.appCredID, let secret = cloudEntry.appCredSecret {
             let minter = LoginMinter(transport: wiring.transport, logger: logger)
             let minted = try await minter.mint(method: .applicationCredential(id: credID, secret: Array(secret.utf8).map { Int8($0) }))
             admin = minted.id
+        } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
+                  let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
+            let d = adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "default"
+            let minter = ProvisionCommand.curlPasswordMinter(authURL: mintURL, project: adminProject, logger: logger)
+            admin = try await minter(u, d, p)
         } else {
-            throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN) and no application credential in the cloud to mint one from")
+            throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred, and no password (--admin-user/--admin-password) supplied")
         }
 
         do {
