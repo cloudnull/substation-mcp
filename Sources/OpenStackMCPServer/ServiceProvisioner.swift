@@ -92,7 +92,7 @@ public struct ServiceProvisioner {
         // 2. Look up the user by name + domain.
         let userResp = try await identityRequest(
             method: "GET",
-            path: "/keystone/v3/users",
+            path: "/v3/users",
             query: [
                 URLQueryItem(name: "name", value: username),
                 URLQueryItem(name: "domain_id", value: domainID),
@@ -117,7 +117,7 @@ public struct ServiceProvisioner {
         let createBody = """
         {"user":{"name":"\(username)","domain_id":"\(domainID)","password":"\(password)","enabled":true}}
         """
-        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/keystone/v3/users", body: createBody)
+        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/v3/users", body: createBody)
         guard cStatus == 201 else {
             throw ServiceProvisionerError.identityHTTP(cStatus, cBody)
         }
@@ -142,7 +142,7 @@ public struct ServiceProvisioner {
         struct Role: Decodable { let id: String; let name: String? }
         for role in roles {
             // Look up the role id.
-            let (status, body) = try await identityRequest(method: "GET", path: "/keystone/v3/roles", query: [URLQueryItem(name: "name", value: role)])
+            let (status, body) = try await identityRequest(method: "GET", path: "/v3/roles", query: [URLQueryItem(name: "name", value: role)])
             guard status == 200 else {
                 throw ServiceProvisionerError.identityHTTP(status, body)
             }
@@ -155,7 +155,7 @@ public struct ServiceProvisioner {
             // Check if already assigned.
             let (gStatus, gBody) = try await identityRequest(
                 method: "GET",
-                path: "/keystone/v3/role_assignments",
+                path: "/v3/role_assignments",
                 query: [URLQueryItem(name: "user_id", value: userID), URLQueryItem(name: "domain_id", value: domainID)]
             )
             if gStatus == 200 {
@@ -174,7 +174,7 @@ public struct ServiceProvisioner {
             let assignBody = """
             {"role_assignment":{"role_id":"\(roleID)","user_id":"\(userID)","scope":{"group":{"id":"\(domainID)"}}}}
             """
-            let (aStatus, aBody) = try await identityRequest(method: "POST", path: "/keystone/v3/role_assignments", body: assignBody)
+            let (aStatus, aBody) = try await identityRequest(method: "POST", path: "/v3/role_assignments", body: assignBody)
             guard aStatus == 201 else {
                 throw ServiceProvisionerError.identityHTTP(aStatus, aBody)
             }
@@ -196,7 +196,7 @@ public struct ServiceProvisioner {
     /// the admin token (best-effort — some clouds allow `user_id`, most do not).
     private func ensureAppCredential(userID: String, userPassword: String?) async throws -> (id: String, secret: String?, reused: Bool) {
         // Look up existing app credentials for the user (admin view).
-        let (status, body) = try await identityRequest(method: "GET", path: "/keystone/v3/application_credentials", query: [URLQueryItem(name: "user_id", value: userID)])
+        let (status, body) = try await identityRequest(method: "GET", path: "/v3/application_credentials", query: [URLQueryItem(name: "user_id", value: userID)])
         struct Cred: Decodable { let id: String; let name: String? }
         struct CredList: Decodable { let application_credentials: [Cred] }
         if status == 200,
@@ -224,7 +224,7 @@ public struct ServiceProvisioner {
             token = adminToken
         }
 
-        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/keystone/v3/application_credentials", body: createBody, as: token)
+        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/v3/application_credentials", body: createBody, as: token)
         guard cStatus == 201 else {
             throw ServiceProvisionerError.identityHTTP(cStatus, cBody)
         }
@@ -239,7 +239,7 @@ public struct ServiceProvisioner {
     // MARK: - helpers
 
     private func fetchDomainID(name: String) async throws -> String {
-        let (status, body) = try await identityRequest(method: "GET", path: "/keystone/v3/domains", query: [URLQueryItem(name: "name", value: name)])
+        let (status, body) = try await identityRequest(method: "GET", path: "/v3/domains", query: [URLQueryItem(name: "name", value: name)])
         struct Domain: Decodable { let id: String; let name: String? }
         struct DomainList: Decodable { let domains: [Domain] }
         guard status == 200,

@@ -87,16 +87,19 @@ spec:
             - |
               set -euo pipefail
               FULLNAME={{ $fullname }}
+              CLOUD="{{ .Values.serviceUser.cloud }}"
               IDENTITY_SECRET="${FULLNAME}-service-identity"
               CLOUDS_SECRET="${FULLNAME}-clouds"
               # 1. Provision the service user + app-cred (idempotent). Capture the
               #    JSON result (user_id, app_cred_id, app_cred_secret, ...).
+              #    (No 2>/dev/null: if this fails we WANT the error in the logs.)
               PROVISION_JSON=$(substation-mcp provision \
+                --cloud "$CLOUD" \
                 --username "{{ .Values.serviceUser.username }}" \
                 --domain "{{ .Values.serviceUser.domain }}" \
                 --app-cred-name "{{ .Values.serviceUser.appCredName }}" \
                 --roles "{{ range $i, $r := .Values.serviceUser.roles }}{{ if $i }},{{ end }}{{ $r }}{{ end }}" \
-                --log-level info 2>/dev/null)
+                --log-level info)
               echo "provision result:" >&2
               printf '%s\n' "$PROVISION_JSON" >&2
 
@@ -109,6 +112,7 @@ spec:
               # 3. Register the mcp catalog service + public/internal/admin
               #    endpoints (idempotent).
               substation-mcp register-catalog \
+                --cloud "$CLOUD" \
                 --region "{{ .Values.serviceUser.region }}" \
                 --public-url "{{ .Values.serviceUser.catalog.publicURL }}" \
                 --internal-url "{{ .Values.serviceUser.catalog.internalURL }}" \

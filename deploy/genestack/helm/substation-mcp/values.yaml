@@ -196,8 +196,10 @@ serviceUser:
   domain: service         # OpenStack domain (default "service")
   appCredName: substation-cred   # name of the application credential
   roles: [admin]          # roles to grant on the domain (comma list or array)
-  # The region the mcp catalog endpoints are registered in (see catalog.region
-  # below — kept here as the single source; catalog.region defaults to this).
+  # The cloud (from clouds.yaml) the provisioner + catalog registration target.
+  # Matches `config.clouds.default`.
+  cloud: sat0
+  # The region the mcp catalog endpoints are registered in.
   region: SAT0
   # ── Catalog endpoints (public/internal/admin URLs — user-definable) ─────────
   # All three default to the same public URL; split them if your cloud exposes

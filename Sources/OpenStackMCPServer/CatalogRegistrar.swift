@@ -93,7 +93,7 @@ public struct CatalogRegistrar {
         }
         let (status, body, _) = try await transport.request(
             method: "GET", service: "identity",
-            path: "/keystone/v3/services",
+            path: "/v3/services",
             query: [URLQueryItem(name: "limit", value: "1000")],
             tokenOverride: adminToken
         )
@@ -112,7 +112,7 @@ public struct CatalogRegistrar {
         """
         let (cStatus, cBody, _) = try await transport.request(
             method: "POST", service: "identity",
-            path: "/keystone/v3/services",
+            path: "/v3/services",
             body: Data(createBody.utf8),
             tokenOverride: adminToken
         )
@@ -140,7 +140,7 @@ public struct CatalogRegistrar {
         }
         let (status, body, _) = try await transport.request(
             method: "GET", service: "identity",
-            path: "/keystone/v3/endpoints",
+            path: "/v3/endpoints",
             query: [
                 URLQueryItem(name: "service_id", value: serviceID),
                 URLQueryItem(name: "limit", value: "1000"),
@@ -166,7 +166,7 @@ public struct CatalogRegistrar {
         """
         let (cStatus, cBody, _) = try await transport.request(
             method: "POST", service: "identity",
-            path: "/keystone/v3/services/\(serviceID)/endpoints",
+            path: "/v3/services/\(serviceID)/endpoints",
             body: Data(createBody.utf8),
             tokenOverride: adminToken
         )
