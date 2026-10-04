@@ -158,6 +158,13 @@ public struct ServiceProvisioner {
     }
 
     /// Ensure each required role is assigned to the user on the domain.
+    ///
+    /// Uses the domain-scoped role-assignment endpoints from the v3 Identity
+    /// API (docs.openstack.org/api-ref/identity/v3):
+    ///   - check: GET  /v3/domains/{domain_id}/users/{user_id}/roles
+    ///   - grant: PUT  /v3/domains/{domain_id}/users/{user_id}/roles/{role_id}
+    /// The old `POST /v3/role_assignments` (collection) is a 405 on most
+    /// clouds; the scoped PUT is the documented grant.
     private func ensureRoleAssignments(userID: String, domainID: String) async throws {
         struct Role: Decodable { let id: String; let name: String? }
         for role in roles {
@@ -172,30 +179,27 @@ public struct ServiceProvisioner {
                 throw ServiceProvisionerError.roleNotFound(role)
             }
 
-            // Check if already assigned.
+            // Check if already assigned (GET the user's roles on the domain).
             let (gStatus, gBody) = try await identityRequest(
                 method: "GET",
-                path: "/v3/role_assignments",
-                query: [URLQueryItem(name: "user_id", value: userID), URLQueryItem(name: "domain_id", value: domainID)]
+                path: "/v3/domains/\(domainID)/users/\(userID)/roles"
             )
             if gStatus == 200 {
-                struct Assign: Decodable { let role_id: String?; let scope: Scope? }
-                struct Scope: Decodable { let group: Group? }
-                struct Group: Decodable { let id: String? }
-                struct AssignList: Decodable { let role_assignments: [Assign] }
-                if let al = try? JSONDecoder().decode(AssignList.self, from: gBody),
-                   al.role_assignments.contains(where: { $0.role_id == roleID && $0.scope?.group?.id == domainID }) {
+                struct RoleRef: Decodable { let id: String; let name: String? }
+                struct RoleList2: Decodable { let roles: [RoleRef] }
+                if let rl = try? JSONDecoder().decode(RoleList2.self, from: gBody),
+                   rl.roles.contains(where: { $0.id == roleID }) {
                     logger.debug("Role already assigned", metadata: ["role": .string(role)])
                     continue
                 }
             }
 
-            // Assign.
-            let assignBody = """
-            {"role_assignment":{"role_id":"\(roleID)","user_id":"\(userID)","scope":{"group":{"id":"\(domainID)"}}}}
-            """
-            let (aStatus, aBody) = try await identityRequest(method: "POST", path: "/v3/role_assignments", body: assignBody)
-            guard aStatus == 201 else {
+            // Grant (PUT, empty body, 204 No Content on success).
+            let (aStatus, aBody) = try await identityRequest(
+                method: "PUT",
+                path: "/v3/domains/\(domainID)/users/\(userID)/roles/\(roleID)"
+            )
+            guard aStatus == 201 || aStatus == 204 else {
                 throw ServiceProvisionerError.identityHTTP(aStatus, aBody)
             }
             logger.info("Assigned role to service user", metadata: ["role": .string(role), "user": .string(userID)])
@@ -207,16 +211,19 @@ public struct ServiceProvisioner {
     /// Find (by name) or create the application credential for the user.
     /// Returns (id, secret, reused). The secret is non-nil only on creation.
     ///
+    /// Application credentials are per-user resources in the v3 Identity API
+    /// (docs.openstack.org/api-ref/identity/v3):
+    ///   - list:   GET  /v3/users/{user_id}/application_credentials
+    ///   - create: POST /v3/users/{user_id}/application_credentials
     /// A Keystone application credential is owned by the *token's* user, so to
-    /// create one for the service user we must authenticate **as** that user.
-    /// On creation we therefore mint a token via the user's password, then POST
-    /// the app-cred under that token. On reuse (user already existed, password
-    /// unknown) we fall back to listing the admin's view and match by name; if
-    /// the app-cred is missing but we have no user password, we create it under
-    /// the admin token (best-effort — some clouds allow `user_id`, most do not).
+    /// create one for the service user we authenticate **as** that user. On
+    /// creation we mint a token via the user's password, then POST the app-cred
+    /// under that token. On reuse (user already existed, password unknown) we
+    /// fall back to the admin token — the list-by-name check above still finds
+    /// an existing cred, and create-under-admin is best-effort.
     private func ensureAppCredential(userID: String, userPassword: String?) async throws -> (id: String, secret: String?, reused: Bool) {
-        // Look up existing app credentials for the user (admin view).
-        let (status, body) = try await identityRequest(method: "GET", path: "/v3/application_credentials", query: [URLQueryItem(name: "user_id", value: userID)])
+        // Look up existing app credentials for the user.
+        let (status, body) = try await identityRequest(method: "GET", path: "/v3/users/\(userID)/application_credentials")
         struct Cred: Decodable { let id: String; let name: String? }
         struct CredList: Decodable { let application_credentials: [Cred] }
         if status == 200,
@@ -228,7 +235,7 @@ public struct ServiceProvisioner {
 
         let secret = Self.generateSecret()
         let createBody = """
-        {"application_credential":{"name":"\(appCredName)","secret":"\(secret)","project_id":null,"unrestricted":true,"description":"substation-mcp service identity (auto-provisioned)","expires_at":null}}
+        {"application_credential":{"name":"\(appCredName)","secret":"\(secret)","unrestricted":true,"description":"substation-mcp service identity (auto-provisioned)","expires_at":null}}
         """
 
         // Mint a token as the service user so the app-cred it creates is owned
@@ -242,7 +249,7 @@ public struct ServiceProvisioner {
             token = adminToken
         }
 
-        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/v3/application_credentials", body: createBody, as: token)
+        let (cStatus, cBody) = try await identityRequest(method: "POST", path: "/v3/users/\(userID)/application_credentials", body: createBody, as: token)
         guard cStatus == 201 else {
             throw ServiceProvisionerError.identityHTTP(cStatus, cBody)
         }

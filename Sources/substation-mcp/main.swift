@@ -320,12 +320,30 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Internal URL (defaults to --public-url).") var internalURL: String?
     @Option(name: .long, help: "Admin URL (defaults to --public-url).") var adminURL: String?
     @Option(name: .long, help: "Identity-admin token (X-Auth-Token). Defaults to OS_AUTH_TOKEN. If unset, mints one from the cloud's application credential (a service-domain user) and discards it after.") var adminToken: String?
+    /// Identity endpoint override for the catalog operations (e.g. the public
+    /// Keystone URL). When set, the registrar's transport targets this URL
+    /// instead of the cloud's auth_url. On Genestack/RDO the in-cluster keystone
+    /// svc may lack the full admin API surface; the public endpoint has it.
+    @Option(name: .long, help: "Identity endpoint override for catalog registration (e.g. the public Keystone URL). Defaults to the cloud's auth_url.") var authURL: String?
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
     func run() async throws {
         let cfg = ConfigLoader.load(args: ["config": config, "logLevel": logLevel])
         let logger = makeLogger(level: cfg.logLevel, format: "logfmt", sink: .standardError)
-        let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+        var cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+
+        if let override = authURL, let u = URL(string: override) {
+            cloudEntry = CloudEntry(
+                name: cloudEntry.name,
+                authURL: u,
+                regionName: cloudEntry.regionName,
+                interface: cloudEntry.interface,
+                cacert: cloudEntry.cacert,
+                verify: cloudEntry.verify,
+                appCredID: cloudEntry.appCredID,
+                appCredSecret: cloudEntry.appCredSecret
+            )
+        }
 
         let wiring = CloudWiring(config: cfg, cloud: cloudEntry, logger: logger)
         defer { wiring.shutdown() }
@@ -397,13 +415,47 @@ struct ProvisionCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Username (password auth to mint the admin token from).") var adminUser: String?
     @Option(name: .long, help: "Domain of the admin user (password auth).") var adminUserDomain: String?
     @Option(name: .long, help: "Password of the admin user (password auth).") var adminPassword: String?
+    /// Project to scope the admin token to (password auth). A project-scoped
+    /// token to the cloud's admin project is the full-privilege credential
+    /// needed to see/manage all domains. When unset, the admin token is
+    /// domain-scoped (sees only its own domain).
+    @Option(name: .long, help: "Project to scope the admin token to (password auth). Use the cloud's admin project for full cross-domain privileges.") var adminProject: String?
+
+    /// Optional override for the identity endpoint the provisioner uses for ALL
+    /// its operations (mints + identity/catalog calls). When set, the provisioner
+    /// builds its transport against this URL instead of the cloud's auth_url.
+    /// On Genestack/RDO the in-cluster keystone svc rejects scoped password mints
+    /// (spurious 400 "invalid JSON"), so point this at the PUBLIC endpoint
+    /// (pod-reachable, accepts scoped mints, full API). The running server is
+    /// unaffected (it keeps the in-cluster svc for token validation).
+    @Option(name: .long, help: "Identity endpoint override for provisioning (e.g. the public Keystone URL). Defaults to the cloud's auth_url.") var authURL: String?
 
     @Option(name: .long, help: "Log level.") var logLevel: String = "info"
 
     func run() async throws {
         let cfg = ConfigLoader.load(args: ["config": config, "logLevel": logLevel])
         let logger = makeLogger(level: cfg.logLevel, format: "logfmt", sink: .standardError)
-        let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+        var cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+
+        // Optional identity-endpoint override for provisioning. When set, the
+        // provisioner's transport + curl mints target this URL instead of the
+        // cloud's auth_url. (The running server keeps the cloud's auth_url.)
+        if let override = authURL {
+            guard let u = URL(string: override) else {
+                throw CLIError(message: "provision: invalid --auth-url '\(override)'")
+            }
+            cloudEntry = CloudEntry(
+                name: cloudEntry.name,
+                authURL: u,
+                regionName: cloudEntry.regionName,
+                interface: cloudEntry.interface,
+                cacert: cloudEntry.cacert,
+                verify: cloudEntry.verify,
+                appCredID: cloudEntry.appCredID,
+                appCredSecret: cloudEntry.appCredSecret
+            )
+            logger.info("provision: using identity endpoint override", metadata: ["url": .string(override)])
+        }
 
         let wiring = CloudWiring(config: cfg, cloud: cloudEntry, logger: logger)
         defer { wiring.shutdown() }
@@ -416,8 +468,14 @@ struct ProvisionCommand: AsyncParsableCommand {
         // body is byte-identical to a curl request that succeeds. curl ships in
         // the runtime image and is proven to work against that Keystone. App-cred
         // mints use the in-process minter (that path works).
-        let authURL = cloudEntry.authURL?.absoluteString ?? ""
-        let mintViaCurl = Self.curlPasswordMinter(authURL: authURL, logger: logger)
+        let mintURL = cloudEntry.authURL?.absoluteString ?? ""
+        // Admin token minter: project-scoped when --admin-project is given (the
+        // full-privilege cross-domain credential), else domain-scoped.
+        let adminMintViaCurl = Self.curlPasswordMinter(authURL: mintURL, project: adminProject, logger: logger)
+        // Service-user token minter: always domain-scoped to the user's domain
+        // (used to mint a token AS the service user so the app-cred it creates
+        // is owned by that user).
+        let userMintViaCurl = Self.curlPasswordMinter(authURL: mintURL, project: nil, logger: logger)
 
         let admin: String
         if let t = adminToken ?? ProcessInfo.processInfo.environment["OS_AUTH_TOKEN"] {
@@ -430,7 +488,7 @@ struct ProvisionCommand: AsyncParsableCommand {
         } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
                   let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
             let d = adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "admin"
-            admin = try await mintViaCurl(u, d, p)
+            admin = try await adminMintViaCurl(u, d, p)
         } else {
             throw CLIError(message: "provision: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred (--app-cred-id/--app-cred-secret), and no password (--admin-user/--admin-password) supplied")
         }
@@ -447,7 +505,7 @@ struct ProvisionCommand: AsyncParsableCommand {
                 adminToken: admin,
                 transport: wiring.transport,
                 logger: logger,
-                passwordTokenMinter: mintViaCurl
+                passwordTokenMinter: userMintViaCurl
             )
             let result = try await provisioner.ensureServiceIdentity()
 
@@ -475,23 +533,37 @@ struct ProvisionCommand: AsyncParsableCommand {
 
     /// Build a closure that mints a Keystone token via a `curl` subprocess.
     ///
-    /// Used as a fallback for password mints: some Keystones reject the
-    /// in-process AsyncHTTPClient password-mint POST with a spurious 400
-    /// "Expecting to find password in identity" even though the body is
-    /// byte-identical to a curl request that succeeds (verified against the
-    /// Genestack/RDO in-cluster Keystone). curl ships in the UBI10 runtime image.
-    /// Domain-scoped so the token carries domain-level privileges.
+    /// Used for password mints: some Keystones reject the in-process
+    /// AsyncHTTPClient password-mint POST with a spurious 400 even though the
+    /// body is byte-identical to a curl request that succeeds (verified against
+    /// the Genestack/RDO Keystone). curl ships in the UBI10 runtime image.
+    ///
+    /// `project` (optional) makes the token project-scoped; otherwise it is
+    /// domain-scoped. A project-scoped token to the cloud's `admin` project is
+    /// the full-privilege credential needed to see/manage ALL domains and
+    /// create users/app-creds/role-grants (a domain-scoped or unscoped token
+    /// only sees its own domain). The JSON body is built with JSONSerialization
+    /// so it is always well-formed regardless of password contents.
     static func curlPasswordMinter(
         authURL: String,
+        project: String? = nil,
         logger: Logger
     ) -> (String, String?, String) async throws -> String {
         return { userID, domain, password in
             let dom = domain ?? "default"
-            // Build the JSON body without any interpolation that could be
-            // broken by shell quoting — curl reads the body from stdin.
-            let body = """
-            {"auth":{"identity":{"methods":["password"],"password":{"user":{"name":"\(userID)","domain":{"name":"\(dom)","password":"\(password)"}}}},"scope":{"domain":{"name":"\(dom)"}}}}
-            """
+            // Build the JSON body safely (password may contain any chars).
+            var user: [String: Any] = ["name": userID, "password": password]
+            user["domain"] = ["name": dom]
+            var auth: [String: Any] = ["identity": ["methods": ["password"], "password": ["user": user]]]
+            if let project {
+                auth["scope"] = ["project": ["name": project, "domain": ["name": dom]]]
+            } else {
+                auth["scope"] = ["domain": ["name": dom]]
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: ["auth": auth], options: []),
+                  let body = String(data: data, encoding: .utf8) else {
+                throw CLIError(message: "provision: could not build mint JSON body")
+            }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             let base = authURL.hasSuffix("/") ? String(authURL.dropLast()) : authURL
@@ -509,12 +581,12 @@ struct ProvisionCommand: AsyncParsableCommand {
             try process.run()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else {
-                let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-                logger.error("curl mint failed (exit \(process.terminationStatus))", metadata: ["output": .string(String(String(decoding: data, as: UTF8.self).prefix(300)))])
+                let errData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                logger.error("curl mint failed (exit \(process.terminationStatus))", metadata: ["output": .string(String(String(decoding: errData, as: UTF8.self).prefix(300)))])
                 throw CLIError(message: "provision: curl token mint failed (exit \(process.terminationStatus))")
             }
-            let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let headerText = String(decoding: data, as: UTF8.self)
+            let hdrData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let headerText = String(decoding: hdrData, as: UTF8.self)
             // The X-Subject-Token header is the minted token id.
             guard let line = headerText.split(separator: "\n").first(where: { $0.lowercased().hasPrefix("x-subject-token:") }) else {
                 throw CLIError(message: "provision: curl mint returned no X-Subject-Token (headers: \(headerText.prefix(200)))")

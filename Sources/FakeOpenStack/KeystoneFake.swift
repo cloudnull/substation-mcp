@@ -257,43 +257,44 @@ public struct KeystoneFake {
             }
 
             // GET/POST \(prefix)/role_assignments
-            let roleAssignments = RouterPath("\(prefix)/role_assignments")
-            router.get(roleAssignments) { req, _ in
+            // Domain-scoped role assignment (the documented v3 grant/check):
+            //   GET /v3/domains/{domain_id}/users/{user_id}/roles
+            //   PUT /v3/domains/{domain_id}/users/{user_id}/roles/{role_id}
+            router.get(RouterPath("\(prefix)/domains/:domain_id/users/:user_id/roles")) { req, context in
                 guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
                     return Self.jsonResponse(status: .unauthorized, body: "{\"error\":{\"code\":\"forbidden\",\"title\":\"Missing X-Auth-Token\"}}")
                 }
-                let userID = Self.queryParam("user_id", from: req) ?? ""
-                let domainID = Self.queryParam("domain_id", from: req) ?? ""
+                let domainID = context.parameters.get("domain_id") ?? ""
+                let userID = context.parameters.get("user_id") ?? ""
                 let list = await state.roleAssignments(userID: userID, domainID: domainID)
-                let json = list.map { "{\"id\":\"\($0.roleID)|\($0.userID)\",\"role_id\":\"\($0.roleID)\",\"scope\":{\"group\":{\"id\":\"\($0.domainID)\"}}}" }.joined(separator: ",")
-                return Self.jsonResponse(status: .ok, body: "{\"role_assignments\":[\(json)]}")
+                let json = list.map { "{\"id\":\"\($0.roleID)\",\"name\":\"\($0.roleID)\"}" }.joined(separator: ",")
+                return Self.jsonResponse(status: .ok, body: "{\"roles\":[\(json)]}")
             }
-            router.post(roleAssignments) { req, _ in
+            router.put(RouterPath("\(prefix)/domains/:domain_id/users/:user_id/roles/:role_id")) { req, context in
                 guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
                     return Self.jsonResponse(status: .unauthorized, body: "{\"error\":{\"code\":\"forbidden\",\"title\":\"Missing X-Auth-Token\"}}")
                 }
-                let body = try await Self.readBody(req)
-                guard let data = body.data(using: .utf8),
-                      let parsed = try? JSONDecoder().decode(RoleAssignWrap.self, from: data),
-                      let ra = parsed.roleAssignment else {
-                    return Self.jsonResponse(status: .badRequest, body: "{\"error\":{\"code\":\"badRequest\",\"title\":\"Invalid role_assignment body\"}}")
-                }
-                await state.addRoleAssignment(roleID: ra.role_id, userID: ra.user_id, domainID: ra.scope?.group?.id ?? "")
-                return Self.jsonResponse(status: .created, body: "{\"role_assignment\":{\"role_id\":\"\(ra.role_id)\",\"user_id\":\"\(ra.user_id)\",\"scope\":{\"group\":{\"id\":\"\(ra.scope?.group?.id ?? "")\"}}}}")
+                let domainID = context.parameters.get("domain_id") ?? ""
+                let userID = context.parameters.get("user_id") ?? ""
+                let roleID = context.parameters.get("role_id") ?? ""
+                await state.addRoleAssignment(roleID: roleID, userID: userID, domainID: domainID)
+                // 204 No Content (the real API returns 204 on grant).
+                return Response(status: .noContent)
             }
 
-            // GET/POST \(prefix)/application_credentials
-            let appCreds = RouterPath("\(prefix)/application_credentials")
-            router.get(appCreds) { req, _ in
+            // Per-user application credentials (the documented v3 endpoints):
+            //   GET  /v3/users/{user_id}/application_credentials
+            //   POST /v3/users/{user_id}/application_credentials
+            router.get(RouterPath("\(prefix)/users/:user_id/application_credentials")) { req, context in
                 guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
                     return Self.jsonResponse(status: .unauthorized, body: "{\"error\":{\"code\":\"forbidden\",\"title\":\"Missing X-Auth-Token\"}}")
                 }
-                let userID = Self.queryParam("user_id", from: req) ?? ""
+                let userID = context.parameters.get("user_id") ?? ""
                 let list = await state.appCreds(userID: userID)
                 let json = list.map { "{\"id\":\"\($0.id)\",\"name\":\"\($0.name)\"}" }.joined(separator: ",")
                 return Self.jsonResponse(status: .ok, body: "{\"application_credentials\":[\(json)]}")
             }
-            router.post(appCreds) { req, _ in
+            router.post(RouterPath("\(prefix)/users/:user_id/application_credentials")) { req, context in
                 guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
                     return Self.jsonResponse(status: .unauthorized, body: "{\"error\":{\"code\":\"forbidden\",\"title\":\"Missing X-Auth-Token\"}}")
                 }
@@ -303,9 +304,8 @@ public struct KeystoneFake {
                       let c = parsed.applicationCredential else {
                     return Self.jsonResponse(status: .badRequest, body: "{\"error\":{\"code\":\"badRequest\",\"title\":\"Invalid application_credential body\"}}")
                 }
-                // Resolve the owner: prefer user_id in the body, else the token's user.
-                let token = await state.validateToken(tokenID)
-                let ownerID = c.user_id ?? token?.userID ?? ""
+                // The owner is the user in the path (this is a per-user resource).
+                let ownerID = context.parameters.get("user_id") ?? ""
                 let created = await state.createAppCred(name: c.name, userID: ownerID, secret: c.secret)
                 return Self.jsonResponse(status: .created, body: "{\"application_credential\":{\"id\":\"\(created.id)\",\"name\":\"\(created.name)\"}}")
             }

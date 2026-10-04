@@ -201,6 +201,15 @@ serviceUser:
   cloud: sat0
   # The region the mcp catalog endpoints are registered in.
   region: SAT0
+  # Identity endpoint the provisioner uses for its operations (mints +
+  # identity/catalog calls). Defaults to empty = the cloud's auth_url. On
+  # Genestack/RDO set this to the PUBLIC Keystone endpoint (e.g.
+  # https://keystone.api.sat0.cloudnull.dev/v3): the in-cluster keystone svc
+  # rejects scoped password mints (spurious 400 "invalid JSON") and may lack
+  # the full cross-domain admin API, while the public endpoint is pod-reachable,
+  # accepts scoped mints, and has the full API. The running server keeps the
+  # cloud's auth_url for token validation (unaffected).
+  authURL: ""
   # ── Catalog endpoints (public/internal/admin URLs — user-definable) ─────────
   # All three default to the same public URL; split them if your cloud exposes
   # different endpoints per interface.
@@ -218,7 +227,15 @@ serviceUser:
     password:
       username: ""
       password: ""
-      domain: "admin"
+      # Domain the admin user lives in (for the auth identity block).
+      domain: "default"
+      # Project to scope the admin token to (for the auth scope block). A
+      # project-scoped token to the cloud's admin project is the full-privilege
+      # credential that can see/manage ALL domains (service, heat, default) and
+      # create users + app-creds + role grants. On Genestack/RDO this is the
+      # "admin" project. Leave empty for a domain-scoped token (limited to one
+      # domain — insufficient for cross-domain provisioning).
+      project: "admin"
   # ── Output (do not edit — written by the provisioner Job) ───────────────────
   # Rendered into the clouds.yaml Secret's app-cred fields (see configmap.yaml).
   # `secret` is populated from the identity Secret at render time.
