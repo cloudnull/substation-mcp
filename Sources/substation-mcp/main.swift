@@ -688,8 +688,16 @@ struct ProvisionCommand: AsyncParsableCommand {
                 comps?.queryItems = query
                 url = comps?.string ?? url
             }
+            // Write the body to a temp file and use -w "%{http_code}" to emit
+            // ONLY the status code to stdout (the response body goes to the
+            // file). This avoids mixing the body and the status marker on
+            // stdout, which is more reliable than a -w format with an embedded
+            // newline.
+            let bodyOut = "/tmp/ident_body_\(UUID().uuidString).out"
+            defer { try? FileManager.default.removeItem(atPath: bodyOut) }
             var args: [String] = ["-sS", "-m", "30", "-X", method,
-                                   "-w", "\n__HTTPSTATUS__%{http_code}"]
+                                   "-o", bodyOut,
+                                   "-w", "%{http_code}"]
             if let token, !token.isEmpty {
                 args += ["-H", "X-Auth-Token: \(token)"]
             }
@@ -706,22 +714,19 @@ struct ProvisionCommand: AsyncParsableCommand {
             process.standardInput = FileHandle.nullDevice
             try process.run()
             process.waitUntilExit()
-            let raw = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let text = String(decoding: raw, as: UTF8.self)
+            let statusData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let statusStr = String(decoding: statusData, as: UTF8.self).trimmingCharacters(in: .whitespaces)
+            let bodyStr: String
+            do {
+                bodyStr = try String(contentsOfFile: bodyOut, encoding: .utf8)
+            } catch {
+                bodyStr = ""
+            }
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG curlIdentity url: \(url) method: \(method) tokenLen: \((token ?? "").count) exit: \(process.terminationStatus) textLen: \(text.count) tail: \(String(text.suffix(80)))\n".data(using: .utf8)!)
+                FileHandle.standardError.write("PROVISION_DEBUG curlIdentity url: \(url) method: \(method) tokenLen: \((token ?? "").count) exit: \(process.terminationStatus) statusStr: '\(statusStr)' bodyLen: \(bodyStr.count)\n".data(using: .utf8)!)
             }
-            // Split off the trailing "\n__HTTPSTATUS__<code>" marker.
-            guard let marker = text.range(of: "\n__HTTPSTATUS__") else {
-                throw CLIError(message: "provision: curl identity request missing status marker (output: \(text.prefix(300)))")
-            }
-            let bodyStr = String(text[text.startIndex..<marker.lowerBound])
-            let codeStr = text[text.index(after: marker.upperBound)...].trimmingCharacters(in: .whitespaces)
-            guard let status = Int(codeStr) else {
-                throw CLIError(message: "provision: curl identity request bad status '\(codeStr)'")
-            }
-            if process.terminationStatus != 0 {
-                logger.error("curl identity request failed", metadata: ["method": .string(method), "path": .string(path), "exit": .string(String(process.terminationStatus)), "status": .string(String(status))])
+            guard process.terminationStatus == 0, let status = Int(statusStr) else {
+                throw CLIError(message: "provision: curl identity request failed (exit \(process.terminationStatus), status '\(statusStr)', body \(bodyStr.prefix(300)))")
             }
             return (status: status, body: Data(bodyStr.utf8))
         }
