@@ -282,13 +282,26 @@ extension Token {
 
         guard let expiresStr = raw.expires_at,
               let expires = Self.parseISO8601(expiresStr),
-              let project = raw.project,
               let user = raw.user else {
             throw OpenStackError(
                 service: "keystone",
                 status: 500,
                 message: "Missing required fields in token"
             )
+        }
+
+        // Unscoped tokens (application credentials minted without a project
+        // scope, domain-scoped tokens, etc.) omit `project` from the whoami
+        // body. Keystone's whoami response for an unscoped token carries the
+        // user, domain, roles, and catalog but no project. Synthesize a
+        // sentinel project so the Token (which requires a project) is well-
+        // formed. The sentinel is clearly marked so downstream code that
+        // checks `servedProjects` can recognize it.
+        let project: IdentityRef
+        if let p = raw.project {
+            project = IdentityRef(id: p.id, name: p.name, domain: p.domain?.name)
+        } else {
+            project = IdentityRef(id: "unscoped", name: "unscoped", domain: nil)
         }
 
         // Keystone omits the token `id` from the whoami body (it is the request
@@ -320,7 +333,7 @@ extension Token {
         return Token(
             id: id,
             expiresAt: expires,
-            project: IdentityRef(id: project.id, name: project.name, domain: project.domain?.name),
+            project: project,
             domain: domain,
             user: IdentityRef(id: user.id, name: user.name, domain: user.domain?.name),
             roles: (raw.roles ?? []).compactMap { $0.name },
