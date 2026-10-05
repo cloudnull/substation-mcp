@@ -8,6 +8,7 @@ import Logging
 import MCP
 import NIOCore
 import NIOHTTP1
+import NIOSSL
 import NIOPosix
 import OpenStackClient
 import OpenStackMCPServer
@@ -781,7 +782,7 @@ struct WaitSecretCommand: AsyncParsableCommand {
 
         let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { _ = try? await elg.shutdownGracefully() }
-        let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+        let client = HTTPClient(eventLoopGroupProvider: .shared(elg), configuration: .init(tlsConfiguration: k8sTLSConfig()))
         defer { _ = try? await client.shutdown() }
 
         let url = "https://kubernetes.default.svc/api/v1/namespaces/\(namespace)/secrets/\(name)"
@@ -891,6 +892,29 @@ struct MarkSecretCommand: AsyncParsableCommand {
 // MARK: - shared k8s Secret helpers (in-cluster, via the SA token)
 
 /// Read a k8s Secret's data (base64-decoded) as [String: String].
+/// The in-cluster ServiceAccount CA bundle. The k8s API is HTTPS, and the
+/// `HTTPClient` (AsyncHTTPClient/NIOSSL) must be configured to trust this CA or
+/// the SSL handshake fails with CERTIFICATE_VERIFY_FAILED (which the k8s secret
+/// helpers surfaced as a bare NIOSSL handshake error, and `wait-secret`
+/// swallowed silently via `try?`).
+let k8sCAPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+/// Build a `TLSConfiguration` that trusts the in-cluster ServiceAccount CA.
+/// Falls back to the default system trust roots when the CA bundle is absent
+/// (e.g. running outside a pod, in tests).
+func k8sTLSConfig() -> TLSConfiguration {
+    var config = TLSConfiguration.makeClientConfiguration()
+    do {
+        let certs = try NIOSSLCertificate.fromPEMFile(k8sCAPath)
+        if !certs.isEmpty {
+            config.trustRoots = .certificates(certs)
+        }
+    } catch {
+        // CA bundle not readable (out-of-cluster); use the default trust roots.
+    }
+    return config
+}
+
 func readSecretString(name: String, namespace: String) async throws -> [String: String] {
     let (present, data) = try await fetchSecretData(name: name, namespace: namespace)
     guard present else { return [:] }
@@ -931,7 +955,7 @@ func putSecret(name: String, namespace: String, data: [String: String]) async th
 
     let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     defer { _ = try? await elg.shutdownGracefully() }
-    let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+    let client = HTTPClient(eventLoopGroupProvider: .shared(elg), configuration: .init(tlsConfiguration: k8sTLSConfig()))
     defer { _ = try? await client.shutdown() }
 
     let method: HTTPMethod = exists ? .PATCH : .POST
@@ -956,7 +980,7 @@ func fetchSecretData(name: String, namespace: String) async throws -> (present: 
 
     let elg = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     defer { _ = try? await elg.shutdownGracefully() }
-    let client = HTTPClient(eventLoopGroupProvider: .shared(elg))
+    let client = HTTPClient(eventLoopGroupProvider: .shared(elg), configuration: .init(tlsConfiguration: k8sTLSConfig()))
     defer { _ = try? await client.shutdown() }
 
     var req = try HTTPClient.Request(url: url, method: .GET)
