@@ -11,7 +11,7 @@ import Logging
 // MARK: - register-catalog idempotency (spec §6.5)
 
 /// Drives `CatalogRegistrar.ensureCatalog()` against the fake Keystone with an
-/// admin token. Run once → creates service (type=mcp) + 3 endpoints; run again
+/// admin token. Run once → creates service (type=mcp, name=substation-mcp) + 3 endpoints; run again
 /// → idempotent (same ids, no duplicates).
 @Suite("Register Catalog", .timeLimit(.minutes(2)))
 struct RegisterCatalogTests {
@@ -58,7 +58,7 @@ struct RegisterCatalogTests {
         let svcAfterFirst = await handle.state.listServices().count
         let epAfterFirst = await handle.state.listEndpoints().count
         #expect(await handle.state.serviceByType("mcp") != nil)
-        #expect(await handle.state.serviceByType("mcp")?.name == "mcp")
+        #expect(await handle.state.serviceByType("mcp")?.name == CatalogRegistrar.serviceName)
 
         // Second run: same service id, same endpoint ids, all reused.
         let second = try await registrar.ensureCatalog()

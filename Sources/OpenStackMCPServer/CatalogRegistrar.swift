@@ -22,6 +22,8 @@ public struct CatalogRegistrar {
 
     /// The service type used for the MCP catalog entry.
     public static let serviceType = "mcp"
+    /// The service name used for the MCP catalog entry.
+    public static let serviceName = "substation-mcp"
     /// Interface roles, in the order they are ensured.
     public static let interfaces: [String] = ["public", "internal", "admin"]
 
@@ -87,9 +89,10 @@ public struct CatalogRegistrar {
         }
     }
 
-    /// Ensure the `mcp` service and its public/internal/admin endpoints exist
-    /// (idempotent: reuse existing entries, create missing ones). The admin
-    /// token is used for all identity write calls.
+    /// Ensure the `substation-mcp` service (type `mcp`) and its
+    /// public/internal/admin endpoints exist (idempotent: reuse existing
+    /// entries, create missing ones). The admin token is used for all identity
+    /// write calls.
     public func ensureCatalog() async throws -> Result {
         let serviceID = try await ensureService()
         var endpointIDs: [String] = []
@@ -108,7 +111,8 @@ public struct CatalogRegistrar {
 
     // MARK: - service
 
-    /// Find (by type `mcp`) or create the catalog service.
+    /// Find (by type `mcp`, preferring the `substation-mcp` name) or create
+    /// the catalog service.
     private func ensureService() async throws -> String {
         struct Service: Decodable {
             let id: String
@@ -127,11 +131,16 @@ public struct CatalogRegistrar {
         guard let list = try? JSONDecoder().decode(ServiceList.self, from: body) else {
             throw CatalogRegistrarError.decode
         }
+        // Prefer the service named `substation-mcp` with type `mcp`; fall back
+        // to any service of type `mcp` (handles a legacy `name: mcp` entry).
+        if let existing = list.services.first(where: { $0.type == Self.serviceType && $0.name == Self.serviceName }) {
+            return existing.id
+        }
         if let existing = list.services.first(where: { $0.type == Self.serviceType }) {
             return existing.id
         }
         let createBody = """
-        {"service":{"type":"\(Self.serviceType)","name":"mcp","description":"Model Context Protocol endpoint for the OpenStack cloud"}}
+        {"service":{"type":"\(Self.serviceType)","name":"\(Self.serviceName)","description":"Model Context Protocol endpoint for the OpenStack cloud"}}
         """
         let (cStatus, cBody) = try await identityClient(
             "POST", "/v3/services",
