@@ -47,6 +47,49 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
             # ── Operator admin credential (input; used only to mint a token) ──
+            #
+            # Two mutually-exclusive mechanisms:
+            #   1. secretName set  → read the credential from a k8s Secret via
+            #      secretKeyRef (the value never appears in the override file).
+            #   2. secretName empty → read the plaintext values below.
+            {{- if .Values.serviceUser.auth.secretName }}
+            - name: OS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: username
+                  optional: true
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: password
+                  optional: true
+            - name: OS_USER_DOMAIN_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: domain
+                  optional: true
+            - name: OS_USER_PROJECT_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: project
+                  optional: true
+            - name: OS_APPLICATION_CREDENTIAL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: app_cred_id
+                  optional: true
+            - name: OS_APPLICATION_CREDENTIAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serviceUser.auth.secretName }}
+                  key: app_cred_secret
+                  optional: true
+            {{- else }}
             {{- with .Values.serviceUser.auth.appCred.id }}
             - name: OS_APPLICATION_CREDENTIAL_ID
               value: {{ . | quote }}
@@ -66,6 +109,7 @@ spec:
             {{- with .Values.serviceUser.auth.password.domain }}
             - name: OS_USER_DOMAIN_NAME
               value: {{ . | quote }}
+            {{- end }}
             {{- end }}
             # ── Clouds.yaml (read-only; tells the binary where Keystone is) ───
             - name: OS_CLIENT_CONFIG_FILE
@@ -106,7 +150,9 @@ spec:
                 --domain "{{ .Values.serviceUser.domain }}" \
                 --app-cred-name "{{ .Values.serviceUser.appCredName }}" \
                 --roles "{{ range $i, $r := .Values.serviceUser.roles }}{{ if $i }},{{ end }}{{ $r }}{{ end }}" \
+                {{- if not .Values.serviceUser.auth.secretName }}
                 --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
+                {{- end }}
                 --mint-url "{{ .Values.serviceUser.mintURL }}" \
                 --log-level info)
               echo "provision result:" >&2
@@ -125,10 +171,12 @@ spec:
                 --public-url "{{ .Values.serviceUser.catalog.publicURL }}" \
                 --internal-url "{{ .Values.serviceUser.catalog.internalURL }}" \
                 --admin-url "{{ .Values.serviceUser.catalog.adminURL }}" \
+                {{- if not .Values.serviceUser.auth.secretName }}
                 --admin-user "{{ .Values.serviceUser.auth.password.username }}" \
                 --admin-user-domain "{{ .Values.serviceUser.auth.password.domain | default "" }}" \
                 --admin-password "{{ .Values.serviceUser.auth.password.password }}" \
                 --admin-project "{{ .Values.serviceUser.auth.password.project | default "" }}" \
+                {{- end }}
                 --mint-url "{{ .Values.serviceUser.mintURL }}" \
                 --log-level info
 

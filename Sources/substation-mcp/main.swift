@@ -381,7 +381,13 @@ struct RegisterCatalogCommand: AsyncParsableCommand {
         } else if let u = adminUser ?? ProcessInfo.processInfo.environment["OS_USERNAME"],
                   let p = adminPassword ?? ProcessInfo.processInfo.environment["OS_PASSWORD"] {
             let d = adminUserDomain ?? ProcessInfo.processInfo.environment["OS_USER_DOMAIN_NAME"] ?? "default"
-            let minter = ProvisionCommand.curlPasswordMinter(authURL: mintEndpoint, project: adminProject, logger: logger)
+            // When the credential comes from a k8s Secret, the project arrives
+            // as OS_USER_PROJECT_NAME (secretKeyRef) rather than --admin-project.
+            let effectiveProject: String? = {
+                if let p = adminProject, !p.isEmpty { return p }
+                return ProcessInfo.processInfo.environment["OS_USER_PROJECT_NAME"]
+            }()
+            let minter = ProvisionCommand.curlPasswordMinter(authURL: mintEndpoint, project: effectiveProject, logger: logger)
             admin = try await minter(u, d, p)
         } else {
             throw CLIError(message: "register-catalog: no admin token (--admin-token/OS_AUTH_TOKEN), no app-cred, and no password (--admin-user/--admin-password) supplied")
@@ -508,7 +514,14 @@ struct ProvisionCommand: AsyncParsableCommand {
         let mintEndpoint = (mintURL?.isEmpty == false ? mintURL : nil) ?? cloudEntry.authURL?.absoluteString ?? ""
         // Admin token minter: project-scoped when --admin-project is given (the
         // full-privilege cross-domain credential), else domain-scoped.
-        let adminMintViaCurl = Self.curlPasswordMinter(authURL: mintEndpoint, project: adminProject, logger: logger)
+        // When the credential comes from a k8s Secret (secretName set), the
+        // project arrives as the OS_USER_PROJECT_NAME env var (injected via
+        // secretKeyRef) rather than the --admin-project flag. Fall back to it.
+        let effectiveAdminProject: String? = {
+            if let p = adminProject, !p.isEmpty { return p }
+            return ProcessInfo.processInfo.environment["OS_USER_PROJECT_NAME"]
+        }()
+        let adminMintViaCurl = Self.curlPasswordMinter(authURL: mintEndpoint, project: effectiveAdminProject, logger: logger)
         // Service-user token minter: always domain-scoped to the user's domain
         // (used to mint a token AS the service user so the app-cred it creates
         // is owned by that user).

@@ -221,12 +221,46 @@ serviceUser:
     internalURL: "https://substation-mcp.example.com"
     adminURL: "https://substation-mcp.example.com"
   # ── Operator admin credential (input, for the provisioner only) ─────────────
+  #
+  # TWO WAYS to supply the operator credential:
+  #
+  #   1. PLAINTEXT (below): set auth.appCred.* or auth.password.* directly.
+  #      Simple, but the value lands in the override file (chmod 600 it).
+  #
+  #   2. k8s SECRET (preferred): set auth.secretName to the name of an existing
+  #      Secret in the release namespace that carries the credential. The
+  #      provisioner Job's container env is then populated via
+  #      `secretKeyRef` — the credential never appears in the override file or
+  #      on the controller's filesystem. This is the recommended path.
+  #
+  # When secretName is set, the Secret's keys are mapped to the provisioner's
+  # env vars:
+  #   key "username"     → OS_USERNAME            (password auth)
+  #   key "password"     → OS_PASSWORD            (password auth)
+  #   key "domain"       → OS_USER_DOMAIN_NAME    (password auth, default "admin")
+  #   key "project"      → OS_USER_PROJECT_NAME   (password auth, default "admin")
+  #   key "app_cred_id"  → OS_APPLICATION_CREDENTIAL_ID  (app-cred auth)
+  #   key "app_cred_secret" → OS_APPLICATION_CREDENTIAL_SECRET (app-cred auth)
+  #
+  # Example Secret (password auth):
+  #   kubectl -n openstack create secret generic substation-admin \
+  #     --from-literal=username=admin \
+  #     --from-literal=password=<admin-pw> \
+  #     --from-literal=domain=default \
+  #     --from-literal=project=admin
+  # Example Secret (app-cred auth):
+  #   kubectl -n openstack create secret generic substation-admin \
+  #     --from-literal=app_cred_id=<id> \
+  #     --from-literal=app_cred_secret=<secret>
   auth:
-    # Option A: application credential
+    # k8s Secret name (in the release namespace) carrying the operator
+    # credential. When set, the plaintext fields below are IGNORED.
+    secretName: ""
+    # Option A: application credential (plaintext)
     appCred:
       id: ""
       secret: ""
-    # Option B: user password
+    # Option B: user password (plaintext)
     password:
       username: ""
       password: ""
