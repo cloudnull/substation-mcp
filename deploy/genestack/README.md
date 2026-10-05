@@ -206,20 +206,133 @@ openstack service list | grep -i mcp
 openstack endpoint list --service mcp
 ```
 
-### Manual fallback
+### Manual fallback (openstack CLI)
 
 If you'd rather manage the identity yourself (e.g. pre-create the service user
-and app-cred out-of-band), set `serviceUser.enabled: false` and run
-`register-catalog` directly:
+and app-cred out-of-band, or if the provisioner Job is not available), set
+`serviceUser.enabled: false` and create the service user + application
+credential manually using the `openstack` CLI. You need an admin credential
+(project-scoped to the `admin` project in the `default` domain).
+
+> **References:**
+> [Keystone service management](https://docs.openstack.org/keystone/latest/admin/manage-services.html),
+> [Identity API v3](https://docs.openstack.org/api-ref/identity/v3/),
+> [keystoneauth plugin options](https://docs.openstack.org/keystoneauth/latest/plugin-options.html).
+
+#### 1. Create the service user in the `service` domain
 
 ```sh
-export OS_CLOUD=mycloud REGION=RegionOne
-export PUBLIC_URL=https://substation-mcp.example.com   # must match gateway.fqdn
-export OS_AUTH_TOKEN=<admin-keystone-token>
+# Authenticate as admin (project-scoped to admin/default):
+export OS_AUTH_URL=https://keystone.api.sat0.cloudnull.dev/v3
+export OS_USERNAME=admin
+export OS_PASSWORD=<admin-password>
+export OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=default
+export OS_PROJECT_DOMAIN_NAME=default
+export OS_REGION_NAME=SAT0
+
+# Create the service user (idempotent — skip if it already exists):
+openstack user show substation --domain service 2>/dev/null || \
+  openstack user create --domain service --enable substation
+
+# Grant the admin role on the service domain (the user needs admin to
+# access all services via its app-cred):
+openstack role add --domain service --user substation admin
+```
+
+#### 2. Create the application credential (as the service user)
+
+Mint a domain-scoped token as the `substation` user, then create the app-cred
+owned by that user. The app-cred secret is returned ONLY ONCE — save it:
+
+```sh
+# Mint a domain-scoped token as the substation user:
+export OS_USERNAME=substation
+export OS_USER_DOMAIN_NAME=service
+export OS_PROJECT_NAME=          # clear project (domain-scoped, not project-scoped)
+unset OS_AUTH_URL                # reuse the auth URL from above
+
+OS_TOKEN=$(openstack token issue --domain service -f value -c id)
+
+# Create the application credential (owned by the substation user):
+# The secret is printed once — capture it:
+APPCRED_ID=$(openstack application credential create substation-cred \
+  --domain service \
+  --project-admin \
+  -f value -c id)
+# The secret was printed to stdout during create; re-create to capture both:
+openstack application credential create substation-cred \
+  --domain service \
+  --project-admin \
+  -f value -c id > /tmp/appcred_id.txt
+# (The secret is in the create output — see `openstack application credential create --help`)
+
+# Alternatively, use the raw API to capture the secret:
+curl -s -X POST \
+  -H "X-Auth-Token: $OS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"application_credential": {"name": "substation-cred", "project_scoped": false, "service_scoped": false, "unscoped": false, "service_roles": ["admin"], "domain_scoped": true, "unrestricted_roles": false}}' \
+  "$OS_AUTH_URL/users/<substation-user-id>/application_credentials" | \
+  python3 -c "import sys,json; d=json.load(sys.stdin)['application_credential']; print(d['id']); print(d.get('secret',''))"
+```
+
+> **Note:** The `openstack application credential create` CLI does not always
+> print the secret in a machine-readable way. For automation, the raw API
+> (`POST /v3/users/{user_id}/application_credentials`) returns the `secret`
+> field in the response body. Capture it and store it in the
+> `<release>-service-identity` Secret:
+>
+> ```sh
+> kubectl -n openstack create secret generic substation-mcp-service-identity \
+>   --from-literal=app_cred_id=<APPCRED_ID> \
+>   --from-literal=app_cred_secret=<APPCRED_SECRET> \
+>   --from-literal=app_cred_name=substation-cred \
+>   --from-literal=domain=service \
+>   --from-literal=user_id=<substation-user-id> \
+>   --from-literal=username=substation \
+>   --dry-run=client -o yaml | kubectl apply -f -
+> ```
+
+#### 3. Register the `mcp` catalog entry
+
+```sh
+export OS_USERNAME=admin
+export OS_USER_DOMAIN_NAME=default
+export OS_PROJECT_NAME=admin
+export OS_PROJECT_DOMAIN_NAME=default
+unset OS_AUTH_TOKEN   # re-mint as admin
+
+export PUBLIC_URL=https://substation.api.sat0.cloudnull.dev
 ./deploy/register-catalog.sh
 ```
 
-This is idempotent — re-running it reuses the existing `mcp` service.
+Or manually:
+
+```sh
+openstack service create mcp "MCP (Model Context Protocol)" 2>/dev/null || true
+openstack endpoint create --region SAT0 mcp public $PUBLIC_URL
+openstack endpoint create --region SAT0 mcp internal $PUBLIC_URL
+openstack endpoint create --region SAT0 mcp admin $PUBLIC_URL
+```
+
+#### 4. Configure the chart to use the pre-created identity
+
+Set `serviceUser.enabled: false` and `serviceUser.output.id/secret` to the
+app-cred you created manually:
+
+```yaml
+serviceUser:
+  enabled: false
+  output:
+    id: "<APPCRED_ID>"
+    secret: "<APPCRED_SECRET>"
+```
+
+This skips the provisioner Job and uses your pre-created app-cred directly
+in the `clouds.yaml` rendered by the chart.
+
+This is idempotent — re-running the catalog registration reuses the existing
+`mcp` service.
 
 ## Step 7 — Connect an MCP client
 
