@@ -633,7 +633,7 @@ struct ProvisionCommand: AsyncParsableCommand {
             process.standardError = outPipe
             process.standardInput = FileHandle.nullDevice
             if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG shellCmd: \(shellCmd)\nPROVISION_DEBUG bodyFile: \(bodyFile) bodyLen: \(body.count)\n".data(using: .utf8)!)
+                FileHandle.standardError.write("PROVISION_DEBUG shellCmd: \(shellCmd)\nPROVISION_DEBUG bodyFile: \(bodyFile) bodyLen: \(body.count) body: \(body)\n".data(using: .utf8)!)
             }
             try process.run()
             process.waitUntilExit()
