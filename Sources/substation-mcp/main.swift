@@ -961,7 +961,10 @@ func putSecret(name: String, namespace: String, data: [String: String]) async th
     let method: HTTPMethod = exists ? .PATCH : .POST
     var req = try HTTPClient.Request(url: exists ? "\(base)/\(name)" : base, method: method)
     req.headers.add(name: "Authorization", value: "Bearer \(token)")
-    req.headers.add(name: "Content-Type", value: "application/merge-patch+json")
+    // The create (POST) needs application/json; the update (PATCH) needs the
+    // merge-patch media type. Sending a POST as merge-patch+json is rejected
+    // with HTTP 415 UnsupportedMediaType.
+    req.headers.add(name: "Content-Type", value: exists ? "application/merge-patch+json" : "application/json")
     req.headers.add(name: "Accept", value: "application/json")
     req.body = .bytes([UInt8](payload.utf8))
 
