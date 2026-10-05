@@ -136,8 +136,7 @@ spec:
               substation-mcp mark-secret \
                 --name "$CLOUDS_SECRET" \
                 --key provisioned \
-                --value "true" \
-                --log-level info
+                --value "true"
               echo "provisioner complete" >&2
           resources:
             requests:
