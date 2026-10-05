@@ -49,4 +49,44 @@ metadata:
   namespace: {{ $ns }}
   labels:
     {{- include "substation-mcp.labels" . | nindent 4 }}
+---
+{{- /*
+     RBAC for the DEPLOYMENT's initContainer (the `substation-mcp` ServiceAccount).
+     The initContainer's `wait-secret` / `read-secret` steps poll and read the
+     `<fullname>-service-identity` Secret (and the `<fullname>-clouds` Secret via
+     wait-secret) through the in-cluster k8s API. Without read permission the
+     API returns 403, which `wait-secret` swallows and retries until timeout, so
+     the pod is stuck at Init:0/1. Grant least-privilege read access to exactly
+     the two Secrets the initContainer needs (namespace-scoped Role/RoleBinding).
+*/ -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-init-reader
+  namespace: {{ $ns }}
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ $fullname }}-service-identity
+      - {{ $fullname }}-clouds
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-init-reader
+  namespace: {{ $ns }}
+  labels:
+    {{- include "substation-mcp.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-init-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "substation-mcp.serviceAccountName" . }}
+    namespace: {{ $ns }}
 {{- end }}
