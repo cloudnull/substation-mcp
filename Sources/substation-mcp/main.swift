@@ -632,16 +632,10 @@ struct ProvisionCommand: AsyncParsableCommand {
             process.standardOutput = outPipe
             process.standardError = outPipe
             process.standardInput = FileHandle.nullDevice
-            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG shellCmd: \(shellCmd)\nPROVISION_DEBUG bodyFile: \(bodyFile) bodyLen: \(body.count) body: \(body)\n".data(using: .utf8)!)
-            }
             try process.run()
             process.waitUntilExit()
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(decoding: outData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            if ProcessInfo.processInfo.environment["PROVISION_DEBUG"] != nil {
-                FileHandle.standardError.write("PROVISION_DEBUG mint raw output (len \(outData.count)): \(String(decoding: outData, as: UTF8.self).prefix(300))\n".data(using: .utf8)!)
-            }
             guard process.terminationStatus == 0, !output.isEmpty else {
                 logger.error("curl mint failed", metadata: ["exit": .string(String(process.terminationStatus)), "output": .string(String(output.prefix(300)))])
                 throw CLIError(message: "provision: curl token mint failed (exit \(process.terminationStatus))")

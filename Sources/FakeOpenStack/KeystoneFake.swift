@@ -190,6 +190,36 @@ public struct KeystoneFake {
                 {"endpoint":{"id":"\(created.id)","service_id":"\(created.serviceID)","interface":"\(created.interface)","region_id":"\(created.regionID)","url":"\(created.url)"}}
                 """)
             }
+
+            // POST \(prefix)/endpoints (flat path, service_id in the body).
+            // RDO/Genestack Keystones support this form and 404 the nested
+            // /services/:id/endpoints form, so the registrar uses it.
+            router.post(RouterPath("\(prefix)/endpoints")) { req, _ in
+                guard let tokenID = req.headers[FakeHeaders.xAuthToken], await state.validateToken(tokenID) != nil else {
+                    return Self.jsonResponse(status: .unauthorized, body: """
+                    {"error":{"code":"forbidden","title":"Missing X-Auth-Token"}}
+                    """)
+                }
+                let body = try await Self.readBody(req)
+                guard let data = body.data(using: .utf8),
+                      let parsed = try? JSONDecoder().decode(EPWrap.self, from: data),
+                      let ep = parsed.endpoint,
+                      let svcID = ep.service_id else {
+                    return Self.jsonResponse(status: .badRequest, body: """
+                    {"error":{"code":"badRequest","title":"Invalid endpoint body (missing service_id)"}}
+                    """)
+                }
+                let knownService = await state.listServices().contains(where: { $0.id == svcID })
+                if !knownService {
+                    return Self.jsonResponse(status: .notFound, body: """
+                    {"error":{"code":"serviceNotFound","title":"Service not found"}}
+                    """)
+                }
+                let created = await state.createEndpoint(serviceID: svcID, interface: ep.interface, regionID: ep.region_id ?? "RegionOne", url: ep.url)
+                return Self.jsonResponse(status: .created, body: """
+                {"endpoint":{"id":"\(created.id)","service_id":"\(created.serviceID)","interface":"\(created.interface)","region_id":"\(created.regionID)","url":"\(created.url)"}}
+                """)
+            }
             // GET \(prefix)/endpoints
             let endpointsPath = RouterPath("\(prefix)/endpoints")
             router.get(endpointsPath) { req, _ in
@@ -316,7 +346,7 @@ public struct KeystoneFake {
     }
 
     struct SvcWrap: Decodable { struct Svc: Decodable { let type: String; let name: String?; let description: String? }; let service: Svc? }
-    struct EPWrap: Decodable { struct EP: Decodable { let interface: String; let region_id: String?; let url: String }; let endpoint: EP? }
+    struct EPWrap: Decodable { struct EP: Decodable { let interface: String; let region_id: String?; let url: String; let service_id: String? }; let endpoint: EP? }
     struct UserWrap: Decodable { struct U: Decodable { let name: String; let domain_id: String; let enabled: Bool?; let password: String? }; let user: U? }
     struct RoleAssignWrap: Decodable { struct Scope: Decodable { let group: Group? }; struct Group: Decodable { let id: String? }; struct RA: Decodable { let role_id: String; let user_id: String; let scope: Scope? }; let roleAssignment: RA?; enum CodingKeys: String, CodingKey { case roleAssignment = "role_assignment" } }
     struct AppCredWrap: Decodable { struct C: Decodable { let name: String; let secret: String; let user_id: String? }; let applicationCredential: C?; enum CodingKeys: String, CodingKey { case applicationCredential = "application_credential" } }

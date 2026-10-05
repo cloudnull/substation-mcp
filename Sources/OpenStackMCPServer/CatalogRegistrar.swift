@@ -181,11 +181,15 @@ public struct CatalogRegistrar {
         if let found = existing["\(serviceID)|\(interface)|\(region)"] {
             return (found.id, false)
         }
+        // Use the flat endpoint-creation path (POST /v3/endpoints with the
+        // service_id in the body) rather than the nested POST
+        // /v3/services/{id}/endpoints: RDO/Genestack Keystones 404 the nested
+        // form while supporting the flat form (verified live on sat0).
         let createBody = """
-        {"endpoint":{"interface":"\(interface)","region_id":"\(region)","url":"\(url)"}}
+        {"endpoint":{"service_id":"\(serviceID)","interface":"\(interface)","region_id":"\(region)","url":"\(url)"}}
         """
         let (cStatus, cBody) = try await identityClient(
-            "POST", "/v3/services/\(serviceID)/endpoints",
+            "POST", "/v3/endpoints",
             [], createBody, adminToken
         )
         guard cStatus == 201 else {
