@@ -424,7 +424,15 @@ public struct MCPRoute: Sendable {
                 }
                 let req: LoginRequest
                 do {
-                    req = try Self.decodeLoginRequest(data)
+                    // The browser submits the form as application/x-www-form-urlencoded
+                    // (the default), while an API client may POST JSON. Accept both.
+                    let contentType: String
+                    if let ctName = HTTPField.Name("content-type"), let ct = request.headers[ctName] {
+                        contentType = ct
+                    } else {
+                        contentType = ""
+                    }
+                    req = try Self.decodeLoginRequest(data, contentType: contentType)
                 } catch {
                     return Response(
                         status: .badRequest,
@@ -506,19 +514,89 @@ public struct MCPRoute: Sendable {
         }
     }
 
-    private static func decodeLoginRequest(_ data: Data) throws -> LoginRequest {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw MCPError.invalidRequest("malformed login JSON")
+    /// Decode a login request body. Accepts two encodings:
+    ///   - `application/json` (API clients, curl -d '{...}')
+    ///   - `application/x-www-form-urlencoded` (browser form submission, the
+    ///     default enctype for an HTML `<form>` without `enctype="application/json"`)
+    /// The `contentType` header is the primary signal; when it is absent or
+    /// unrecognised, the body is sniffed (a body starting with `{` is treated
+    /// as JSON, otherwise form-encoded).
+    private static func decodeLoginRequest(_ data: Data, contentType: String) throws -> LoginRequest {
+        let ct = contentType.lowercased()
+        var fields: [String: String]
+
+        if ct.contains("application/json") {
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw MCPError.invalidRequest("malformed login JSON")
+            }
+            fields = obj.reduce(into: [:]) { acc, kv in
+                switch kv.value {
+                case let s as String: acc[kv.key] = s
+                case let n as NSNumber: acc[kv.key] = n.stringValue
+                default: break
+                }
+            }
+        } else if ct.contains("application/x-www-form-urlencoded") || ct.contains("multipart/form-data") || ct.isEmpty {
+            fields = Self.parseFormOrJSON(data)
+        } else {
+            // Unknown content type — try JSON, then form.
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                fields = obj.reduce(into: [:]) { acc, kv in
+                    switch kv.value {
+                    case let s as String: acc[kv.key] = s
+                    case let n as NSNumber: acc[kv.key] = n.stringValue
+                    default: break
+                    }
+                }
+            } else {
+                fields = Self.parseFormOrJSON(data)
+            }
+        }
+
+        guard !fields.isEmpty else {
+            throw MCPError.invalidRequest("malformed login request")
         }
         return LoginRequest(
-            elicitationId: json["elicitationId"] as? String ?? "E1",
-            method: json["method"] as? String ?? "app-cred",
-            appCredId: json["appCredId"] as? String,
-            secret: json["secret"] as? String,
-            userName: json["userName"] as? String,
-            password: json["password"] as? String,
-            projectName: json["projectName"] as? String
+            elicitationId: fields["elicitationId"] ?? "E1",
+            method: fields["method"] ?? "app-cred",
+            appCredId: fields["appCredId"],
+            secret: fields["secret"],
+            userName: fields["userName"],
+            password: fields["password"],
+            projectName: fields["projectName"]
         )
+    }
+
+    /// Parse a body as URL-encoded form fields; if that yields nothing and the
+    /// body looks like JSON, fall back to a JSON parse. This covers browsers
+    /// (form-encoded) and curl/JSON clients.
+    private static func parseFormOrJSON(_ data: Data) -> [String: String] {
+        // Try form-encoded first (the browser default).
+        let body = String(decoding: data, as: UTF8.self)
+        var fields: [String: String] = [:]
+        for pair in body.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard let key = kv.first.flatMap({ $0.isEmpty ? nil : String($0) }) else { continue }
+            let value = kv.count > 1 ? String(kv[1]) : ""
+            fields[key] = Self.percentDecode(value)
+        }
+        if !fields.isEmpty { return fields }
+        // Fallback: JSON.
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return obj.reduce(into: [:]) { acc, kv in
+                if let s = kv.value as? String { acc[kv.key] = s }
+                else if let n = kv.value as? NSNumber { acc[kv.key] = n.stringValue }
+            }
+        }
+        return fields
+    }
+
+    /// Decode a percent-encoded form value (`+` is a space, `%XX` is a byte).
+    /// `+` is converted to `%20` first so `removingPercentEncoding` treats it
+    /// as a space, then `%XX` sequences are decoded.
+    private static func percentDecode(_ s: String) -> String {
+        let plusToSpace = s.replacingOccurrences(of: "+", with: "%20")
+        return plusToSpace.removingPercentEncoding ?? s
     }
 
     // MARK: - MCP request handler

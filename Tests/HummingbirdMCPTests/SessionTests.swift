@@ -239,6 +239,64 @@ struct ServeSessionTests {
         }
     }
 
+    @Test("login page POST as form-encoded (browser) mints a token")
+    func loginPagePostFormEncoded() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+        let elicitationId = "elicit-form"
+
+        try await app.app.test(.router) { client in
+            // Warm up the test router context (first request is dropped).
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            // A browser submits the form as application/x-www-form-urlencoded
+            // (the default enctype). The values are percent-encoded.
+            let body = "elicitationId=\(elicitationId)"
+                + "&method=app-cred"
+                + "&appCredId=fake-cred-admin"
+                + "&secret=secret-admin"
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/x-www-form-urlencoded"],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "form-encoded login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("fake-tok"), "expected a minted token id: \(respBody)")
+            #expect(!respBody.contains("secret-admin"), "secret leaked: \(respBody)")
+        }
+
+        let stored = await store.token(for: elicitationId)
+        #expect(stored != nil, "token not stored for elicitation id")
+        #expect(stored?.id.hasPrefix("fake-tok") == true)
+    }
+
+    @Test("login page POST without a Content-Type header still works (form sniff)")
+    func loginPagePostNoContentType() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { app.shutdown() }
+        let elicitationId = "elicit-noct"
+
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            // No Content-Type header — the decoder must sniff the body.
+            let body = "elicitationId=\(elicitationId)&method=app-cred&appCredId=fake-cred-admin&secret=secret-admin"
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: [:],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "no-content-type login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("fake-tok"), "expected a minted token id: \(respBody)")
+        }
+    }
+
     @Test("missing token -> 401 with invalid_token challenge")
     func missingToken() async throws {
         let handle = try await FakeApp.start()
