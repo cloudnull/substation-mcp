@@ -199,6 +199,201 @@ public struct MCPRoute: Sendable {
         router.get("/.well-known/oauth-protected-resource/v1", use: serve)
     }
 
+    // MARK: - Login page HTML
+
+    /// The substation logo mark as an `<img>` tag, inlined via a base64 data
+    /// URI so the login page has no external asset dependency. The source PNG
+    /// lives at `Sources/HummingbirdMCP/Resources/substation-logo.png` and is
+    /// embedded as `substationLogoBase64` (see `Logo.swift`, auto-generated).
+    private static let logoImg = """
+    <img src="data:image/png;base64,\(substationLogoBase64)" \
+    alt="Substation" width="64" height="64" class="mark">
+    """
+
+    /// Shared CSS for the login + completion pages. A calm, centered card on a
+    /// soft gradient, IBM Plex Sans, a gold-accented primary button matching the
+    /// logo's lightning bolt, and form groups whose visibility is filtered by
+    /// the selected authentication method (see the JS at the foot of the form).
+    private static let loginCSS = """
+    :root{
+      --bg-1:#f7f9fc; --bg-2:#eef2f8;
+      --card:#ffffff; --ink:#1f2733; --ink-soft:#5b6572; --ink-faint:#8b95a3;
+      --line:#e2e8f1; --line-soft:#eef2f7;
+      --gold:#F2B01E; --gold-ink:#7a5600; --gold-soft:#fdf4e0;
+      --focus:#3b6fe0; --focus-ring:rgba(59,111,224,.18);
+      --ok:#1f9d63; --ok-soft:#e9f7f0; --err:#c0392b; --err-soft:#fdecea;
+      --radius:16px; --radius-s:10px;
+      --shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -8px rgba(16,24,40,.12);
+      --font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{
+      min-height:100vh; font-family:var(--font); color:var(--ink);
+      background:linear-gradient(160deg,var(--bg-1) 0%,var(--bg-2) 100%);
+      display:flex; align-items:center; justify-content:center;
+      padding:40px 16px; -webkit-font-smoothing:antialiased;
+    }
+    .card{
+      width:100%; max-width:440px; background:var(--card);
+      border:1px solid var(--line); border-radius:var(--radius);
+      box-shadow:var(--shadow); padding:40px 36px 34px;
+    }
+    .brand{display:flex; flex-direction:column; align-items:center; gap:12px; margin-bottom:4px}
+    .brand .mark{width:64px; height:64px; display:block; border-radius:14px}
+    .wordmark{display:flex; flex-direction:column; align-items:center; line-height:1}
+    .wordmark .name{
+      font-size:21px; font-weight:600; letter-spacing:.2em; color:#1f2d3d;
+    }
+    .wordmark .tag{
+      font-family:var(--mono); font-size:11px; letter-spacing:.02em;
+      color:#8a94a3; margin-top:6px;
+    }
+    .kicker{
+      font-family:var(--mono); font-size:12px; letter-spacing:.02em;
+      color:var(--gold-ink); margin:26px 0 8px; text-align:center;
+    }
+    .title{font-size:22px; font-weight:600; margin:0; text-align:center; letter-spacing:-.01em}
+    .sub{font-size:13.5px; color:var(--ink-soft); margin:8px 0 0; text-align:center; line-height:1.5}
+    form{margin-top:24px}
+    .group{margin-bottom:16px}
+    .group label{display:block; font-size:12.5px; font-weight:500; color:var(--ink-soft); margin-bottom:6px}
+    .group label .opt{color:var(--ink-faint); font-weight:400}
+    .field{
+      width:100%; font-family:var(--font); font-size:14px; color:var(--ink);
+      background:#fff; border:1px solid var(--line); border-radius:var(--radius-s);
+      padding:11px 13px; transition:border-color .15s,box-shadow .15s;
+    }
+    .field::placeholder{color:#b3bcc8}
+    .field:focus{outline:none; border-color:var(--focus); box-shadow:0 0 0 4px var(--focus-ring)}
+    select.field{appearance:none; -webkit-appearance:none; cursor:pointer;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%235b6572' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat:no-repeat; background-position:right 13px center; padding-right:34px}
+    .method-card{display:flex; flex-direction:column; gap:8px}
+    .btn{
+      width:100%; font-family:var(--font); font-size:14.5px; font-weight:600;
+      color:var(--gold-ink); background:var(--gold); border:none;
+      border-radius:var(--radius-s); padding:13px; cursor:pointer; margin-top:6px;
+      transition:filter .15s,transform .05s; letter-spacing:.01em;
+    }
+    .btn:hover{filter:brightness(1.04)}
+    .btn:active{transform:translateY(1px)}
+    .btn:focus-visible{outline:none; box-shadow:0 0 0 4px var(--focus-ring)}
+    .divider{height:1px; background:var(--line); margin:18px 0; border:none}
+    .hint{font-size:12px; color:var(--ink-faint); margin:2px 0 0; line-height:1.5}
+    .footer{text-align:center; margin-top:20px; font-size:12.5px; color:var(--ink-faint)}
+    .footer code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft)}
+    /* method-filtered groups */
+    .method-fields[data-method="app-cred"] .only-password{display:none}
+    .method-fields[data-method="password"] .only-appcred{display:none}
+    /* result pages */
+    .result{display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px}
+    .result .icon{width:56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin-bottom:8px}
+    .result .icon.ok{background:var(--ok-soft); color:var(--ok)}
+    .result .icon.err{background:var(--err-soft); color:var(--err)}
+    .result .icon svg{width:28px; height:28px}
+    .token-box{
+      width:100%; margin-top:16px; font-family:var(--mono); font-size:12px;
+      background:var(--line-soft); border:1px solid var(--line);
+      border-radius:var(--radius-s); padding:12px 14px; word-break:break-all; color:var(--ink-soft);
+    }
+    .token-box .k{color:var(--ink-faint); display:block; margin-bottom:4px; font-size:11px; letter-spacing:.04em; text-transform:uppercase}
+    """
+
+    /// The login form page, rendered as a self-contained HTML document.
+    /// Exposed as a static function so tests (and the preview tooling) can
+    /// render it without a full server. The `endpoint` is shown in the footer
+    /// so an operator knows which MCP URL they are authenticating against.
+    static func loginHTML(endpoint: String) -> String {
+        let loginPath = endpoint + "/login"
+        return """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Substation — Sign in</title>
+          <link rel="preconnect" href="https://fonts.googleapis.com">
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+          <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+          <style>\(Self.loginCSS)</style>
+        </head>
+        <body>
+          <main class="card" role="main">
+            <div class="brand">
+              \(Self.logoImg)
+              <div class="wordmark">
+                <span class="name">SUBSTATION</span>
+                <span class="tag">The Operator's Control Room</span>
+              </div>
+            </div>
+
+            <div class="kicker">// sign in</div>
+            <h1 class="title">Authenticate to your cloud</h1>
+            <p class="sub">Mint a Keystone token to connect this MCP server to your OpenStack deployment.</p>
+
+            <form method="POST" action="\(loginPath)">
+              <div class="group">
+                <label for="method">Method</label>
+                <select id="method" name="method" class="field" onchange="substationFilter(this.value)">
+                  <option value="app-cred" selected>Application credential</option>
+                  <option value="password">User + password</option>
+                </select>
+              </div>
+
+              <div class="method-fields" data-method="app-cred" id="methodFields">
+                <div class="group only-appcred">
+                  <label for="appCredId">Application credential ID</label>
+                  <input class="field" id="appCredId" name="appCredId" type="text"
+                         placeholder="e.g. 8f2c…d91a" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="group only-appcred">
+                  <label for="secret">Secret</label>
+                  <input class="field" id="secret" name="secret" type="password"
+                         placeholder="••••••••••••••••" autocomplete="off">
+                </div>
+                <div class="group only-password">
+                  <label for="userName">User</label>
+                  <input class="field" id="userName" name="userName" type="text"
+                         placeholder="e.g. admin" autocomplete="username" spellcheck="false">
+                </div>
+                <div class="group only-password">
+                  <label for="password">Password</label>
+                  <input class="field" id="password" name="password" type="password"
+                         placeholder="••••••••••••••••" autocomplete="current-password">
+                </div>
+                <div class="group only-password">
+                  <label for="projectName">Project <span class="opt">optional</span></label>
+                  <input class="field" id="projectName" name="projectName" type="text"
+                         placeholder="e.g. admin" autocomplete="off" spellcheck="false">
+                  <p class="hint">Omit for a domain-scoped token; set the cloud's admin project for cross-domain privileges.</p>
+                </div>
+              </div>
+
+              <button type="submit" class="btn">Log in</button>
+
+              <input type="hidden" name="elicitationId" value="E1">
+            </form>
+
+            <p class="footer">Serving <code>\(endpoint)</code> · token is stored for this session only</p>
+          </main>
+          <script>
+            function substationFilter(method) {{
+              var fields = document.getElementById('methodFields');
+              if (fields) {{ fields.setAttribute('data-method', method); }}
+            }}
+            // initialise the field filter on load (defaults to app-cred)
+            document.addEventListener('DOMContentLoaded', function() {{
+              var sel = document.getElementById('method');
+              if (sel) {{ substationFilter(sel.value); }}
+            }});
+          </script>
+        </body>
+        </html>
+        """
+    }
+
     private func installLogin(
         on router: Router<BasicRequestContext>,
         endpoint: String,
@@ -207,26 +402,7 @@ public struct MCPRoute: Sendable {
         let loginPath = endpoint + "/login"
         let loginRoutePath = RouterPath(loginPath)
         router.get(loginRoutePath) { _, _ in
-            let html = """
-            <!DOCTYPE html><html><head><title>OpenStack MCP Login</title></head><body>
-            <h1>OpenStack MCP Login</h1>
-            <form method="POST" action="\(loginPath)">
-              <label>Method:
-                <select name="method">
-                  <option value="app-cred">Application credential</option>
-                  <option value="password">User + password</option>
-                </select>
-              </label><br>
-              <label>Elicitation ID: <input name="elicitationId" value="E1"></label><br>
-              <label>App cred ID: <input name="appCredId"></label><br>
-              <label>Secret: <input name="secret" type="password"></label><br>
-              <label>User: <input name="userName"></label><br>
-              <label>Password: <input name="password" type="password"></label><br>
-              <label>Project: <input name="projectName"></label><br>
-              <button type="submit">Log in</button>
-            </form>
-            </body></html>
-            """
+            let html = Self.loginHTML(endpoint: endpoint)
             return Response(
                 status: .ok,
                 headers: [.contentType: "text/html; charset=utf-8"],
@@ -260,10 +436,27 @@ public struct MCPRoute: Sendable {
                 let html: String
                 if result.completion {
                     html = """
-                    <!DOCTYPE html><html><head><title>Login complete</title></head><body>
-                    <h1>Login complete</h1>
-                    <p>Your token was stored. You may close this tab.</p>
-                    <p>Token ID: <code>\(result.tokenID)</code></p>
+                    <!DOCTYPE html>
+                    <html lang="en"><head>
+                    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Substation — Signed in</title>
+                    <link rel="preconnect" href="https://fonts.googleapis.com">
+                    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+                    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+                    <style>\(Self.loginCSS)</style>
+                    </head><body>
+                    <main class="card" role="main">
+                      <div class="brand">
+                        \(Self.logoImg)
+                        <div class="wordmark"><span class="name">SUBSTATION</span><span class="tag">The Operator's Control Room</span></div>
+                      </div>
+                      <div class="result">
+                        <div class="icon ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+                        <h1 class="title">Signed in</h1>
+                        <p class="sub">Your token was minted and stored for this session. You may close this tab.</p>
+                        <div class="token-box"><span class="k">Token ID</span>\(result.tokenID)</div>
+                      </div>
+                    </main>
                     </body></html>
                     """
                 } else {
@@ -272,10 +465,27 @@ public struct MCPRoute: Sendable {
                     // failure reason is intentionally generic (the underlying
                     // error may quote credential material).
                     html = """
-                    <!DOCTYPE html><html><head><title>Login failed</title></head><body>
-                    <h1>Login failed</h1>
-                    <p>Credentials could not be validated. Please try again or
-                    contact your cloud administrator.</p>
+                    <!DOCTYPE html>
+                    <html lang="en"><head>
+                    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Substation — Sign-in failed</title>
+                    <link rel="preconnect" href="https://fonts.googleapis.com">
+                    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+                    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+                    <style>\(Self.loginCSS)</style>
+                    </head><body>
+                    <main class="card" role="main">
+                      <div class="brand">
+                        \(Self.logoImg)
+                        <div class="wordmark"><span class="name">SUBSTATION</span><span class="tag">The Operator's Control Room</span></div>
+                      </div>
+                      <div class="result">
+                        <div class="icon err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+                        <h1 class="title">Sign-in failed</h1>
+                        <p class="sub">Credentials could not be validated. Check the details and try again, or contact your cloud administrator.</p>
+                        <a class="btn" href="\(loginPath)">Try again</a>
+                      </div>
+                    </main>
                     </body></html>
                     """
                 }
