@@ -43,10 +43,40 @@ This follows the same pattern as Genestack's built-in add-ons
 > placeholder so `kustomize build` works in CI without running the install
 > script first.
 
-## Step 1 — Build and push the image
+## Step 1 — Get the image
 
-The chart pulls a container image. Build it from the repo root (amd64, per
-`deploy/Dockerfile`) and push to your cluster registry:
+The project maintains a pre-built `linux/amd64` image on GHCR — **you do not
+need to build it yourself** unless you are making changes:
+
+> **Managed image:**
+> https://github.com/cloudnull/substation-mcp/pkgs/container/substation-mcp
+>
+> Repository: `ghcr.io/cloudnull/substation-mcp`
+
+Available tags:
+
+| Tag | Meaning |
+|-----|---------|
+| `0.1.0` (and future semver) | Coordinated release — matches the chart `version`. Recommended for production. |
+| `latest` | Newest build from `main` (updated on every push). |
+| `main` | Same as `latest` (branch ref). |
+| `sha-<commit>` | Exact commit digest — pin to a known-good build. |
+
+So in the override you can write any of:
+
+```yaml
+image:
+  repository: ghcr.io/cloudnull/substation-mcp
+  tag: "0.1.0"        # coordinated release
+  # tag: "latest"      # or the newest build
+  # tag: "sha-5755e66" # or a pinned commit
+  pullPolicy: IfNotPresent
+```
+
+### Build your own (optional)
+
+If you are developing the server, build from the repo root (amd64) and push to
+your own registry:
 
 ```sh
 # From the repo root:
@@ -54,6 +84,8 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
   -t registry.example.com/openstack/substation-mcp:0.1.0 .
 docker push registry.example.com/openstack/substation-mcp:0.1.0
 ```
+
+Then point `image.repository` / `image.tag` at your registry in the override.
 
 > **Arch note:** Genestack clusters are typically `linux/amd64`. The
 > `deploy/Dockerfile` pins `--platform=linux/amd64` in the builder stage.
@@ -106,7 +138,13 @@ Secret, and an initContainer injects it into `clouds.yaml` before the server
 starts. The Job is idempotent (re-runs reuse the existing user/app-cred).
 
 You MUST set `serviceUser.enabled: true` and provide the operator's admin
-credential via `serviceUser.auth` (one of `appCred` or `password`):
+credential via `serviceUser.auth`. There are **two ways** to supply it:
+
+### Option 1 — k8s Secret (recommended)
+
+Store the operator credential in a k8s Secret and reference it by name. The
+provisioner Job's env is populated via `secretKeyRef`, so the credential never
+appears in the override file or anywhere on the controller's filesystem:
 
 ```yaml
 serviceUser:
@@ -121,7 +159,40 @@ serviceUser:
     internalURL: "https://substation.api.sat0.cloudnull.dev"   # defaults to publicURL
     adminURL: "https://substation.api.sat0.cloudnull.dev"      # defaults to publicURL
   auth:
-    # Option A — application credential (preferred):
+    # Point at a k8s Secret in the release namespace that carries the
+    # operator credential. The plaintext fields below are IGNORED.
+    secretName: substation-admin
+```
+
+Create the Secret (choose **password** or **app-cred** keys):
+
+```sh
+# Password auth:
+kubectl -n openstack create secret generic substation-admin \
+  --from-literal=username=admin \
+  --from-literal=password='<admin-password>' \
+  --from-literal=domain=default \
+  --from-literal=project=admin
+
+# — or — application-credential auth:
+kubectl -n openstack create secret generic substation-admin \
+  --from-literal=app_cred_id='<operator-app-cred-id>' \
+  --from-literal=app_cred_secret='<operator-app-cred-secret>'
+```
+
+The provisioner reads these keys via `secretKeyRef` (all `optional: true`, so a
+Secret that only carries the password keys still works).
+
+### Option 2 — plaintext in the override (simpler, less secure)
+
+Type the credential directly in the override. Convenient for quick local
+deploys, but the value lands in the file — keep it to a tight ACL (`chmod 600`).
+
+```yaml
+serviceUser:
+  # ... (same as above, minus auth.secretName)
+  auth:
+    # Option A — application credential:
     appCred:
       id: "<operator app-cred id>"
       secret: "<operator app-cred secret>"
@@ -129,16 +200,16 @@ serviceUser:
     # password:
     #   username: "admin"
     #   password: "<admin password>"
-    #   domain: "admin"
+    #   domain: "default"
+    #   project: "admin"
 ```
 
-> **Security:** the operator admin credential (`serviceUser.auth`) is injected
-> into the Job only as env vars and is used solely to mint a short-lived admin
-> token. It is **never written to any k8s Secret**. Only the *provisioned*
-> app-cred (the `substation` service user's own credential) is persisted — to
-> the `<release>-service-identity` Secret — and that is what the server uses.
-> Keep the override file containing `serviceUser.auth` to a tight ACL
-> (`chmod 600`); it holds the operator credential.
+> **Security:** in **both** options the operator credential is used solely to
+> mint a short-lived admin token and is **never written to any k8s Secret** by
+> the chart. Only the *provisioned* app-cred (the `substation` service user's
+> own credential) is persisted — to the `<release>-service-identity` Secret —
+> and that is what the server uses. Option 1 (Secret) is preferred because the
+> operator credential never touches the filesystem.
 
 For an operator-specific override with the highest precedence, drop a file
 into `/etc/genestack/helm-configs/substation-mcp/*.yaml`.
@@ -187,8 +258,9 @@ upgrade:
 1. **Provisions** the `substation` service user in the `service` domain + its
    application credential (idempotent — reuses on re-run).
 2. **Writes** the app-cred to the `<release>-service-identity` Secret.
-3. **Registers** the `mcp` catalog service + public/internal/admin endpoints
-   at the `serviceUser.catalog.*` URLs (idempotent — reuses existing entries).
+3. **Registers** the `substation-mcp` catalog service (type `mcp`) + its
+   public/internal/admin endpoints at the `serviceUser.catalog.*` URLs
+   (idempotent — reuses existing entries).
 4. **Rolls** the Deployment (the initContainer picks up the app-cred from the
    identity Secret into `clouds.yaml`).
 
@@ -202,8 +274,8 @@ kubectl -n openstack get secret substation-mcp-service-identity
 # The pod is Ready (initContainer succeeded → server has the app-cred):
 kubectl -n openstack get pods -l app.kubernetes.io/name=substation-mcp
 # The catalog entry exists (as an OpenStack admin):
-openstack service list | grep -i mcp
-openstack endpoint list --service mcp
+openstack service list | grep -i substation
+openstack endpoint list --service substation-mcp
 ```
 
 ### Manual fallback (openstack CLI)
@@ -306,14 +378,20 @@ export PUBLIC_URL=https://substation.api.sat0.cloudnull.dev
 ./deploy/register-catalog.sh
 ```
 
-Or manually:
+Or manually (service **name** `substation-mcp`, **type** `mcp`):
 
 ```sh
-openstack service create mcp "MCP (Model Context Protocol)" 2>/dev/null || true
-openstack endpoint create --region SAT0 mcp public $PUBLIC_URL
-openstack endpoint create --region SAT0 mcp internal $PUBLIC_URL
-openstack endpoint create --region SAT0 mcp admin $PUBLIC_URL
+openstack service create --type mcp substation-mcp \
+  "Model Context Protocol endpoint for the OpenStack cloud" 2>/dev/null || true
+openstack endpoint create --region SAT0 --service substation-mcp public   "$PUBLIC_URL"
+openstack endpoint create --region SAT0 --service substation-mcp internal "$PUBLIC_URL"
+openstack endpoint create --region SAT0 --service substation-mcp admin    "$PUBLIC_URL"
 ```
+
+> The service is identified by its **type** (`mcp`); the **name**
+> (`substation-mcp`) is a human-readable label. The `register-catalog`
+> subcommand looks up the service by type, so an existing entry (even a legacy
+> one named `mcp`) is reused rather than duplicated.
 
 #### 4. Configure the chart to use the pre-created identity
 
@@ -336,27 +414,42 @@ This is idempotent — re-running the catalog registration reuses the existing
 
 ## Step 7 — Connect an MCP client
 
-Mint a Keystone token (or use the `/v1/login` page in a browser), then:
+Mint a Keystone token (or use the `/v1/login` page in a browser), then point
+your MCP client at the **public URL** (the `serviceUser.catalog.publicURL` you
+configured, e.g. `https://substation.api.sat0.cloudnull.dev/v1`):
 
 ```sh
+# Replace <public-url> with serviceUser.catalog.publicURL and <keystone-token>
+# with a minted token (app-cred or password).
 claude mcp add --transport http openstack \
-  https://substation-mcp.example.com/v1 \
+  "<public-url>" \
   --header "Authorization: Bearer <keystone-token>"
 ```
 
+The login page (in a browser, e.g. `https://<fqdn>/v1/login`) mints a token
+for you — pick **Application credential** or **User + password** and submit.
+
 ## Step 8 — Verify
+
+The values below are rendered by the chart into `NOTES.txt` on install (the
+`OS_CLOUD` / `REGION` / `PUBLIC_URL` come from `config.clouds.default`,
+`serviceUser.region`, and `serviceUser.catalog.publicURL` respectively):
 
 ```sh
 # 1. The deployment is running:
 kubectl -n openstack get deploy substation-mcp
 kubectl -n openstack get pods -l app.kubernetes.io/name=substation-mcp
 
-# 2. Validate the credential + scopes:
-OS_AUTH_TOKEN=<token> ./.build/release/substation-mcp check --cloud mycloud
+# 2. The catalog entry (as an OpenStack admin):
+openstack service list | grep -i substation
+openstack endpoint list --service substation-mcp
 
-# 3. Run the conformance handshake against the live URL:
+# 3. Validate the credential + scopes:
+OS_AUTH_TOKEN=<token> ./.build/release/substation-mcp check --cloud <cloud>
+
+# 4. Run the conformance handshake against the live URL:
 scripts/conformance.sh \
-  --url https://substation-mcp.example.com/v1 \
+  --url "<public-url>" \
   --token <minted-keystone-token>
 ```
 

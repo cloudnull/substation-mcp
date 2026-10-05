@@ -1,34 +1,75 @@
 substation-mcp {{ .Chart.AppVersion }} deployed to namespace {{ include "substation-mcp.namespace" . }}.
 
 Service: {{ include "substation-mcp.fullname" . }} (port {{ .Values.service.port }})
-
 {{- if .Values.gateway.enabled }}
-
 External URL: https://{{ .Values.gateway.fqdn }}
+{{- end }}
+{{- $cloud := .Values.config.clouds.default | default "mycloud" -}}
+{{- $region := .Values.serviceUser.region | default "RegionOne" -}}
+{{- $fqdn := .Values.gateway.fqdn | default "substation-mcp.example.com" -}}
+{{- $publicURL := .Values.serviceUser.catalog.publicURL | default (printf "https://%s/v1" $fqdn) -}}
+
+{{- if .Values.serviceUser.enabled }}
+
+────────────────────────────────────────────────────────────────────────────
+Provisioning (automatic)
+
+The provisioner Job (post-install/post-upgrade hook) is creating the
+`substation` service user in the `service` domain, its application credential,
+and the `substation-mcp` catalog service (type `mcp`) in region `{{ $region }}`.
 
 Next steps:
-1. Ensure the Gateway has a TLS certificate for {{ .Values.gateway.fqdn }}
-   (cert-manager or a manually-created Secret named {{ .Values.gateway.gatewayName }}-tls).
-2. Run register-catalog to publish the MCP service in the Keystone catalog:
 
-     OS_CLOUD=mycloud REGION=RegionOne \
-     PUBLIC_URL=https://{{ .Values.gateway.fqdn }} \
+1. Verify the deployment:
+
+     kubectl -n {{ include "substation-mcp.namespace" . }} get deploy substation-mcp
+     kubectl -n {{ include "substation-mcp.namespace" . }} get pods -l app.kubernetes.io/name=substation-mcp
+     kubectl -n {{ include "substation-mcp.namespace" . }} get jobs | grep substation-mcp-provision
+
+2. Verify the catalog entry (as an OpenStack admin):
+
+     openstack service list | grep -i substation
+     openstack endpoint list --service substation-mcp
+
+3. Connect an MCP client (mint a token first, or use the login page):
+
+     claude mcp add --transport http openstack \
+       {{ $publicURL }} \
+       --header "Authorization: Bearer <keystone-token>"
+
+   Login page (browser):  {{ if .Values.gateway.enabled }}https://{{ $fqdn }}/v1/login{{ else }}http://<node>/v1/login{{ end }}
+{{- else }}
+
+────────────────────────────────────────────────────────────────────────────
+Provisioning (manual)
+
+serviceUser.enabled is false, so the chart did NOT create the service identity
+or catalog entry. Run these one-time steps as an operator with an admin token:
+
+1. Verify the deployment:
+
+     kubectl -n {{ include "substation-mcp.namespace" . }} get deploy substation-mcp
+
+2. Run register-catalog (one-time, as an operator with an admin token):
+
+     OS_CLOUD={{ $cloud }} REGION={{ $region }} \
+     PUBLIC_URL={{ $publicURL }} \
      ./deploy/register-catalog.sh
 
 3. Connect an MCP client:
 
      claude mcp add --transport http openstack \
-       https://{{ .Values.gateway.fqdn }}/v1 \
+       {{ $publicURL }} \
        --header "Authorization: Bearer <keystone-token>"
 
-{{- else }}
+{{- end }}
+{{- if not .Values.gateway.enabled }}
 
-The chart is deployed but external exposure (Gateway) is disabled.
-To expose the service, set gateway.enabled=true and gateway.fqdn=<your-domain>.
+⚠ External exposure (Gateway) is disabled. Set gateway.enabled=true and
+  gateway.fqdn=<your-domain> to publish the FQDN above. In-cluster access:
 
-In-cluster access:
-  kubectl -n {{ include "substation-mcp.namespace" . }} port-forward \
-    svc/{{ include "substation-mcp.fullname" . }} 8080:{{ .Values.service.port }}
+     kubectl -n {{ include "substation-mcp.namespace" . }} port-forward \
+       svc/{{ include "substation-mcp.fullname" . }} 8080:{{ .Values.service.port }}
 
-Then connect a client to http://127.0.0.1:8080/v1 with a Bearer token.
+  Then connect a client to http://127.0.0.1:8080/v1 with a Bearer token.
 {{- end }}
