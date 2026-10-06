@@ -165,13 +165,14 @@ public struct Server: Sendable, Codable, Identifiable {
     /// to avoid the polymorphic-decoder pitfalls in `FlavorRef.init(from:)`.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Try object form first
-        struct FlavorObj: Decodable {
-            let id: String?
-            let links: [Link]?
-        }
-        if let obj = try? c.decode(FlavorObj.self, forKey: key) {
-            return FlavorRef(id: obj.id ?? "", links: obj.links ?? [])
+        // Decode as an object: the flavor value is a JSON object with
+        // "id" and "links" fields. We use a dedicated CodingKeys enum
+        // scoped to the flavor sub-object.
+        enum FlavorKeys: String, CodingKey { case id, links }
+        if let flavorContainer = try? c.nestedContainer(keyedBy: FlavorKeys.self, forKey: key) {
+            let id = try? flavorContainer.decode(String.self, forKey: .id)
+            let links = try? flavorContainer.decodeIfPresent([Link].self, forKey: .links)
+            return FlavorRef(id: id ?? "", links: links ?? [])
         }
         // Try bare-string form
         if let s = try? c.decode(String.self, forKey: key) {
