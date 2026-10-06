@@ -414,20 +414,75 @@ This is idempotent — re-running the catalog registration reuses the existing
 
 ## Step 7 — Connect an MCP client
 
-Mint a Keystone token (or use the `/v1/login` page in a browser), then point
-your MCP client at the **public URL** (the `serviceUser.catalog.publicURL` you
-configured, e.g. `https://substation.api.sat0.cloudnull.dev/v1`):
+substation-mcp speaks the MCP **Streamable HTTP** protocol over
+`<public-url>` (the `serviceUser.catalog.publicURL` you configured, e.g.
+`https://substation.api.sat0.cloudnull.dev/v1`). Authenticate with a Keystone
+Bearer token — mint one with the `openstack` CLI, an app-cred, or the
+`/v1/login` page in a browser (pick **Application credential** or
+**User + password** and submit; the page stores the token for the session).
+
+> **Token tip:** store the token in an environment variable rather than in a
+> config file. Most MCP clients support `{env:NAME}` substitution.
+
+### Claude Code (CLI)
 
 ```sh
-# Replace <public-url> with serviceUser.catalog.publicURL and <keystone-token>
-# with a minted token (app-cred or password).
+export OS_AUTH_TOKEN=<keystone-token>   # minted via app-cred or password
+
 claude mcp add --transport http openstack \
   "<public-url>" \
-  --header "Authorization: Bearer <keystone-token>"
+  --header "Authorization: Bearer $OS_AUTH_TOKEN"
 ```
 
-The login page (in a browser, e.g. `https://<fqdn>/v1/login`) mints a token
-for you — pick **Application credential** or **User + password** and submit.
+### OpenCode (V2)
+
+OpenCode connects to remote MCP servers over Streamable HTTP. Add substation
+as a **remote** server with a Bearer header (`oauth: false` — the server uses
+a Keystone token, not OAuth):
+
+```sh
+# Quick add (writes to the project config; add --global for every project):
+opencode mcp add openstack --url "<public-url>"
+```
+
+Or configure it by hand in `opencode.jsonc` (project root, or `~/.config/opencode/opencode.jsonc`
+for global). Keep the token in an env var, not the file:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "openstack": {
+        "type": "remote",
+        "url": "https://substation.api.sat0.cloudnull.dev/v1",
+        "oauth": false,
+        "headers": {
+          "Authorization": "Bearer {env:OS_AUTH_TOKEN}"
+        }
+      }
+    }
+  }
+}
+```
+
+Then verify the connection and, if needed, complete sign-in:
+
+```sh
+export OS_AUTH_TOKEN=<keystone-token>
+opencode mcp list          # expect: ✓ openstack  connected
+/mcps                      # in-session: view / connect / authenticate
+```
+
+> **Notes:**
+> - OpenCode names the exposed tools `openstack_<tool>` (e.g.
+>   `openstack_os_list`, `openstack_os_whoami`). Under the default Code Mode
+>   they're grouped as `tools.openstack.os_list(...)`.
+> - Set `"codemode": false` on the server if you want the tools on OpenCode's
+>   native tool list instead of through Code Mode.
+> - substation-mcp publishes no OAuth metadata, so `oauth: false` + the
+>   `Authorization` header is the correct auth path (the Keystone token is the
+>   credential, not an API key from a provider).
 
 ## Step 8 — Verify
 
