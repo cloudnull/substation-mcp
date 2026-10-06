@@ -388,8 +388,9 @@ public struct CinderFake {
             }
             let projectId = ctx.parameters.get("projectId") ?? ""
             _ = projectId
+            // Cinder v3 quota response: {"quota_set": {...}}
             return Self.jsonResponse(status: .ok, body: """
-            {"quotas":{"volumes":10,"gigabytes":1000,"snapshots":10}}
+            {"quota_set":{"volumes":10,"gigabytes":1000,"snapshots":10}}
             """)
         }
     }

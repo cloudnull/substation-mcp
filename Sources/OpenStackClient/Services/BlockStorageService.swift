@@ -365,8 +365,9 @@ public struct BlockStorageRegion: Sendable {
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
-        struct QuotaResp: Decodable { let quotas: VolumeQuota }
-        return try JSONDecoder().decode(QuotaResp.self, from: result.body).quotas
+        // Cinder v3 quota response: {"quota_set": {...}}
+        struct QuotaResp: Decodable { let quota_set: VolumeQuota }
+        return try JSONDecoder().decode(QuotaResp.self, from: result.body).quota_set
     }
 
     // MARK: - Helpers

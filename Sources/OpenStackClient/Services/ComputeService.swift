@@ -311,11 +311,16 @@ public struct ComputeRegion: Sendable {
         let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-keypairs")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
+        // Nova wraps each keypair in a {"keypair": {...}} envelope:
+        //   {"keypairs": [{"keypair": {"name": "...", "public_key": "...", "fingerprint": "..."}}]}
+        struct KeyPairEnvelope: Decodable {
+            let keypair: KeyPair
+        }
         struct KeyPairList: Decodable {
-            let keypairs: [KeyPair]
+            let keypairs: [KeyPairEnvelope]
         }
         let decoded = try JSONDecoder().decode(KeyPairList.self, from: result.body)
-        return decoded.keypairs
+        return decoded.keypairs.map { $0.keypair }
     }
 
     public func createKeyPair(_ vt: ValidatedToken, name: String, publicKey: String?) async throws -> KeyPair {

@@ -194,8 +194,9 @@ public struct NovaFake {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
             _ = token
+            // Nova wraps each keypair in a {"keypair": {...}} envelope
             return Self.jsonResponse(status: .ok, body: """
-            {"keypairs":[{"name":"test-key","fingerprint":"AA:BB:CC:DD","public_key":"ssh-rsa AAAA test@host","type":"rsa"}]}
+            {"keypairs":[{"keypair":{"name":"test-key","fingerprint":"AA:BB:CC:DD","public_key":"ssh-rsa AAAA test@host","type":"rsa"}}]}
             """)
         }
 
