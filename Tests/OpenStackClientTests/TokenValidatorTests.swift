@@ -369,13 +369,23 @@ struct LoginMinterTests {
         let obj = try JSONSerialization.jsonObject(with: body) as! [String: Any]
         let auth = obj["auth"] as! [String: Any]
         let identity = auth["identity"] as! [String: Any]
-        let user = identity["user"] as! [String: Any]
+        // Keystone v3 password auth nests the user under identity.password
+        // (the method name), NOT directly under identity. keystoneauth1 (the
+        // openstack CLI) sends exactly this shape.
+        #expect(identity["methods"] as? [String] == ["password"],
+                "methods must be [\"password\"]: \(String(describing: identity["methods"]))")
+        let passwordObj = identity["password"] as! [String: Any]
+        let user = passwordObj["user"] as! [String: Any]
         // 2. The password must round-trip EXACTLY (escaped on the wire,
         //    decoded back to the original by a JSON parser).
         #expect(user["password"] as? String == nastyPassword,
                 "password did not round-trip through JSON escaping: \(String(describing: user["password"]))")
         #expect(user["name"] as? String == "admin")
         #expect(user["domain"] as? [String: Any] != nil)
+        // 3. The scope must be project-scoped when a project name is given.
+        let scope = auth["scope"] as? [String: Any]
+        #expect(scope?["project"] as? [String: Any] != nil,
+                "expected a project scope: \(String(describing: scope))")
     }
 
     /// Regression: an app-credential secret containing a double-quote must be

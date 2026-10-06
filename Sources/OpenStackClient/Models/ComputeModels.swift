@@ -75,12 +75,45 @@ public struct Server: Sendable, Codable, Identifiable {
 }
 
 /// Flavor reference in a server response.
+///
+/// Nova returns the flavor as either an object (`{"id": "...", "links": [...]}`)
+/// or, on clouds that name flavors, a bare string (`"m1.small"`). `id` holds the
+/// value from whichever form was present; `links` is always `[]` for the string
+/// form.
 public struct FlavorRef: Sendable, Codable, Equatable {
-    public let id: String
+    public var id: String
     public var links: [Link]
     public init(id: String, links: [Link] = []) {
         self.id = id
         self.links = links
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            // Bare-string flavor: Nova uses the string as the flavor identifier.
+            self.id = string
+            self.links = []
+            return
+        }
+        if container.decodeNil() {
+            self.id = ""
+            self.links = []
+            return
+        }
+        let object = try container.decode(FlavorObject.self)
+        self.id = object.id
+        self.links = object.links
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(FlavorObject(id: id, links: links))
+    }
+
+    private struct FlavorObject: Codable {
+        let id: String
+        let links: [Link]
     }
 }
 

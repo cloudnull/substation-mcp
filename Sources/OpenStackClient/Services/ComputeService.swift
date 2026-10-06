@@ -153,7 +153,7 @@ public struct ComputeRegion: Sendable {
 
         struct ServerList: Decodable {
             struct Server: Decodable { let id: String; let name: String; let status: String
-                let flavor: FlavorRef; let addresses: [String: [String: String]]
+                let flavor: FlavorRef; let addresses: [String: [String: String]]?
                 let key_name: String?; let created: String?
                 let security_groups: [String]?
             }
@@ -167,7 +167,7 @@ public struct ComputeRegion: Sendable {
                 name: s.name,
                 status: s.status,
                 flavor: s.flavor,
-                addresses: s.addresses,
+                addresses: s.addresses ?? [:],
                 created: s.created.flatMap { Self.parseDate($0) },
                 keyName: s.key_name,
                 securityGroups: s.security_groups ?? []
@@ -187,11 +187,11 @@ public struct ComputeRegion: Sendable {
             struct Server: Decodable {
                 let id: String; let name: String; let status: String
                 let flavor: FlavorRef
-                let addresses: [String: [String: String]]
+                let addresses: [String: [String: String]]?
                 let key_name: String?
                 let created: String?
                 let updated: String?
-                let metadata: [String: String]
+                let metadata: [String: String]?
                 let security_groups: [String]?
                 let progress: Int?
             }
@@ -205,9 +205,9 @@ public struct ComputeRegion: Sendable {
             name: s.name,
             status: s.status,
             flavor: s.flavor,
-            addresses: s.addresses,
+            addresses: s.addresses ?? [:],
             created: s.created.flatMap { Self.parseDate($0) },
-            metadata: s.metadata,
+            metadata: s.metadata ?? [:],
             keyName: s.key_name,
             securityGroups: s.security_groups ?? [],
             updated: s.updated.flatMap { Self.parseDate($0) },
@@ -671,9 +671,9 @@ public struct ComputeRegion: Sendable {
             name: s.name,
             status: s.status,
             flavor: s.flavor,
-            addresses: s.addresses,
+            addresses: s.addresses ?? [:],
             created: s.created.flatMap { Self.parseDate($0) },
-            metadata: s.metadata,
+            metadata: s.metadata ?? [:],
             keyName: s.key_name,
             securityGroups: s.security_groups ?? [],
             updated: s.updated.flatMap { Self.parseDate($0) },

@@ -43,14 +43,23 @@ public struct KeystoneFake {
             struct User: Decodable { let name: String; let password: String?; let domain: DomainRef? }
             // Real Keystone uses snake_case keys ("application_credential").
             // Swift's synthesized Decodable expects camelCase, so map the keys.
+            //
+            // For password auth, Keystone (and keystoneauth1, the library the
+            // `openstack` CLI uses) nest the user under the METHOD-NAME key:
+            //   {"identity":{"methods":["password"],
+            //     "password":{"user":{"name":...,"domain":...,"password":...}}}}
+            // So `password` is a wrapper holding `user`, not `user` directly
+            // under `identity`. (App-cred uses the same pattern: the method name
+            // "application_credential" is the wrapper key.)
+            struct PasswordMethod: Decodable { let user: User? }
             struct Identity: Decodable {
                 let methods: [String]
                 let applicationCredential: AppCred?
-                let user: User?
+                let password: PasswordMethod?
                 enum CodingKeys: String, CodingKey {
                     case methods
                     case applicationCredential = "application_credential"
-                    case user
+                    case password
                 }
             }
             struct Auth: Decodable { let identity: Identity }
@@ -69,7 +78,7 @@ public struct KeystoneFake {
                let appCred = identity.applicationCredential {
                 token = await state.mintToken(credID: appCred.id, secret: appCred.secret, domain: nil, password: nil, userID: nil)
             } else if identity.methods.contains("password"),
-                      let user = identity.user {
+                      let user = identity.password?.user {
                 token = await state.mintToken(credID: user.name, secret: user.password ?? "", domain: user.domain?.name, password: user.password, userID: user.name)
             } else {
                 token = nil

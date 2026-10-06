@@ -207,10 +207,17 @@ public actor LoginMinter {
 
     /// Build a Keystone password-auth mint body. Uses `JSONSerialization` so
     /// user-supplied strings (user, domain, password, project) are JSON-escaped
-    /// correctly. The previous hand-built string interpolation broke on any
-    /// password containing `"`, `\`, or a control character, producing invalid
-    /// JSON that Keystone rejected with 400 "Expecting to find password in
-    /// identity".
+    /// correctly.
+    ///
+    /// The critical structural detail (verified against keystoneauth1, the
+    /// library the `openstack` CLI uses): when `methods: ["password"]`, the
+    /// user object must be nested under an `identity.password` key — i.e.
+    /// `{"auth":{"identity":{"methods":["password"],
+    ///   "password":{"user":{"name":...,"domain":...,"password":...}}}}}`.
+    /// Keystone dispatches to the sub-object named after the method. Placing
+    /// `user` directly under `identity` (the previous shape) made Keystone
+    /// look for the `password` sub-object, not find it, and reject the mint
+    /// with 400 "Expecting to find password in identity".
     private static func passwordBody(userID: String, domain: String?, password: String, projectName: String?) -> Data {
         var user: [String: Any] = ["name": userID]
         if let d = domain, !d.isEmpty {
@@ -221,7 +228,7 @@ public actor LoginMinter {
         var auth: [String: Any] = [
             "identity": [
                 "methods": ["password"],
-                "user": user,
+                "password": ["user": user],
             ],
         ]
         if let p = projectName, !p.isEmpty {

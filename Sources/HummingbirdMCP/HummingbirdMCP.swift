@@ -215,6 +215,16 @@ public struct MCPRoute: Sendable {
     alt="Substation" width="64" height="64" class="mark">
     """
 
+    /// Favicon link tag. Reuses the embedded logomark (`substationLogoBase64`)
+    /// as a data-URI PNG so the login + completion pages have no external asset
+    /// dependency. The source PNG is the Substation icon
+    /// (`substation-logo-icon-fav.png` upstream; byte-identical to the logomark
+    /// we already embed).
+    private static let faviconLink = """
+    <link rel="icon" type="image/png" \
+    href="data:image/png;base64,\(substationLogoBase64)">
+    """
+
     /// Shared CSS for the login + completion pages. A calm, centered card on a
     /// soft gradient, IBM Plex Sans, a gold-accented primary button matching the
     /// logo's lightning bolt, and form groups whose visibility is filtered by
@@ -309,6 +319,10 @@ public struct MCPRoute: Sendable {
       border-radius:var(--radius-s); padding:12px 14px; word-break:break-all; color:var(--ink-soft);
     }
     .token-box .k{color:var(--ink-faint); display:block; margin-bottom:4px; font-size:11px; letter-spacing:.04em; text-transform:uppercase}
+    .token-box .v{display:block; word-break:break-all; line-height:1.5}
+    .copy-btn{margin-top:12px; padding:12px}
+    .copy-btn.copied{background:#e7f5ec; color:var(--ok)}
+    .copy-btn.failed{background:var(--err-soft); color:var(--err)}
     """
 
     /// The login form page, rendered as a self-contained HTML document.
@@ -324,6 +338,7 @@ public struct MCPRoute: Sendable {
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <title>Substation — Sign in</title>
+          \(Self.faviconLink)
           <link rel="preconnect" href="https://fonts.googleapis.com">
           <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
           <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -501,6 +516,7 @@ public struct MCPRoute: Sendable {
                     <html lang="en"><head>
                     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <title>Substation — Signed in</title>
+                    \(Self.faviconLink)
                     <link rel="preconnect" href="https://fonts.googleapis.com">
                     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
                     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -515,9 +531,59 @@ public struct MCPRoute: Sendable {
                         <div class="icon ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
                         <h1 class="title">Signed in</h1>
                         <p class="sub">Your token was minted and stored for this session. You may close this tab.</p>
-                        <div class="token-box"><span class="k">Token ID</span>\(result.tokenID)</div>
+                        <div class="token-box"><span class="k">Token ID</span><span id="tokenValue" class="v">\(result.tokenID)</span></div>
+                        <button type="button" class="btn copy-btn" id="copyBtn" onclick="copyToken(this)">
+                          <span class="copy-label">Copy token</span>
+                        </button>
                       </div>
                     </main>
+                    <script>
+                      function copyToken(btn) {{
+                        var el = document.getElementById('tokenValue');
+                        if (!el) {{ return; }}
+                        var text = el.textContent.trim();
+                        function done(ok) {{
+                          var label = btn.querySelector('.copy-label');
+                          if (!label) {{ return; }}
+                          label.textContent = ok ? 'Copied' : 'Copy failed';
+                          btn.classList.add(ok ? 'copied' : 'failed');
+                          setTimeout(function() {{
+                            label.textContent = 'Copy token';
+                            btn.classList.remove('copied', 'failed');
+                          }}, 2000);
+                        }}
+                        // Preferred path: the async Clipboard API (secure
+                        // contexts only — https or localhost).
+                        if (navigator.clipboard && navigator.clipboard.writeText) {{
+                          navigator.clipboard.writeText(text).then(function() {{ done(true); }}, function() {{
+                            // Clipboard API rejected (e.g. not focused / not
+                            // secure) — fall back to execCommand.
+                            fallbackCopy(text, done);
+                          }});
+                        }} else {{
+                          fallbackCopy(text, done);
+                        }}
+                      }}
+                      function fallbackCopy(text, done) {{
+                        try {{
+                          var ta = document.createElement('textarea');
+                          ta.value = text;
+                          ta.setAttribute('readonly', '');
+                          ta.style.position = 'fixed';
+                          ta.style.top = '0';
+                          ta.style.left = '0';
+                          ta.style.opacity = '0';
+                          document.body.appendChild(ta);
+                          ta.select();
+                          ta.setSelectionRange(0, ta.value.length);
+                          var ok = document.execCommand('copy');
+                          document.body.removeChild(ta);
+                          done(ok);
+                        }} catch (e) {{
+                          done(false);
+                        }}
+                      }}
+                    </script>
                     </body></html>
                     """
                 } else {
@@ -530,6 +596,7 @@ public struct MCPRoute: Sendable {
                     <html lang="en"><head>
                     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <title>Substation — Sign-in failed</title>
+                    \(Self.faviconLink)
                     <link rel="preconnect" href="https://fonts.googleapis.com">
                     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
                     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">

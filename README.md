@@ -196,6 +196,56 @@ claude mcp add --transport http openstack \
 }
 ```
 
+**OpenCode (V2):**
+
+OpenCode connects to remote MCP servers over Streamable HTTP. Add substation as
+a **remote** server with a Bearer header (`oauth: false` — the server uses a
+Keystone token, not OAuth):
+
+```sh
+# Quick add (writes to the project config; add --global for every project):
+opencode mcp add openstack --url "https://mcp.example.com/v1"
+```
+
+Or configure it by hand in `opencode.jsonc` (project root, or
+`~/.config/opencode/opencode.jsonc` for global). Keep the token in an env var,
+not the file:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "openstack": {
+        "type": "remote",
+        "url": "https://mcp.example.com/v1",
+        "oauth": false,
+        "headers": {
+          "Authorization": "Bearer {env:OS_AUTH_TOKEN}"
+        }
+      }
+    }
+  }
+}
+```
+
+Then verify the connection and, if needed, complete sign-in:
+
+```sh
+export OS_AUTH_TOKEN=<keystone-token>
+opencode mcp list          # expect: ✓ openstack  connected
+/mcps                      # in-session: view / connect / authenticate
+```
+
+> **Notes:**
+> - OpenCode names the exposed tools `openstack_<tool>` (e.g.
+>   `openstack_os_list`, `openstack_os_whoami`).
+> - Set `"codemode": false` on the server if you want the tools on OpenCode's
+>   native tool list instead of through Code Mode.
+> - substation-mcp publishes no OAuth metadata, so `oauth: false` + the
+>   `Authorization` header is the correct auth path (the Keystone token is the
+>   credential, not a provider API key).
+
 **Token management:** the server supports two token-acquisition paths:
 1. **Client-side mint** — the client mints a token via Keystone and presents it
    as a Bearer header. On `401`, the client re-mints and retries. Tokens are
