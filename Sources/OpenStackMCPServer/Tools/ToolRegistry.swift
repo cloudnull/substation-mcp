@@ -56,7 +56,7 @@ public struct ToolRegistry: Sendable {
     /// gated by `log.audit`, default true).
     public let auditEnabled: Bool
     /// Per-identity (per-token) sliding-window tool-call rate limiter
-    /// (spec §12: `policy.max_calls_per_minute`, default 120/min).
+    /// (spec §12: `policy.max_calls_per_minute`, default 1024/min).
     public let callLimiter: ToolCallLimiter
     /// Server-scoped store for the `os_task_*` shim (MCP Tasks, Path C).
     /// Shared by every per-identity registry on the server; keyed by token id
@@ -619,12 +619,28 @@ public struct ToolRegistry: Sendable {
                 message: "Unsupported topology anchor: \(resourceName). Supported: \(supportedAnchors.joined(separator: ", "))")
         }
 
-        // Validate the anchor exists as an id; topology also accepts a name
-        // for anchors that support it (the builder resolves names where it can).
+        // Resolve the anchor to a canonical ID. Nova's GET /servers/{id}
+        // requires an actual UUID — passing a name returns 404. For servers,
+        // we resolve the name via NameResolver (listServers name filter)
+        // before building the topology graph. Other anchor types (network,
+        // router, etc.) already resolve names inside the TopologyBuilder.
+        var anchorID = idOrName
         if resourceName == "server" {
-            _ = try await client.compute(region: region).getServer(vt, id: idOrName)
+            do {
+                // Try exact ID first
+                _ = try await client.compute(region: region).getServer(vt, id: idOrName)
+            } catch {
+                // Not an ID — resolve by name via the NameResolver
+                let resolver = NameResolver(catalog: catalog, client: client)
+                guard let descriptor = catalog.descriptor("server") else {
+                    throw OpenStackError(service: "mcp", status: 500, message: "Server descriptor not found in catalog")
+                }
+                let resolved = try await resolver.resolve(
+                    vt, descriptor: descriptor, idOrName: idOrName, region: region
+                )
+                anchorID = resolved.id
+            }
         }
-        let anchorID = idOrName
 
         let builder = TopologyBuilder(client: client, catalog: catalog, logger: logger)
         let graph = try await builder.build(

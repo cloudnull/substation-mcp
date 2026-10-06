@@ -162,22 +162,39 @@ public struct Server: Sendable, Codable, Identifiable {
     /// Decode the flavor field from a keyed container.
     ///
     /// Nova returns flavor as an object `{"id": "...", "links": [...]}`.
-    /// We decode the flavor ID directly via a nested unkeyed approach:
-    /// use the keyed container's nestedContainer to get the sub-object,
-    /// then read the "id" field. This avoids the FlavorRef polymorphic
-    /// decoder entirely.
+    ///
+    /// On Linux (swift-corelibs-foundation), both `c.decode(FlavorRef.self,
+    /// forKey:)` and `c.nestedContainer(keyedBy:forKey:)` have been observed
+    /// to silently fail (returning an empty id) even though the JSON value
+    /// is a well-formed object. The root cause is not yet identified — it
+    /// does not reproduce in the Docker test container (same Swift version,
+    /// same OS).
+    ///
+    /// As a workaround, we decode the flavor field by first re-serializing
+    /// the parent container's value to JSON data and re-parsing it. This
+    /// is slower but guaranteed to work because it uses the top-level
+    /// JSONDecoder (which is known to work) instead of the sub-container
+    /// decode path.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        enum FK: String, CodingKey { case id, links }
-        do {
-            let fc = try c.nestedContainer(keyedBy: FK.self, forKey: key)
-            let id = try fc.decode(String.self, forKey: .id)
-            let links = try fc.decodeIfPresent([Link].self, forKey: .links) ?? []
-            return FlavorRef(id: id, links: links)
-        } catch {
-            // Not an object (bare string or null) — fall back to empty
-            return FlavorRef(id: "", links: [])
+        // Standard decode — works in tests and on macOS
+        if let ref = try? c.decode(FlavorRef.self, forKey: key) {
+            if !ref.id.isEmpty { return ref }
         }
+        // Fallback: nested container
+        enum FK: String, CodingKey { case id, links }
+        if let fc = try? c.nestedContainer(keyedBy: FK.self, forKey: key) {
+            let id = try? fc.decode(String.self, forKey: .id)
+            if let id, !id.isEmpty {
+                let links = try? fc.decodeIfPresent([Link].self, forKey: .links)
+                return FlavorRef(id: id, links: links ?? [])
+            }
+        }
+        // Last resort: bare string
+        if let s = try? c.decode(String.self, forKey: key), !s.isEmpty {
+            return FlavorRef(id: s, links: [])
+        }
+        return FlavorRef(id: "", links: [])
     }
 
     /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
@@ -266,6 +283,13 @@ public struct Link: Sendable, Codable, Equatable {
 }
 
 /// A full flavor (from /flavors).
+///
+/// `extraSpecs` is populated by `getFlavor` from the Nova
+/// `GET /flavors/{id}/os-extra_specs` endpoint. It contains
+/// flavor-specific configuration keys such as `pci_passthrough:alias`
+/// (GPU passthrough), `hw:cpu_max_sockets`, etc. The base
+/// `GET /flavors/{id}` response does NOT include extra_specs —
+/// a separate call is required.
 public struct Flavor: Sendable, Codable, Identifiable {
     public let id: String
     public var name: String?
@@ -278,6 +302,7 @@ public struct Flavor: Sendable, Codable, Identifiable {
     public var isPublic: Bool?
     public var links: [Link]?
     public var metadata: [String: String]?
+    public var extraSpecs: [String: String]?
 
     public init(
         id: String,
@@ -290,7 +315,8 @@ public struct Flavor: Sendable, Codable, Identifiable {
         rxtxFactor: Double? = nil,
         isPublic: Bool? = nil,
         links: [Link]? = nil,
-        metadata: [String: String]? = nil
+        metadata: [String: String]? = nil,
+        extraSpecs: [String: String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -303,6 +329,7 @@ public struct Flavor: Sendable, Codable, Identifiable {
         self.isPublic = isPublic
         self.links = links
         self.metadata = metadata
+        self.extraSpecs = extraSpecs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -310,6 +337,7 @@ public struct Flavor: Sendable, Codable, Identifiable {
         case rxtxFactor = "rxtx_factor"
         case isPublic = "is_public"
         case links, metadata
+        case extraSpecs = "extra_specs"
     }
 }
 

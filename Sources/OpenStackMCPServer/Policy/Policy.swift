@@ -17,7 +17,7 @@ public struct Policy: Sendable {
         denyVerbs: [String: Set<Verb>] = [:],
         denyActions: [String: Set<String>] = [:],
         maxListLimit: Int = 200,
-        maxCallsPerMinute: Int = 120
+        maxCallsPerMinute: Int = 1024
     ) {
         self.readOnly = readOnly
         self.denyResources = denyResources
@@ -33,7 +33,7 @@ public struct Policy: Sendable {
     ]
 
     /// The default policy: identity-admin resources denied, maxListLimit 200,
-    /// maxCallsPerMinute 120.
+    /// maxCallsPerMinute 1024.
     public var defaultPolicy: Policy {
         Policy(
             readOnly: readOnly,

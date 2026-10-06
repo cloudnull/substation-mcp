@@ -80,7 +80,7 @@ public struct OpenStackMCPConfig: Sendable {
             "project", "user", "group", "role", "role_assignment", "domain"
         ],
         policyMaxListLimit: Int = 200,
-        policyMaxCallsPerMinute: Int = 120,
+        policyMaxCallsPerMinute: Int = 1024,
         clientRequestTimeout: Int = 60,
         clientMaxConnectionsPerHost: Int = 16,
         logLevel: String = "info",

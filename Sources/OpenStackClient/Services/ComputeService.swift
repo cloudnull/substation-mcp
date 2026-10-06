@@ -300,8 +300,33 @@ public struct ComputeRegion: Sendable {
         struct FlavorResp: Decodable {
             let flavor: Flavor
         }
-        let decoded = try JSONDecoder().decode(FlavorResp.self, from: result.body)
-        return decoded.flavor
+        var flavor = try JSONDecoder().decode(FlavorResp.self, from: result.body).flavor
+
+        // Fetch extra_specs from the dedicated endpoint. The base
+        // GET /flavors/{id} response does NOT include extra_specs.
+        // This is best-effort: if the endpoint 404s (older Nova) we
+        // leave extraSpecs as nil rather than failing the whole call.
+        if let specs = try? await getFlavorExtraSpecs(vt, id: id, region: region) {
+            flavor.extraSpecs = specs
+        }
+        return flavor
+    }
+
+    /// Fetch flavor extra_specs from `GET /flavors/{id}/os-extra_specs`.
+    /// Returns nil if the endpoint is unavailable (404 on older Nova).
+    func getFlavorExtraSpecs(_ vt: ValidatedToken, id: String, region: String) async throws -> [String: String]? {
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/flavors/\(id)/os-extra_specs")
+        guard (200...299).contains(result.status) else { return nil }
+
+        struct ExtraSpecsResp: Decodable {
+            let extra_specs: [String: String]
+        }
+        do {
+            let decoded = try JSONDecoder().decode(ExtraSpecsResp.self, from: result.body)
+            return decoded.extra_specs
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - Keypairs

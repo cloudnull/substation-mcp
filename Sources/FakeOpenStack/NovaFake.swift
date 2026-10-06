@@ -147,6 +147,36 @@ public struct NovaFake {
             """)
         }
 
+        router.get("/nova/flavors/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let id = ctx.parameters.get("id") ?? ""
+            guard let f = await state.flavors.first(where: { $0.id == id }) else {
+                return Self.novaError(status: .notFound, message: "No flavor found matching '\(id)'")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"flavor":{"id":"\(f.id)","name":"\(f.name)","vcpus":\(f.vcpus),"ram":\(f.ram),"disk":\(f.disk),"links":[{"rel":"bookmark","href":"/nova/flavors/\(f.id)"}]}}
+            """)
+        }
+
+        router.get("/nova/flavors/:id/os-extra_specs") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            _ = token
+            let id = ctx.parameters.get("id") ?? ""
+            guard await state.flavors.contains(where: { $0.id == id }) else {
+                return Self.novaError(status: .notFound, message: "No flavor found matching '\(id)'")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"extra_specs":{}"
+            """)
+        }
+
         router.get("/nova/os-availability-zone") { req, _ in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {

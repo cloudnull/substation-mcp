@@ -79,7 +79,7 @@ struct PolicyTests {
     @Test("maxCallsPerMinute is exposed")
     func maxCallsPerMinute() {
         let policy = Policy()
-        #expect(policy.maxCallsPerMinute == 120)
+        #expect(policy.maxCallsPerMinute == 1024)
     }
 
     @Test("effective catalog preserves non-denied resource verbs")

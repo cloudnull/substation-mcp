@@ -2,7 +2,7 @@ import Foundation
 import Logging
 
 /// Per-identity (per-token) sliding-window tool-call rate limiter (spec §12:
-/// `policy.max_calls_per_minute`, default 120). A session that exceeds the
+/// `policy.max_calls_per_minute`, default 1024). A session that exceeds the
 /// budget within a 60-second window is throttled: the next call returns a
 /// tool-level error (isError) rather than a hard HTTP 429, so the MCP client
 /// sees a structured, self-correctable message.
