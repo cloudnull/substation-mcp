@@ -664,11 +664,16 @@ public struct ComputeRegion: Sendable {
         var result: [String: String] = [:]
         for s in servers {
             guard let serverID = s["id"] as? String else { continue }
-            if let flavor = s["flavor"] as? [String: Any],
+            let flavorRaw = s["flavor"]
+            if let flavor = flavorRaw as? [String: Any],
                let flavorID = flavor["id"] as? String {
                 result[serverID] = flavorID
-            } else if let flavorStr = s["flavor"] as? String {
+            } else if let flavorStr = flavorRaw as? String {
                 result[serverID] = flavorStr
+            } else {
+                // Debug: log the type of the flavor value
+                let flavorDesc = flavorRaw.map { "\($0)" } ?? "nil"
+                FileHandle.standardError.write("extractFlavorIDs: server \(serverID) flavor type=\(type(of: flavorRaw ?? 0)) value=\(flavorDesc.prefix(100))\n".data(using: .utf8)!)
             }
         }
         FileHandle.standardError.write("extractFlavorIDs: extracted \(result.count) flavor IDs from \(servers.count) servers\n".data(using: .utf8)!)
