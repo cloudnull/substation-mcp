@@ -653,30 +653,29 @@ public struct ComputeRegion: Sendable {
     /// JSONSerialization (a separate, working code path) lets us
     /// extract the flavor IDs directly from the raw JSON.
     static func extractFlavorIDs(from data: Data) -> [String: String]? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            FileHandle.standardError.write("extractFlavorIDs: JSONSerialization failed on \(data.count) bytes\n".data(using: .utf8)!)
-            return nil
-        }
-        guard let servers = obj["servers"] as? [[String: Any]] else {
-            FileHandle.standardError.write("extractFlavorIDs: no 'servers' key, got: \(obj.keys)\n".data(using: .utf8)!)
-            return nil
-        }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        // Handle both list form {"servers": [...]} and single form {"server": {...}}
+        let serverList: [[String: Any]]
+        if let list = obj["servers"] as? [[String: Any]] {
+            serverList = list
+        } else if let single = obj["server"] as? [String: Any] {
+            serverList = [single]
+        } else { return nil }
         var result: [String: String] = [:]
-        for s in servers {
+        for s in serverList {
             guard let serverID = s["id"] as? String else { continue }
             let flavorRaw = s["flavor"]
-            if let flavor = flavorRaw as? [String: Any],
-               let flavorID = flavor["id"] as? String {
-                result[serverID] = flavorID
+            // Flavor can be: {"id": "..."}, full object with "original_name", or bare string
+            if let flavor = flavorRaw as? [String: Any] {
+                if let flavorID = flavor["id"] as? String {
+                    result[serverID] = flavorID
+                } else if let flavorName = flavor["original_name"] as? String {
+                    result[serverID] = flavorName
+                }
             } else if let flavorStr = flavorRaw as? String {
                 result[serverID] = flavorStr
-            } else {
-                // Debug: log the type of the flavor value
-                let flavorDesc = flavorRaw.map { "\($0)" } ?? "nil"
-                FileHandle.standardError.write("extractFlavorIDs: server \(serverID) flavor type=\(type(of: flavorRaw ?? 0)) value=\(flavorDesc.prefix(100))\n".data(using: .utf8)!)
             }
         }
-        FileHandle.standardError.write("extractFlavorIDs: extracted \(result.count) flavor IDs from \(servers.count) servers\n".data(using: .utf8)!)
         return result.isEmpty ? nil : result
     }
 

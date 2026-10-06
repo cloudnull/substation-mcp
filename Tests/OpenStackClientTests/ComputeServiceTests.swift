@@ -138,6 +138,57 @@ struct ComputeServiceTests {
         #expect(s.securityGroups.isEmpty)
     }
 
+    @Test("Server decodes full flavor object with original_name", .timeLimit(.minutes(2)))
+    func serverDecodesFullFlavorObject() throws {
+        // Some Nova versions return the full flavor object in server responses,
+        // using "original_name" instead of "id" for the flavor identifier.
+        let novaJSON = """
+        {"servers":[{
+            "id":"srv1",
+            "name":"full-flavor",
+            "status":"ACTIVE",
+            "image":{"id":null,"links":[]},
+            "flavor":{
+                "original_name":"m1.small",
+                "extra_specs":{"pci_passthrough:alias":"r9700:1"},
+                "disk":60,
+                "ephemeral":0,
+                "swap":1024,
+                "ram":8192,
+                "vcpus":2
+            },
+            "addresses":{},
+            "security_groups":[],
+            "metadata":{},
+            "created":"2026-01-01T00:00:00Z"
+        }]}
+        """
+        struct ServerList: Decodable { let servers: [Server] }
+        let decoded = try JSONDecoder().decode(ServerList.self, from: novaJSON.data(using: .utf8)!)
+        let s = decoded.servers[0]
+        #expect(s.id == "srv1")
+        #expect(s.flavor.id == "m1.small")
+    }
+
+    @Test("FlavorRef decodes from simple id+links form", .timeLimit(.minutes(2)))
+    func flavorRefSimpleForm() throws {
+        let json = """
+        {"id":"567f142b-4e8c-4f08-a4e0-93e27b51c01e","links":[{"rel":"bookmark","href":"https://nova/flavors/567f142b"}]}
+        """
+        let ref = try JSONDecoder().decode(FlavorRef.self, from: json.data(using: .utf8)!)
+        #expect(ref.id == "567f142b-4e8c-4f08-a4e0-93e27b51c01e")
+        #expect(ref.links.count == 1)
+    }
+
+    @Test("FlavorRef decodes from full flavor object with original_name", .timeLimit(.minutes(2)))
+    func flavorRefFullForm() throws {
+        let json = """
+        {"original_name":"m1.small","disk":60,"ephemeral":0,"swap":1024,"ram":8192,"vcpus":2,"extra_specs":{}}
+        """
+        let ref = try JSONDecoder().decode(FlavorRef.self, from: json.data(using: .utf8)!)
+        #expect(ref.id == "m1.small")
+    }
+
     @Test("list servers returns seeded servers for proj-one", .timeLimit(.minutes(2)))
     func listServers() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()

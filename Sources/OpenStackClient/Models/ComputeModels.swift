@@ -1,11 +1,5 @@
 import Foundation
 
-/// Minimal wrapper for decoding just the flavor `id` from a server response.
-/// Defined at file scope so the synthesized Decodable works reliably on Linux.
-private struct FlavorIDOnly: Decodable {
-    let id: String
-}
-
 /// A single IP address entry in a server's `addresses` dict.
 /// Nova returns each address as an object with `addr`, `version`,
 /// `OS-EXT-IPS:type`, and `OS-EXT-IPS-MAC:mac_addr`.
@@ -180,28 +174,10 @@ public struct Server: Sendable, Codable, Identifiable {
     /// avoids the multi-field decode path that triggers the Linux bug.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Strategy 1: decode just the id via a minimal file-scope wrapper
-        if let fid = try? c.decode(FlavorIDOnly.self, forKey: key) {
-            return FlavorRef(id: fid.id, links: [])
-        }
-        // Strategy 2: standard FlavorRef decode
-        if let ref = try? c.decode(FlavorRef.self, forKey: key) {
-            if !ref.id.isEmpty { return ref }
-        }
-        // Strategy 3: nested container
-        enum FK: String, CodingKey { case id, links }
-        if let fc = try? c.nestedContainer(keyedBy: FK.self, forKey: key) {
-            let id = try? fc.decode(String.self, forKey: .id)
-            if let id, !id.isEmpty {
-                let links = try? fc.decodeIfPresent([Link].self, forKey: .links)
-                return FlavorRef(id: id, links: links ?? [])
-            }
-        }
-        // Strategy 4: bare string
-        if let s = try? c.decode(String.self, forKey: key), !s.isEmpty {
-            return FlavorRef(id: s, links: [])
-        }
-        return FlavorRef(id: "", links: [])
+        // FlavorRef.init(from:) handles all Nova forms internally:
+        // simple {"id": "...", "links": [...]}, full flavor object with
+        // original_name, and bare string.
+        return try c.decode(FlavorRef.self, forKey: key)
     }
 
     /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
@@ -228,12 +204,34 @@ public struct FlavorRef: Sendable, Codable, Equatable {
         self.links = links
     }
 
-    // No custom init(from:) — the synthesized Decodable handles the
-    // standard Nova object form {"id": "...", "links": [...]} directly.
-    // The bare-string form is extremely rare (legacy clouds only) and is
-    // not supported; the synthesized decoder will throw a typeMismatch
-    // for a string value, which the caller (Server.decodeFlavor) catches
-    // and falls back to an empty FlavorRef.
+    /// Custom decoder: Nova's flavor field in server responses can be a
+    /// simple reference (`{"id": "...", "links": [...]}`) or a full flavor
+    /// object (with `original_name`, `extra_specs`, `disk`, etc.). The
+    /// full form does NOT have an `id` key — it has `original_name`
+    /// (and sometimes `name`). We try `id` first, then fall back to
+    /// `original_name`.
+    public init(from decoder: Decoder) throws {
+        // Try keyed container first (the common case)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Try id, then original_name, then name
+        if let idVal = try c.decodeIfPresent(String.self, forKey: .id) {
+            id = idVal
+        } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .originalName) {
+            id = nameVal
+        } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .name) {
+            id = nameVal
+        } else {
+            id = ""
+        }
+        links = (try c.decodeIfPresent([Link].self, forKey: .links)) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case originalName = "original_name"
+        case name
+        case links
+    }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
