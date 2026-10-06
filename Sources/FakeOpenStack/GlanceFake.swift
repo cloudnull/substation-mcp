@@ -70,9 +70,8 @@ public struct GlanceFake {
             guard let img = await state.getImage(id: id, projectID: token.projectID) else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
-            return Self.jsonResponse(status: .ok, body: """
-            {"image":\(Self.imageJSON(img))}
-            """)
+            // Glance v2 GET /images/{id} returns the image directly (no wrapper)
+            return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
         }
 
         router.post("\(base)/images") { req, _ in
