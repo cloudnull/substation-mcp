@@ -441,7 +441,7 @@ public struct NovaFake {
     static func serversListJSON(servers: [FakeState.FakeServer], detail: Bool = false) -> String {
         let items = servers.map { server -> String in
             let keyName = server.keyName.map { "\"\($0)\"" } ?? "null"
-            let secGroups = server.securityGroups.map { "\"\($0.value)\"" }.joined(separator: ",")
+            let secGroups = server.securityGroups.map { "{\"name\":\"\($0.value)\"}" }.joined(separator: ",")
             let addr = addressesJSON(server.addresses)
             var obj = "{\"id\":\"\(server.id)\",\"name\":\"\(server.name)\",\"status\":\"\(server.status)\",\"flavor\":{\"id\":\"\(server.flavorID)\",\"links\":[{\"rel\":\"bookmark\",\"href\":\"/nova/flavors/\(server.flavorID)\"}]},\"key_name\":\(keyName),\"addresses\":\(addr),\"security_groups\":[\(secGroups)]"
             if detail {
@@ -457,14 +457,20 @@ public struct NovaFake {
     static func serverJSON(server: FakeState.FakeServer) -> String {
         let image = server.imageID.map { "\"\($0)\"" } ?? "null"
         let userData = server.userData.map { ",\"user_data\":\"\($0)\"" } ?? ""
+        let secGroups = server.securityGroups.map { "{\"name\":\"\($0.value)\"}" }.joined(separator: ",")
         return """
-        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(server.securityGroups.map { "\"\($0)\"" }.joined(separator: ","))],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")\(userData)}}
+        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(secGroups)],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")\(userData)}}
         """
     }
 
+    /// Produce Nova-format addresses JSON: `{network: [{addr, version, OS-EXT-IPS:type}]}`.
+    /// The fake stores addresses as `{network: {ip: port?}}`; we flatten to the Nova object-array form.
     static func addressesJSON(_ addresses: [String: [String: String]]) -> String {
-        let items = addresses.map { (network, ips) in
-            "\"\(network)\":[\(ips.values.map { "\"\($0)\"" }.joined(separator: ","))]"
+        let items: [String] = addresses.map { network, ips in
+            let addrObjs: [String] = ips.keys.map { ip in
+                "{\"addr\":\"\(ip)\",\"version\":4,\"OS-EXT-IPS:type\":\"fixed\"}"
+            }
+            return "\"\(network)\":[\(addrObjs.joined(separator: ","))]"
         }
         if items.isEmpty { return "{}" }
         return "{\(items.joined(separator: ","))}"

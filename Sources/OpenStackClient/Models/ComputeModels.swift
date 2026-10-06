@@ -1,15 +1,52 @@
 import Foundation
 
+/// A single IP address entry in a server's `addresses` dict.
+/// Nova returns each address as an object with `addr`, `version`,
+/// `OS-EXT-IPS:type`, and `OS-EXT-IPS-MAC:mac_addr`.
+public struct ServerAddress: Sendable, Codable, Equatable {
+    public var addr: String
+    public var version: Int?
+    public var type: String?
+    public var macAddr: String?
+
+    public init(addr: String, version: Int? = nil, type: String? = nil, macAddr: String? = nil) {
+        self.addr = addr
+        self.version = version
+        self.type = type
+        self.macAddr = macAddr
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case addr, version
+        case type = "OS-EXT-IPS:type"
+        case macAddr = "OS-EXT-IPS-MAC:mac_addr"
+    }
+}
+
+/// A security group reference in a server response.
+/// Nova returns security groups as `[{"name": "default"}]`, not `["default"]`.
+public struct SecurityGroupRef: Sendable, Codable, Equatable {
+    public var name: String
+
+    public init(name: String) {
+        self.name = name
+    }
+}
+
 /// A Nova server (instance).
+///
+/// Decoded from Nova's `/servers` and `/servers/detail` responses.
+/// The `CodingKeys` map Swift property names to the exact JSON keys Nova
+/// returns — several use snake_case or namespaced prefixes.
 public struct Server: Sendable, Codable, Identifiable {
     public let id: String
     public var name: String
     public var status: String
     public var flavor: FlavorRef
-    public var addresses: [String: [String: String]]
+    public var addresses: [String: [ServerAddress]]
     public var created: Date?
     public var metadata: [String: String]
-    public var tags: [String]
+    public var tags: [String]?
     public var hostId: String?
     public var keyName: String?
     public var configDrive: String?
@@ -17,7 +54,7 @@ public struct Server: Sendable, Codable, Identifiable {
     public var userID: String?
     public var projectID: String?
     public var image: ImageRef?
-    public var securityGroups: [String]
+    public var securityGroups: [SecurityGroupRef]
     public var updated: Date?
     public var progress: Int?
 
@@ -26,10 +63,10 @@ public struct Server: Sendable, Codable, Identifiable {
         name: String = "",
         status: String = "",
         flavor: FlavorRef = FlavorRef(id: "", links: []),
-        addresses: [String: [String: String]] = [:],
+        addresses: [String: [ServerAddress]] = [:],
         created: Date? = nil,
         metadata: [String: String] = [:],
-        tags: [String] = [],
+        tags: [String]? = nil,
         hostId: String? = nil,
         keyName: String? = nil,
         configDrive: String? = nil,
@@ -37,7 +74,7 @@ public struct Server: Sendable, Codable, Identifiable {
         userID: String? = nil,
         projectID: String? = nil,
         image: ImageRef? = nil,
-        securityGroups: [String] = [],
+        securityGroups: [SecurityGroupRef] = [],
         updated: Date? = nil,
         progress: Int? = nil
     ) {
@@ -63,14 +100,72 @@ public struct Server: Sendable, Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, status, flavor, addresses, metadata, tags
-        case hostId = "hostid"
+        case hostId
         case keyName = "key_name"
         case configDrive = "config_drive"
-        case availabilityZone = "availability_zone"
+        case availabilityZone = "OS-EXT-AZ:availability_zone"
         case userID = "user_id"
         case projectID = "project_id"
-        case image, securityGroups
+        case image
+        case securityGroups = "security_groups"
         case created, updated, progress
+    }
+
+    // Custom decoder: Nova's JSON uses namespaced keys (OS-EXT-AZ:availability_zone),
+    // snake_case (security_groups, key_name), and nested object arrays
+    // (addresses: {net: [{addr, version, ...}]}, security_groups: [{name}])
+    // that the synthesized Decodable cannot handle.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        status = try c.decode(String.self, forKey: .status)
+        flavor = try c.decodeIfPresent(FlavorRef.self, forKey: .flavor) ?? FlavorRef(id: "", links: [])
+        addresses = try c.decodeIfPresent([String: [ServerAddress]].self, forKey: .addresses) ?? [:]
+        metadata = try c.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+        tags = try c.decodeIfPresent([String].self, forKey: .tags)
+        hostId = try c.decodeIfPresent(String.self, forKey: .hostId)
+        keyName = try c.decodeIfPresent(String.self, forKey: .keyName)
+        configDrive = try c.decodeIfPresent(String.self, forKey: .configDrive)
+        availabilityZone = try c.decodeIfPresent(String.self, forKey: .availabilityZone)
+        userID = try c.decodeIfPresent(String.self, forKey: .userID)
+        projectID = try c.decodeIfPresent(String.self, forKey: .projectID)
+        image = try c.decodeIfPresent(ImageRef.self, forKey: .image)
+        securityGroups = try c.decodeIfPresent([SecurityGroupRef].self, forKey: .securityGroups) ?? []
+        created = try c.decodeIfPresent(String.self, forKey: .created).flatMap(Self.parseISODate)
+        updated = try c.decodeIfPresent(String.self, forKey: .updated).flatMap(Self.parseISODate)
+        progress = try c.decodeIfPresent(Int.self, forKey: .progress)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(status, forKey: .status)
+        try c.encode(flavor, forKey: .flavor)
+        try c.encode(addresses, forKey: .addresses)
+        try c.encode(metadata, forKey: .metadata)
+        if let tags { try c.encode(tags, forKey: .tags) }
+        if let hostId { try c.encode(hostId, forKey: .hostId) }
+        if let keyName { try c.encode(keyName, forKey: .keyName) }
+        if let configDrive { try c.encode(configDrive, forKey: .configDrive) }
+        if let availabilityZone { try c.encode(availabilityZone, forKey: .availabilityZone) }
+        if let userID { try c.encode(userID, forKey: .userID) }
+        if let projectID { try c.encode(projectID, forKey: .projectID) }
+        if let image { try c.encode(image, forKey: .image) }
+        try c.encode(securityGroups, forKey: .securityGroups)
+        if let created { try c.encode(created.ISO8601Format(), forKey: .created) }
+        if let updated { try c.encode(updated.ISO8601Format(), forKey: .updated) }
+        if let progress { try c.encode(progress, forKey: .progress) }
+    }
+
+    /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
+    private static func parseISODate(_ s: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+        return f.date(from: s)
     }
 }
 
@@ -118,12 +213,31 @@ public struct FlavorRef: Sendable, Codable, Equatable {
 }
 
 /// Image reference in a server response.
+/// Nova may return `{"id": null}` when a server has no image (e.g. an
+/// unpowered VM or a server in a transient state). The custom decoder
+/// treats a null `id` as an empty string.
 public struct ImageRef: Sendable, Codable, Equatable {
     public let id: String
     public var links: [Link]
     public init(id: String, links: [Link] = []) {
         self.id = id
         self.links = links
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(links, forKey: .links)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, links
     }
 }
 

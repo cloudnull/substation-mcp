@@ -151,28 +151,10 @@ public struct ComputeRegion: Sendable {
         let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/detail", query: query)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
-        struct ServerList: Decodable {
-            struct Server: Decodable { let id: String; let name: String; let status: String
-                let flavor: FlavorRef; let addresses: [String: [String: String]]?
-                let key_name: String?; let created: String?
-                let security_groups: [String]?
-            }
-            let servers: [Server]
-        }
+        struct ServerList: Decodable { let servers: [Server] }
 
         let decoded = try JSONDecoder().decode(ServerList.self, from: result.body)
-        let servers = decoded.servers.map { s in
-            Server(
-                id: s.id,
-                name: s.name,
-                status: s.status,
-                flavor: s.flavor,
-                addresses: s.addresses ?? [:],
-                created: s.created.flatMap { Self.parseDate($0) },
-                keyName: s.key_name,
-                securityGroups: s.security_groups ?? []
-            )
-        }
+        let servers = decoded.servers
 
         await cache.put(key, ttl: .seconds(60), value: servers)
         return servers
@@ -183,36 +165,10 @@ public struct ComputeRegion: Sendable {
         let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/\(id)")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
-        struct ServerResp: Decodable {
-            struct Server: Decodable {
-                let id: String; let name: String; let status: String
-                let flavor: FlavorRef
-                let addresses: [String: [String: String]]?
-                let key_name: String?
-                let created: String?
-                let updated: String?
-                let metadata: [String: String]?
-                let security_groups: [String]?
-                let progress: Int?
-            }
-            let server: Server
-        }
+        struct ServerResp: Decodable { let server: Server }
 
         let decoded = try JSONDecoder().decode(ServerResp.self, from: result.body)
-        let s = decoded.server
-        return Server(
-            id: s.id,
-            name: s.name,
-            status: s.status,
-            flavor: s.flavor,
-            addresses: s.addresses ?? [:],
-            created: s.created.flatMap { Self.parseDate($0) },
-            metadata: s.metadata ?? [:],
-            keyName: s.key_name,
-            securityGroups: s.security_groups ?? [],
-            updated: s.updated.flatMap { Self.parseDate($0) },
-            progress: s.progress
-        )
+        return decoded.server
     }
 
     public func createServer(_ vt: ValidatedToken, _ spec: CreateServerSpec) async throws -> Server {
@@ -648,40 +604,8 @@ public struct ComputeRegion: Sendable {
     }
 
     private func decodeSingleServer(_ data: Data) throws -> Server {
-        struct ServerResp: Decodable {
-            struct Server: Decodable {
-                let id: String
-                let name: String
-                let status: String
-                let flavor: FlavorRef
-                // Optional to match listServers/getServer: Nova may omit
-                // `addresses` or `metadata` on some responses (e.g. a server
-                // in a transient state), and the non-optional form made the
-                // `??` defaults at the call sites dead code (compiler warning).
-                let addresses: [String: [String: String]]?
-                let key_name: String?
-                let created: String?
-                let updated: String?
-                let metadata: [String: String]?
-                let security_groups: [String]?
-                let progress: Int?
-            }
-            let server: Server
-        }
+        struct ServerResp: Decodable { let server: Server }
         let decoded = try JSONDecoder().decode(ServerResp.self, from: data)
-        let s = decoded.server
-        return Server(
-            id: s.id,
-            name: s.name,
-            status: s.status,
-            flavor: s.flavor,
-            addresses: s.addresses ?? [:],
-            created: s.created.flatMap { Self.parseDate($0) },
-            metadata: s.metadata ?? [:],
-            keyName: s.key_name,
-            securityGroups: s.security_groups ?? [],
-            updated: s.updated.flatMap { Self.parseDate($0) },
-            progress: s.progress
-        )
+        return decoded.server
     }
 }
