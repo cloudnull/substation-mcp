@@ -213,19 +213,16 @@ public struct FlavorRef: Sendable, Codable, Equatable {
     public init(from decoder: Decoder) throws {
         // Try keyed container first (the common case)
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // Try id, then original_name, then name
-        if let idVal = try c.decodeIfPresent(String.self, forKey: .id) {
-            id = idVal
-            FileHandle.standardError.write("FlavorRef.init: id=\(idVal)\n".data(using: .utf8)!)
-        } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .originalName) {
-            id = nameVal
-            FileHandle.standardError.write("FlavorRef.init: original_name=\(nameVal)\n".data(using: .utf8)!)
-        } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .name) {
-            id = nameVal
-            FileHandle.standardError.write("FlavorRef.init: name=\(nameVal)\n".data(using: .utf8)!)
+        // On Linux, decodeIfPresent for 'id' silently fails even when the
+        // key is present. Use contains() + decode() instead.
+        if c.contains(.id) {
+            id = (try? c.decode(String.self, forKey: .id)) ?? ""
+        } else if c.contains(.originalName) {
+            id = (try? c.decode(String.self, forKey: .originalName)) ?? ""
+        } else if c.contains(.name) {
+            id = (try? c.decode(String.self, forKey: .name)) ?? ""
         } else {
             id = ""
-            FileHandle.standardError.write("FlavorRef.init: NO id/original_name/name found\n".data(using: .utf8)!)
         }
         links = (try c.decodeIfPresent([Link].self, forKey: .links)) ?? []
     }
