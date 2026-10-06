@@ -162,14 +162,22 @@ public struct Server: Sendable, Codable, Identifiable {
     /// Decode the flavor field from a keyed container.
     ///
     /// Nova returns flavor as an object `{"id": "...", "links": [...]}`.
-    /// Uses the synthesized Decodable on FlavorRef (no custom init).
+    /// We decode the flavor ID directly via a nested unkeyed approach:
+    /// use the keyed container's nestedContainer to get the sub-object,
+    /// then read the "id" field. This avoids the FlavorRef polymorphic
+    /// decoder entirely.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        if let ref = try? c.decode(FlavorRef.self, forKey: key) {
-            return ref
+        enum FK: String, CodingKey { case id, links }
+        do {
+            let fc = try c.nestedContainer(keyedBy: FK.self, forKey: key)
+            let id = try fc.decode(String.self, forKey: .id)
+            let links = try fc.decodeIfPresent([Link].self, forKey: .links) ?? []
+            return FlavorRef(id: id, links: links)
+        } catch {
+            // Not an object (bare string or null) — fall back to empty
+            return FlavorRef(id: "", links: [])
         }
-        // Object decode failed — might be a bare string or null.
-        return FlavorRef(id: "", links: [])
     }
 
     /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
