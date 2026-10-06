@@ -1,5 +1,13 @@
 import Foundation
 
+/// Helper struct for decoding the flavor sub-object inside a Server.
+/// Defined at file scope (not local to a function) so that the synthesized
+/// Decodable conformance works reliably on Linux (swift-corelibs-foundation).
+private struct FlavorObj: Decodable {
+    let id: String?
+    let links: [Link]?
+}
+
 /// A single IP address entry in a server's `addresses` dict.
 /// Nova returns each address as an object with `addr`, `version`,
 /// `OS-EXT-IPS:type`, and `OS-EXT-IPS-MAC:mac_addr`.
@@ -161,20 +169,14 @@ public struct Server: Sendable, Codable, Identifiable {
 
     /// Decode the flavor field from a keyed container. Nova returns flavor
     /// as either an object `{"id": "...", "links": [...]}` or (rarely) a
-    /// bare string `"m1.small"`. We decode the object form directly here
-    /// to avoid the polymorphic-decoder pitfalls in `FlavorRef.init(from:)`.
+    /// bare string `"m1.small"`.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Decode as an object: the flavor value is a JSON object with
-        // "id" and "links" fields. We use a dedicated CodingKeys enum
-        // scoped to the flavor sub-object.
-        enum FlavorKeys: String, CodingKey { case id, links }
-        if let flavorContainer = try? c.nestedContainer(keyedBy: FlavorKeys.self, forKey: key) {
-            let id = try? flavorContainer.decode(String.self, forKey: .id)
-            let links = try? flavorContainer.decodeIfPresent([Link].self, forKey: .links)
-            return FlavorRef(id: id ?? "", links: links ?? [])
+        // Object form: {"id": "...", "links": [...]}
+        if let obj = try? c.decode(FlavorObj.self, forKey: key) {
+            return FlavorRef(id: obj.id ?? "", links: obj.links ?? [])
         }
-        // Try bare-string form
+        // Bare-string form: "m1.small"
         if let s = try? c.decode(String.self, forKey: key) {
             return FlavorRef(id: s, links: [])
         }
