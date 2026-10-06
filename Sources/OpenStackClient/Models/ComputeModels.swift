@@ -120,7 +120,7 @@ public struct Server: Sendable, Codable, Identifiable {
         id = try c.decode(String.self, forKey: .id)
         name = try c.decode(String.self, forKey: .name)
         status = try c.decode(String.self, forKey: .status)
-        flavor = try c.decodeIfPresent(FlavorRef.self, forKey: .flavor) ?? FlavorRef(id: "", links: [])
+        flavor = try Self.decodeFlavor(c, forKey: .flavor)
         addresses = try c.decodeIfPresent([String: [ServerAddress]].self, forKey: .addresses) ?? [:]
         metadata = try c.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
         tags = try c.decodeIfPresent([String].self, forKey: .tags)
@@ -157,6 +157,28 @@ public struct Server: Sendable, Codable, Identifiable {
         if let created { try c.encode(created.ISO8601Format(), forKey: .created) }
         if let updated { try c.encode(updated.ISO8601Format(), forKey: .updated) }
         if let progress { try c.encode(progress, forKey: .progress) }
+    }
+
+    /// Decode the flavor field from a keyed container. Nova returns flavor
+    /// as either an object `{"id": "...", "links": [...]}` or (rarely) a
+    /// bare string `"m1.small"`. We decode the object form directly here
+    /// to avoid the polymorphic-decoder pitfalls in `FlavorRef.init(from:)`.
+    private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
+        guard c.contains(key) else { return FlavorRef(id: "", links: []) }
+        // Try object form first
+        struct FlavorObj: Decodable {
+            let id: String?
+            let links: [Link]?
+        }
+        if let obj = try? c.decode(FlavorObj.self, forKey: key) {
+            return FlavorRef(id: obj.id ?? "", links: obj.links ?? [])
+        }
+        // Try bare-string form
+        if let s = try? c.decode(String.self, forKey: key) {
+            return FlavorRef(id: s, links: [])
+        }
+        // null or unrecognized
+        return FlavorRef(id: "", links: [])
     }
 
     /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
