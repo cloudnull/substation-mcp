@@ -97,8 +97,9 @@ public struct ImageRegion: Sendable {
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
-        struct Resp: Decodable { let image: Image }
-        return try JSONDecoder().decode(Resp.self, from: result.body).image
+        // Glance v2 GET /images/{id} returns the image object directly
+        // (not wrapped in {"image": ...}).
+        return try JSONDecoder().decode(Image.self, from: result.body)
     }
 
     public func createImage(_ vt: ValidatedToken, _ spec: CreateImageSpec) async throws -> Image {
