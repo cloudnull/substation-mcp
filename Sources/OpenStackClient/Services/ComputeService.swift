@@ -161,7 +161,8 @@ public struct ComputeRegion: Sendable {
         // flavor field silently fails, leaving flavor.id empty. We
         // extract the IDs directly from the raw response body using
         // JSONSerialization, which is a separate (working) code path.
-        if let flavorIDs = Self.extractFlavorIDs(from: result.body) {
+        let flavorIDs = Self.extractFlavorIDs(from: result.body)
+        if let flavorIDs {
             for i in servers.indices {
                 if servers[i].flavor.id.isEmpty, let fid = flavorIDs[servers[i].id] {
                     servers[i].flavor.id = fid
@@ -658,10 +659,14 @@ public struct ComputeRegion: Sendable {
         }
         var result: [String: String] = [:]
         for s in servers {
-            guard let serverID = s["id"] as? String,
-                  let flavor = s["flavor"] as? [String: Any],
-                  let flavorID = flavor["id"] as? String else { continue }
-            result[serverID] = flavorID
+            guard let serverID = s["id"] as? String else { continue }
+            // Flavor can be an object {"id": "..."} or a bare string
+            if let flavor = s["flavor"] as? [String: Any],
+               let flavorID = flavor["id"] as? String {
+                result[serverID] = flavorID
+            } else if let flavorStr = s["flavor"] as? String {
+                result[serverID] = flavorStr
+            }
         }
         return result.isEmpty ? nil : result
     }
