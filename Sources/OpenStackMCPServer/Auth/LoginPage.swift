@@ -39,7 +39,7 @@ public struct LoginPage: Sendable {
             case "password":
                 method = MintMethod.password(
                     userID: req.userName ?? "",
-                    domain: nil,
+                    domain: req.userDomain,
                     password: req.password ?? "",
                     projectName: req.projectName
                 )

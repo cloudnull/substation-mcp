@@ -54,6 +54,9 @@ public struct LoginRequest: Sendable {
     public let secret: String?
     public let userName: String?
     public let password: String?
+    /// The user's domain (password auth). Defaults to `default` when absent so
+    /// a user in the default domain can log in without typing it.
+    public let userDomain: String?
     public let projectName: String?
 
     public init(
@@ -63,6 +66,7 @@ public struct LoginRequest: Sendable {
         secret: String? = nil,
         userName: String? = nil,
         password: String? = nil,
+        userDomain: String? = nil,
         projectName: String? = nil
     ) {
         self.elicitationId = elicitationId
@@ -71,6 +75,7 @@ public struct LoginRequest: Sendable {
         self.secret = secret
         self.userName = userName
         self.password = password
+        self.userDomain = userDomain
         self.projectName = projectName
     }
 }
@@ -356,12 +361,18 @@ public struct MCPRoute: Sendable {
                 <div class="group only-password">
                   <label for="userName">User</label>
                   <input class="field" id="userName" name="userName" type="text"
-                         placeholder="e.g. admin" autocomplete="username" spellcheck="false">
+                         placeholder="e.g. admin" autocomplete="username" spellcheck="false" required>
+                </div>
+                <div class="group only-password">
+                  <label for="userDomain">Domain</label>
+                  <input class="field" id="userDomain" name="userDomain" type="text"
+                         value="default" placeholder="e.g. default" autocomplete="off" spellcheck="false" required>
+                  <p class="hint">The domain the user belongs to (default <code>default</code>; use <code>service</code> for service users).</p>
                 </div>
                 <div class="group only-password">
                   <label for="password">Password</label>
                   <input class="field" id="password" name="password" type="password"
-                         placeholder="••••••••••••••••" autocomplete="current-password">
+                         placeholder="••••••••••••••••" autocomplete="current-password" required>
                 </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">optional</span></label>
@@ -563,6 +574,7 @@ public struct MCPRoute: Sendable {
             secret: fields["secret"],
             userName: fields["userName"],
             password: fields["password"],
+            userDomain: fields["userDomain"],
             projectName: fields["projectName"]
         )
     }
