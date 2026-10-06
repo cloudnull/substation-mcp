@@ -290,6 +290,12 @@ public struct ToolRegistry: Sendable {
                 isError: true
             ), nil)
         } catch {
+            // Log unexpected (non-OpenStack) errors so decode failures are
+            // visible in pod logs instead of silently wrapping into a 500.
+            logger.error("Tool call failed with unexpected error", metadata: [
+                "tool": "\(params.name)",
+                "error": "\(error)",
+            ])
             outcome = (CallTool.Result(
                 content: [.text(text: errorParagraph(
                     OpenStackError(service: "mcp", status: 500, message: error.localizedDescription),

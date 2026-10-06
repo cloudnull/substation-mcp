@@ -52,6 +52,92 @@ struct ComputeServiceTests {
         return (handle, vt, compute, cloud, cache, transport)
     }
 
+    @Test("Server decodes real Nova /servers/detail JSON", .timeLimit(.minutes(2)))
+    func serverDecodesRealNovaJSON() throws {
+        // Exact JSON shape from live sat0 Nova 2.1 /servers/detail.
+        // This is the format that was causing DecodingError.keyNotFound
+        // (500 "The data is missing") on every server list/get/find call.
+        let novaJSON = """
+        {"servers":[{
+            "id":"9a1912bc-b790-4df0-8571-4e11eac7ea18",
+            "name":"r9700",
+            "status":"ACTIVE",
+            "tenant_id":"36599c7599c64d839f288fc703bd9eb9",
+            "user_id":"e3e69b8fcf8f43408a8a1f29db08b05b",
+            "metadata":{},
+            "hostId":"45b369038f077768ac151cfde6d26c3824057cec4c1a1eedd8d3587b",
+            "image":{"id":"c8705b50-fdb2-4d12-8dd6-ab0e6dd35702","links":[{"rel":"bookmark","href":"https://nova.api.sat0.cloudnull.dev/images/c8705b50-fdb2-4d12-8dd6-ab0e6dd35702"}]},
+            "flavor":{"id":"567f142b-4e8c-4f08-a4e0-93e27b51c01e","links":[{"rel":"bookmark","href":"https://nova.api.sat0.cloudnull.dev/flavors/567f142b-4e8c-4f08-a4e0-93e27b51c01e"}]},
+            "created":"2026-09-14T01:05:43Z",
+            "updated":"2026-09-14T01:06:01Z",
+            "addresses":{"flat":[{"version":4,"addr":"172.16.25.176","OS-EXT-IPS:type":"fixed","OS-EXT-IPS-MAC:mac_addr":"fa:16:3e:b0:5d:08"}]},
+            "accessIPv4":"","accessIPv6":"",
+            "links":[{"rel":"self","href":"https://nova.api.sat0.cloudnull.dev/v2.1/servers/9a1912bc-b790-4df0-8571-4e11eac7ea18"}],
+            "OS-DCF:diskConfig":"MANUAL",
+            "progress":0,
+            "OS-EXT-AZ:availability_zone":"az1",
+            "config_drive":"",
+            "key_name":"cloudnull-moylands",
+            "OS-SRV-USG:launched_at":"2026-09-14T01:06:01.000000",
+            "OS-SRV-USG:terminated_at":null,
+            "OS-EXT-SRV-ATTR:host":"compute-0.cloud.cloudnull.dev.local",
+            "OS-EXT-SRV-ATTR:instance_name":"instance-0000004b",
+            "OS-EXT-SRV-ATTR:hypervisor_hostname":"compute-0.cloud.cloudnull.dev.local",
+            "OS-EXT-STS:task_state":null,
+            "OS-EXT-STS:vm_state":"active",
+            "OS-EXT-STS:power_state":1,
+            "os-extended-volumes:volumes_attached":[],
+            "security_groups":[{"name":"default"}]
+        }]}
+        """
+        struct ServerList: Decodable { let servers: [Server] }
+        let decoded = try JSONDecoder().decode(ServerList.self, from: novaJSON.data(using: .utf8)!)
+        let s = decoded.servers[0]
+        #expect(s.id == "9a1912bc-b790-4df0-8571-4e11eac7ea18")
+        #expect(s.name == "r9700")
+        #expect(s.status == "ACTIVE")
+        #expect(s.hostId == "45b369038f077768ac151cfde6d26c3824057cec4c1a1eedd8d3587b")
+        #expect(s.availabilityZone == "az1")
+        #expect(s.keyName == "cloudnull-moylands")
+        #expect(s.securityGroups.count == 1)
+        #expect(s.securityGroups[0].name == "default")
+        #expect(s.addresses["flat"]?.count == 1)
+        #expect(s.addresses["flat"]?[0].addr == "172.16.25.176")
+        #expect(s.addresses["flat"]?[0].type == "fixed")
+        #expect(s.image?.id == "c8705b50-fdb2-4d12-8dd6-ab0e6dd35702")
+        #expect(s.flavor.id == "567f142b-4e8c-4f08-a4e0-93e27b51c01e")
+        #expect(s.progress == 0)
+        #expect(s.created != nil)
+        #expect(s.updated != nil)
+        #expect(s.metadata.isEmpty)
+        #expect(s.tags == nil)  // tags key absent from JSON
+    }
+
+    @Test("Server decodes null image (imageless server)", .timeLimit(.minutes(2)))
+    func serverDecodesNullImage() throws {
+        // Nova returns {"id": null} for image on imageless servers.
+        let novaJSON = """
+        {"servers":[{
+            "id":"abc123",
+            "name":"no-image",
+            "status":"ACTIVE",
+            "image":{"id":null,"links":[]},
+            "flavor":{"id":"flv1","links":[]},
+            "addresses":{},
+            "security_groups":[],
+            "metadata":{},
+            "created":"2026-01-01T00:00:00Z"
+        }]}
+        """
+        struct ServerList: Decodable { let servers: [Server] }
+        let decoded = try JSONDecoder().decode(ServerList.self, from: novaJSON.data(using: .utf8)!)
+        let s = decoded.servers[0]
+        #expect(s.id == "abc123")
+        #expect(s.image?.id == "")  // null id → empty string
+        #expect(s.addresses.isEmpty)
+        #expect(s.securityGroups.isEmpty)
+    }
+
     @Test("list servers returns seeded servers for proj-one", .timeLimit(.minutes(2)))
     func listServers() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()
