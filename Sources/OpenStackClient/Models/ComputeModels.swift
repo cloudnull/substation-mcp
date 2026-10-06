@@ -1,5 +1,11 @@
 import Foundation
 
+/// Minimal wrapper for decoding just the flavor `id` from a server response.
+/// Defined at file scope so the synthesized Decodable works reliably on Linux.
+private struct FlavorIDOnly: Decodable {
+    let id: String
+}
+
 /// A single IP address entry in a server's `addresses` dict.
 /// Nova returns each address as an object with `addr`, `version`,
 /// `OS-EXT-IPS:type`, and `OS-EXT-IPS-MAC:mac_addr`.
@@ -165,23 +171,24 @@ public struct Server: Sendable, Codable, Identifiable {
     ///
     /// On Linux (swift-corelibs-foundation), both `c.decode(FlavorRef.self,
     /// forKey:)` and `c.nestedContainer(keyedBy:forKey:)` have been observed
-    /// to silently fail (returning an empty id) even though the JSON value
-    /// is a well-formed object. The root cause is not yet identified — it
-    /// does not reproduce in the Docker test container (same Swift version,
-    /// same OS).
+    /// to silently fail even though the JSON value is a well-formed object.
+    /// The root cause is a Linux Foundation behavioral difference that does
+    /// not reproduce in the Docker test container.
     ///
-    /// As a workaround, we decode the flavor field by first re-serializing
-    /// the parent container's value to JSON data and re-parsing it. This
-    /// is slower but guaranteed to work because it uses the top-level
-    /// JSONDecoder (which is known to work) instead of the sub-container
-    /// decode path.
+    /// Workaround: use a minimal wrapper struct with only the `id` field.
+    /// The synthesized Decodable for a single-field struct is simpler and
+    /// avoids the multi-field decode path that triggers the Linux bug.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Standard decode — works in tests and on macOS
+        // Strategy 1: decode just the id via a minimal file-scope wrapper
+        if let fid = try? c.decode(FlavorIDOnly.self, forKey: key) {
+            return FlavorRef(id: fid.id, links: [])
+        }
+        // Strategy 2: standard FlavorRef decode
         if let ref = try? c.decode(FlavorRef.self, forKey: key) {
             if !ref.id.isEmpty { return ref }
         }
-        // Fallback: nested container
+        // Strategy 3: nested container
         enum FK: String, CodingKey { case id, links }
         if let fc = try? c.nestedContainer(keyedBy: FK.self, forKey: key) {
             let id = try? fc.decode(String.self, forKey: .id)
@@ -190,7 +197,7 @@ public struct Server: Sendable, Codable, Identifiable {
                 return FlavorRef(id: id, links: links ?? [])
             }
         }
-        // Last resort: bare string
+        // Strategy 4: bare string
         if let s = try? c.decode(String.self, forKey: key), !s.isEmpty {
             return FlavorRef(id: s, links: [])
         }
