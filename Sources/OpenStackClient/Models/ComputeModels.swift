@@ -184,21 +184,41 @@ public struct FlavorRef: Sendable, Codable, Equatable {
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let string = try? container.decode(String.self) {
-            // Bare-string flavor: Nova uses the string as the flavor identifier.
-            self.id = string
+        // Polymorphic decode: Nova returns flavor as either a bare string
+        // ("m1.small") or an object ({"id": "...", "links": [...]}).
+        //
+        // The correct pattern: try each shape on a FRESH sub-decoder so we
+        // never mix singleValueContainer and keyedContainer on the same
+        // decoder instance (which corrupts the decoder's internal state).
+        //
+        // 1. Try string
+        // 2. Try object (keyed)
+        // 3. Fall back to empty (null or unrecognized)
+        if let s = try? {
+            let c = try decoder.singleValueContainer()
+            return try c.decode(String.self)
+        }() {
+            self.id = s
             self.links = []
             return
         }
-        if container.decodeNil() {
-            self.id = ""
-            self.links = []
+        if let obj = try? {
+            let c = try decoder.container(keyedBy: FlavorObjKeys.self)
+            let id = try c.decode(String.self, forKey: .id)
+            let links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []
+            return (id: id, links: links)
+        }() {
+            self.id = obj.id
+            self.links = obj.links
             return
         }
-        let object = try container.decode(FlavorObject.self)
-        self.id = object.id
-        self.links = object.links
+        // null or unrecognized shape
+        self.id = ""
+        self.links = []
+    }
+
+    private enum FlavorObjKeys: String, CodingKey {
+        case id, links
     }
 
     public func encode(to encoder: Encoder) throws {
