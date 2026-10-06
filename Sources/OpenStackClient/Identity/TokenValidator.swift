@@ -186,36 +186,49 @@ public actor LoginMinter {
 
     // MARK: - JSON body builders
 
+    /// Build a Keystone app-credential mint body. JSON-serialized so a secret
+    /// containing `"`, `\`, or a control character is escaped correctly. The
+    /// previous hand-built string had the same invalid-JSON bug as
+    /// `passwordBody`, which made Keystone reject the mint with 400.
     private static func appCredBody(id: String, secret: String) -> Data {
-        var json = "{"
-        json += "\"auth\":{"
-        json += "\"identity\":{"
-        json += "\"methods\":[\"application_credential\"],"
-        json += "\"application_credential\":{"
-        json += "\"id\":\"\(id)\","
-        json += "\"secret\":\"\(secret)\""
-        json += "}}}"
-        json += "}"
-        return Data(json.utf8)
+        let body: [String: Any] = [
+            "auth": [
+                "identity": [
+                    "methods": ["application_credential"],
+                    "application_credential": [
+                        "id": id,
+                        "secret": secret,
+                    ],
+                ],
+            ],
+        ]
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
     }
 
+    /// Build a Keystone password-auth mint body. Uses `JSONSerialization` so
+    /// user-supplied strings (user, domain, password, project) are JSON-escaped
+    /// correctly. The previous hand-built string interpolation broke on any
+    /// password containing `"`, `\`, or a control character, producing invalid
+    /// JSON that Keystone rejected with 400 "Expecting to find password in
+    /// identity".
     private static func passwordBody(userID: String, domain: String?, password: String, projectName: String?) -> Data {
-        var user = "\"name\":\"\(userID)\""
-        if let d = domain {
-            user += ",\"domain\":{\"name\":\"\(d)\"}"
+        var user: [String: Any] = ["name": userID]
+        if let d = domain, !d.isEmpty {
+            user["domain"] = ["name": d]
         }
-        user += ",\"password\":\"\(password)\""
+        user["password"] = password
 
-        var auth = "\"identity\":{\"methods\":[\"password\"],\"user\":{\(user)}}"
-        if let p = projectName {
-            auth += ",\"scope\":{\"project\":{\"name\":\"\(p)\"}}"
+        var auth: [String: Any] = [
+            "identity": [
+                "methods": ["password"],
+                "user": user,
+            ],
+        ]
+        if let p = projectName, !p.isEmpty {
+            auth["scope"] = ["project": ["name": p]]
         }
-        var json = "{"
-        json += "\"auth\":{"
-        json += auth
-        json += "}"
-        json += "}"
-        return Data(json.utf8)
+        let body: [String: Any] = ["auth": auth]
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
     }
 }
 

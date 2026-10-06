@@ -331,6 +331,97 @@ struct LoginMinterTests {
             #expect(err.status == 400)
         }
     }
+
+    /// Regression: a password containing `"`, `\`, or a control character must
+    /// be JSON-escaped in the mint body (previously hand-built string
+    /// interpolation produced invalid JSON, which Keystone rejected with 400
+    /// "Expecting to find password in identity").
+    @Test func mintEscapesPasswordWithSpecialCharacters() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        let capturedBody = Box<Data>(Data())
+        server.addHandler("/v3/auth/tokens") { req in
+            capturedBody.value = req.body
+            return (201, #"{"token":{"id":"tok-mint","expires_at":"2026-10-02T13:03:34.000000Z","project":{"id":"p","name":"p"},"user":{"id":"u","name":"u"},"roles":["admin"],"catalog":[]}}"#, [("Content-Type", "application/json"), ("X-Subject-Token", "tok-mint")])
+        }
+
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+
+        // A password with a double-quote, a backslash, and a newline.
+        let nastyPassword = "pa\"ss\\word\nwith-newline"
+        _ = try await minter.mint(method: .password(
+            userID: "admin", domain: "default",
+            password: nastyPassword, projectName: "admin"
+        ))
+
+        let body = capturedBody.value
+        // 1. The body must be VALID JSON (this is what was broken).
+        let obj = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        let auth = obj["auth"] as! [String: Any]
+        let identity = auth["identity"] as! [String: Any]
+        let user = identity["user"] as! [String: Any]
+        // 2. The password must round-trip EXACTLY (escaped on the wire,
+        //    decoded back to the original by a JSON parser).
+        #expect(user["password"] as? String == nastyPassword,
+                "password did not round-trip through JSON escaping: \(String(describing: user["password"]))")
+        #expect(user["name"] as? String == "admin")
+        #expect(user["domain"] as? [String: Any] != nil)
+    }
+
+    /// Regression: an app-credential secret containing a double-quote must be
+    /// JSON-escaped in the mint body.
+    @Test func mintEscapesAppCredSecretWithSpecialCharacters() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        let capturedBody = Box<Data>(Data())
+        server.addHandler("/v3/auth/tokens") { req in
+            capturedBody.value = req.body
+            return (201, #"{"token":{"id":"tok-mint","expires_at":"2026-10-02T13:03:34.000000Z","project":{"id":"p","name":"p"},"user":{"id":"u","name":"u"},"roles":["admin"],"catalog":[]}}"#, [("Content-Type", "application/json"), ("X-Subject-Token", "tok-mint")])
+        }
+
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+
+        let nastySecret = "sec\"ret\\with-special"
+        _ = try await minter.mint(method: .applicationCredential(
+            id: "ac-1",
+            secret: Array(nastySecret.utf8).map { Int8($0) }
+        ))
+
+        let body = capturedBody.value
+        let obj = try JSONSerialization.jsonObject(with: body) as! [String: Any]
+        let auth = obj["auth"] as! [String: Any]
+        let identity = auth["identity"] as! [String: Any]
+        let ac = identity["application_credential"] as! [String: Any]
+        #expect(ac["secret"] as? String == nastySecret,
+                "app-cred secret did not round-trip through JSON escaping: \(String(describing: ac["secret"]))")
+        #expect(ac["id"] as? String == "ac-1")
+    }
+}
+
+/// A trivial Sendable box so a test can capture a value from an async handler.
+private final class Box<T>: @unchecked Sendable where T: Sendable {
+    var value: T
+    init(_ v: T) { self.value = v }
 }
 
 @Suite("ScopeDerivation")

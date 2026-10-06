@@ -287,6 +287,11 @@ public struct MCPRoute: Sendable {
     .btn:focus-visible{outline:none; box-shadow:0 0 0 4px var(--focus-ring)}
     .divider{height:1px; background:var(--line); margin:18px 0; border:none}
     .hint{font-size:12px; color:var(--ink-faint); margin:2px 0 0; line-height:1.5}
+    .form-error{
+      margin:0 0 14px; padding:10px 12px; border-radius:10px;
+      background:rgba(191,54,12,.08); border:1px solid rgba(191,54,12,.28);
+      color:#8f2a10; font-size:13px; line-height:1.4; text-align:center;
+    }
     .footer{text-align:center; margin-top:20px; font-size:12.5px; color:var(--ink-faint)}
     .footer code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft)}
     /* method-filtered groups */
@@ -338,7 +343,7 @@ public struct MCPRoute: Sendable {
             <h1 class="title">Authenticate to your cloud</h1>
             <p class="sub">Mint a Keystone token to connect this MCP server to your OpenStack deployment.</p>
 
-            <form method="POST" action="\(loginPath)">
+            <form method="POST" action="\(loginPath)" onsubmit="return substationValidate(this)">
               <div class="group">
                 <label for="method">Method</label>
                 <select id="method" name="method" class="field" onchange="substationFilter(this.value)">
@@ -351,28 +356,33 @@ public struct MCPRoute: Sendable {
                 <div class="group only-appcred">
                   <label for="appCredId">Application credential ID</label>
                   <input class="field" id="appCredId" name="appCredId" type="text"
-                         placeholder="e.g. 8f2c…d91a" autocomplete="off" spellcheck="false">
+                         placeholder="e.g. 8f2c…d91a" autocomplete="off" spellcheck="false"
+                         data-required="appcred">
                 </div>
                 <div class="group only-appcred">
                   <label for="secret">Secret</label>
                   <input class="field" id="secret" name="secret" type="password"
-                         placeholder="••••••••••••••••" autocomplete="off">
+                         placeholder="••••••••••••••••" autocomplete="off"
+                         data-required="appcred">
                 </div>
                 <div class="group only-password">
                   <label for="userName">User</label>
                   <input class="field" id="userName" name="userName" type="text"
-                         placeholder="e.g. admin" autocomplete="username" spellcheck="false" required>
+                         placeholder="e.g. admin" autocomplete="username" spellcheck="false"
+                         data-required="password">
                 </div>
                 <div class="group only-password">
                   <label for="userDomain">Domain</label>
                   <input class="field" id="userDomain" name="userDomain" type="text"
-                         value="default" placeholder="e.g. default" autocomplete="off" spellcheck="false" required>
+                         value="default" placeholder="e.g. default" autocomplete="off" spellcheck="false"
+                         data-required="password">
                   <p class="hint">The domain the user belongs to (default <code>default</code>; use <code>service</code> for service users).</p>
                 </div>
                 <div class="group only-password">
                   <label for="password">Password</label>
                   <input class="field" id="password" name="password" type="password"
-                         placeholder="••••••••••••••••" autocomplete="current-password" required>
+                         placeholder="••••••••••••••••" autocomplete="current-password"
+                         data-required="password">
                 </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">optional</span></label>
@@ -382,6 +392,7 @@ public struct MCPRoute: Sendable {
                 </div>
               </div>
 
+              <p id="formError" class="form-error" role="alert" hidden></p>
               <button type="submit" class="btn">Log in</button>
 
               <input type="hidden" name="elicitationId" value="E1">
@@ -390,9 +401,40 @@ public struct MCPRoute: Sendable {
             <p class="footer">Serving <code>\(endpoint)</code> · token is stored for this session only</p>
           </main>
           <script>
+            // Show/hide the field group for the selected method. Fields are
+            // hidden with display:none so the browser's form validation does
+            // NOT treat hidden required fields as blockers (previously the
+            // hidden 'required' password inputs blocked app-cred submission).
             function substationFilter(method) {{
               var fields = document.getElementById('methodFields');
               if (fields) {{ fields.setAttribute('data-method', method); }}
+            }}
+            // Validate the VISIBLE fields for the selected method on submit.
+            // Required fields carry data-required="<method>"; we check only the
+            // ones whose method matches the select. Returns false to block the
+            // submit and shows an inline message.
+            function substationValidate(form) {{
+              var sel = document.getElementById('method');
+              var method = sel ? sel.value : 'app-cred';
+              var err = document.getElementById('formError');
+              if (err) {{ err.hidden = true; err.textContent = ''; }}
+              var inputs = form.querySelectorAll('[data-required]');
+              for (var i = 0; i < inputs.length; i++) {{
+                var inp = inputs[i];
+                if (inp.getAttribute('data-required') !== method) {{ continue; }}
+                // Skip fields that are hidden for the other method.
+                if (inp.offsetParent === null) {{ continue; }}
+                var v = (inp.value || '').trim();
+                if (v === '') {{
+                  if (err) {{
+                    err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id) + ' field.';
+                    err.hidden = false;
+                  }}
+                  inp.focus();
+                  return false;
+                }}
+              }}
+              return true;
             }}
             // initialise the field filter on load (defaults to app-cred)
             document.addEventListener('DOMContentLoaded', function() {{
