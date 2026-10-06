@@ -216,12 +216,16 @@ public struct FlavorRef: Sendable, Codable, Equatable {
         // Try id, then original_name, then name
         if let idVal = try c.decodeIfPresent(String.self, forKey: .id) {
             id = idVal
+            FileHandle.standardError.write("FlavorRef.init: id=\(idVal)\n".data(using: .utf8)!)
         } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .originalName) {
             id = nameVal
+            FileHandle.standardError.write("FlavorRef.init: original_name=\(nameVal)\n".data(using: .utf8)!)
         } else if let nameVal = try c.decodeIfPresent(String.self, forKey: .name) {
             id = nameVal
+            FileHandle.standardError.write("FlavorRef.init: name=\(nameVal)\n".data(using: .utf8)!)
         } else {
             id = ""
+            FileHandle.standardError.write("FlavorRef.init: NO id/original_name/name found\n".data(using: .utf8)!)
         }
         links = (try c.decodeIfPresent([Link].self, forKey: .links)) ?? []
     }
