@@ -174,15 +174,14 @@ public struct Server: Sendable, Codable, Identifiable {
     /// avoids the multi-field decode path that triggers the Linux bug.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         // On Linux (swift-corelibs-foundation), the sub-decoder created by
-        // c.decode(_:forKey:) for nested objects is positioned incorrectly —
-        // it only sees a subset of the keys (e.g. "original_name" instead of
-        // "id" and "links"). This is a known Foundation bug that does not
-        // reproduce on macOS or in the Docker test container.
+        // c.decode(_:forKey:) for nested objects is positioned incorrectly.
+        // This is a known Foundation bug that does not reproduce on macOS
+        // or in the Docker test container.
         //
-        // Workaround: return an empty FlavorRef. The actual flavor ID is
-        // populated by ComputeService.extractFlavorIDs() which uses
-        // JSONSerialization on the raw response body — a separate, working
-        // code path. See listServers()/getServer() for the post-fix.
+        // Workaround: return an empty FlavorRef. The actual flavor ID (or
+        // name) is populated by ComputeService.extractFlavorIDs() which
+        // uses JSONSerialization on the raw response body — a separate,
+        // working code path. See listServers()/getServer() for the post-fix.
         return FlavorRef(id: "", links: [])
     }
 

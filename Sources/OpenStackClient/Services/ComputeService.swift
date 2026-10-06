@@ -665,10 +665,8 @@ public struct ComputeRegion: Sendable {
         for s in serverList {
             guard let serverID = s["id"] as? String else { continue }
             let flavorRaw = s["flavor"]
-            // Log the raw flavor value for debugging
+            // Flavor can be: {"id": "..."}, full object with "original_name", or bare string
             if let flavor = flavorRaw as? [String: Any] {
-                let flavorKeys = flavor.keys.map { $0 }.sorted()
-                FileHandle.standardError.write("extractFlavorIDs: server \(serverID.prefix(8)) flavor keys=\(flavorKeys)\n".data(using: .utf8)!)
                 if let flavorID = flavor["id"] as? String {
                     result[serverID] = flavorID
                 } else if let flavorName = flavor["original_name"] as? String {
@@ -676,15 +674,7 @@ public struct ComputeRegion: Sendable {
                 }
             } else if let flavorStr = flavorRaw as? String {
                 result[serverID] = flavorStr
-            } else {
-                FileHandle.standardError.write("extractFlavorIDs: server \(serverID.prefix(8)) flavor type=\(type(of: flavorRaw ?? 0))\n".data(using: .utf8)!)
             }
-        }
-        if !result.isEmpty {
-            FileHandle.standardError.write("extractFlavorIDs: \(result.count) IDs: \(result.map { "\($0.key.prefix(8))→\($0.value.prefix(20))" }.joined(separator: ","))\n".data(using: .utf8)!)
-        } else {
-            let firstKeys = serverList.first?.keys.map { $0 } ?? []
-            FileHandle.standardError.write("extractFlavorIDs: 0 IDs from \(serverList.count) servers; first server keys=\(firstKeys)\n".data(using: .utf8)!)
         }
         return result.isEmpty ? nil : result
     }
