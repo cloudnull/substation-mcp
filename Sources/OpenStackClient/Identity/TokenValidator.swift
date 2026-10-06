@@ -140,12 +140,28 @@ public actor LoginMinter {
         //  - POSTs are not retried by the transport, so a transient network
         //    error is surfaced rather than re-sent (minting twice would
         //    create two tokens).
+        //
+        // The minted token id is NOT in the response body (Keystone omits
+        // `token.id` on mint) — it is carried in the `X-Subject-Token` response
+        // header. We capture that header via `captureSubjectToken` and pass it
+        // as the authoritative token id to `Token.decode`, so the stored token
+        // has a real id (usable later as `X-Auth-Token`) rather than the
+        // literal fallback `"unknown"`.
+        // A tiny @unchecked-Sendable box so the (Sendable) closure can capture
+        // a mutable target across the await without tripping region isolation.
+        // The Transport invokes it exactly once, synchronously, on the
+        // success path — no concurrent writes.
+        final class SubjectTokenBox: @unchecked Sendable {
+            var value: String?
+        }
+        let box = SubjectTokenBox()
         let (status, responseBody, _) = try await transport.request(
             method: "POST",
             service: "keystone",
             path: "/v3/auth/tokens",
             body: body,
-            tokenOverride: ""
+            tokenOverride: "",
+            captureSubjectToken: { box.value = $0 }
         )
 
         guard status == 201 else {
@@ -158,7 +174,7 @@ public actor LoginMinter {
             )
         }
 
-        guard let token = try? Token.decode(from: responseBody) else {
+        guard let token = try? Token.decode(from: responseBody, tokenID: box.value) else {
             throw OpenStackError(
                 service: "keystone",
                 status: 500,

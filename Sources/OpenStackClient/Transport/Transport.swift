@@ -142,7 +142,14 @@ public actor Transport {
         /// returned to the caller instead of being normalized into an error.
         /// Service version documents (cinder, glance) legitimately return 300,
         /// so the negotiator uses this to read the body.
-        tolerate3xx: Bool = false
+        tolerate3xx: Bool = false,
+        /// When non-nil, invoked with the value of the `X-Subject-Token`
+        /// response header on a successful (2xx/3xx) response. The Keystone
+        /// mint endpoint (`POST /v3/auth/tokens`) omits `token.id` from the
+        /// response body — the minted token id is carried ONLY in this header.
+        /// `LoginMinter.mint` uses this to recover the real token id instead of
+        /// falling back to the literal `"unknown"`.
+        captureSubjectToken: ((String) -> Void)? = nil
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let requestID = UUID().uuidString
         let token: String?
@@ -214,6 +221,11 @@ public actor Transport {
                 if response.status.code >= 200 && response.status.code < 300
                     || (tolerate3xx && response.status.code >= 300 && response.status.code < 400)
                 {
+                    if let captureSubjectToken,
+                       let subjectToken = response.headers.first(name: "X-Subject-Token")
+                    {
+                        captureSubjectToken(subjectToken)
+                    }
                     return (status, bodyData, requestID)
                 }
 
