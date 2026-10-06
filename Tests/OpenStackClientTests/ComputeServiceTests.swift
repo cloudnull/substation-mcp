@@ -52,6 +52,42 @@ struct ComputeServiceTests {
         return (handle, vt, compute, cloud, cache, transport)
     }
 
+    @Test("Server decodes real Nova /os-hypervisors/detail JSON", .timeLimit(.minutes(2)))
+    func hypervisorDecodesRealNovaJSON() throws {
+        let novaJSON = """
+        {"hypervisors":[{
+            "id":1,
+            "hypervisor_hostname":"compute-1.cloud.cloudnull.dev.local",
+            "state":"up",
+            "status":"enabled",
+            "hypervisor_type":"QEMU",
+            "hypervisor_version":7002022,
+            "host_ip":"172.16.27.34",
+            "service":{"id":43,"host":"compute-1.cloud.cloudnull.dev.local","disabled_reason":null},
+            "vcpus":16,
+            "memory_mb":63987,
+            "local_gb":499,
+            "vcpus_used":4,
+            "memory_mb_used":8704,
+            "local_gb_used":61,
+            "free_ram_mb":55283,
+            "free_disk_gb":438,
+            "current_workload":0,
+            "running_vms":1,
+            "disk_available_least":428,
+            "cpu_info":"{\\\"arch\\\":\\\"x86_64\\\",\\\"model\\\":\\\"Broadwell\\\"}"
+        }]}
+        """
+        struct HypervisorList: Decodable { let hypervisors: [Hypervisor] }
+        let decoded = try JSONDecoder().decode(HypervisorList.self, from: novaJSON.data(using: .utf8)!)
+        let h = decoded.hypervisors[0]
+        #expect(h.hypervisorHostname == "compute-1.cloud.cloudnull.dev.local")
+        #expect(h.state == "up")
+        #expect(h.vcpus == 16)
+        #expect(h.memoryMB == 63987)
+        #expect(h.runningVms == 1)
+    }
+
     @Test("Server decodes real Nova /servers/detail JSON", .timeLimit(.minutes(2)))
     func serverDecodesRealNovaJSON() throws {
         // Exact JSON shape from live sat0 Nova 2.1 /servers/detail.
@@ -515,7 +551,7 @@ struct ComputeServiceTests {
         let region = compute.region("RegionOne")
         let hypervisors = try await region.listHypervisors(vt)
         #expect(hypervisors.count == 1)
-        #expect(hypervisors[0].host == "compute-01")
+        #expect(hypervisors[0].hypervisorHostname == "compute-01")
         #expect(hypervisors[0].state == "up")
     }
 

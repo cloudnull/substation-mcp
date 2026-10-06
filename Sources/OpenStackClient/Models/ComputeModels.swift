@@ -424,60 +424,110 @@ public struct ServerGroup: Sendable, Codable, Identifiable {
     }
 }
 
-/// Hypervisor.
-public struct Hypervisor: Sendable, Codable {
-    public let host: String
+/// Hypervisor (live Nova /os-hypervisors/detail shape).
+public struct Hypervisor: Sendable, Codable, Identifiable {
+    public let id: Int
     public var hypervisorHostname: String
-    public var hypervisorVersion: String
     public var state: String
     public var status: String
-    public var maxMemoryRAM: Int
-    public var currentMemoryRAM: Int
-    public var diskTotal: Int
-    public var diskUsed: Int
-    public var CPUCount: Int
-    public var vCPUs: Int
-    public var runningVCPUs: Int
+    public var hypervisorType: String
+    public var hypervisorVersion: Int
+    public var hostIP: String
+    public var service: HypervisorServiceRef?
+    public var vcpus: Int
+    public var memoryMB: Int
+    public var localGB: Int
+    public var vcpusUsed: Int
+    public var memoryMBUsed: Int
+    public var localGBUsed: Int
+    public var freeRAMMB: Int
+    public var freeDiskGB: Int
+    public var currentWorkload: Int
+    public var runningVms: Int
+    public var diskAvailableLeast: Int
+    public var cpuInfo: String?
 
     public init(
-        host: String,
+        id: Int,
         hypervisorHostname: String = "",
-        hypervisorVersion: String = "0",
         state: String = "",
         status: String = "",
-        maxMemoryRAM: Int = 0,
-        currentMemoryRAM: Int = 0,
-        diskTotal: Int = 0,
-        diskUsed: Int = 0,
-        CPUCount: Int = 0,
-        vCPUs: Int = 0,
-        runningVCPUs: Int = 0
+        hypervisorType: String = "",
+        hypervisorVersion: Int = 0,
+        hostIP: String = "",
+        service: HypervisorServiceRef? = nil,
+        vcpus: Int = 0,
+        memoryMB: Int = 0,
+        localGB: Int = 0,
+        vcpusUsed: Int = 0,
+        memoryMBUsed: Int = 0,
+        localGBUsed: Int = 0,
+        freeRAMMB: Int = 0,
+        freeDiskGB: Int = 0,
+        currentWorkload: Int = 0,
+        runningVms: Int = 0,
+        diskAvailableLeast: Int = 0,
+        cpuInfo: String? = nil
     ) {
-        self.host = host
+        self.id = id
         self.hypervisorHostname = hypervisorHostname
-        self.hypervisorVersion = hypervisorVersion
         self.state = state
         self.status = status
-        self.maxMemoryRAM = maxMemoryRAM
-        self.currentMemoryRAM = currentMemoryRAM
-        self.diskTotal = diskTotal
-        self.diskUsed = diskUsed
-        self.CPUCount = CPUCount
-        self.vCPUs = vCPUs
-        self.runningVCPUs = runningVCPUs
+        self.hypervisorType = hypervisorType
+        self.hypervisorVersion = hypervisorVersion
+        self.hostIP = hostIP
+        self.service = service
+        self.vcpus = vcpus
+        self.memoryMB = memoryMB
+        self.localGB = localGB
+        self.vcpusUsed = vcpusUsed
+        self.memoryMBUsed = memoryMBUsed
+        self.localGBUsed = localGBUsed
+        self.freeRAMMB = freeRAMMB
+        self.freeDiskGB = freeDiskGB
+        self.currentWorkload = currentWorkload
+        self.runningVms = runningVms
+        self.diskAvailableLeast = diskAvailableLeast
+        self.cpuInfo = cpuInfo
     }
 
     enum CodingKeys: String, CodingKey {
-        case host, state, status
+        case id, state, status, vcpus
         case hypervisorHostname = "hypervisor_hostname"
+        case hypervisorType = "hypervisor_type"
         case hypervisorVersion = "hypervisor_version"
-        case maxMemoryRAM = "maxmemory"
-        case currentMemoryRAM = "current_workload"
-        case diskTotal = "disk_total"
-        case diskUsed = "disk_used"
-        case CPUCount = "cpu"
-        case vCPUs = "cpus"
-        case runningVCPUs = "running_vcpus"
+        case hostIP = "host_ip"
+        case service
+        case memoryMB = "memory_mb"
+        case localGB = "local_gb"
+        case vcpusUsed = "vcpus_used"
+        case memoryMBUsed = "memory_mb_used"
+        case localGBUsed = "local_gb_used"
+        case freeRAMMB = "free_ram_mb"
+        case freeDiskGB = "free_disk_gb"
+        case currentWorkload = "current_workload"
+        case runningVms = "running_vms"
+        case diskAvailableLeast = "disk_available_least"
+        case cpuInfo = "cpu_info"
+    }
+}
+
+/// Service reference nested inside a live Nova hypervisor.
+/// (Named `HypervisorServiceRef` to avoid colliding with `ComputeService`.)
+public struct HypervisorServiceRef: Sendable, Codable {
+    public let id: Int
+    public var host: String
+    public var disabledReason: String?
+
+    public init(id: Int, host: String = "", disabledReason: String? = nil) {
+        self.id = id
+        self.host = host
+        self.disabledReason = disabledReason
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, host
+        case disabledReason = "disabled_reason"
     }
 }
 
