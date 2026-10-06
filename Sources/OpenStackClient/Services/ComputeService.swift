@@ -652,7 +652,7 @@ public struct ComputeRegion: Sendable {
     /// silently fails, leaving `Server.flavor.id` empty. Using
     /// JSONSerialization (a separate, working code path) lets us
     /// extract the flavor IDs directly from the raw JSON.
-    static func extractFlavorIDs(from data: Data) -> [String: String]? {
+    public static func extractFlavorIDs(from data: Data) -> [String: String]? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         // Handle both list form {"servers": [...]} and single form {"server": {...}}
         let serverList: [[String: Any]]
@@ -675,6 +675,12 @@ public struct ComputeRegion: Sendable {
             } else if let flavorStr = flavorRaw as? String {
                 result[serverID] = flavorStr
             }
+        }
+        if !result.isEmpty {
+            FileHandle.standardError.write("extractFlavorIDs: \(result.count) IDs: \(result.map { "\($0.key.prefix(8))→\($0.value.prefix(20))" }.joined(separator: ","))\n".data(using: .utf8)!)
+        } else {
+            let firstKeys = serverList.first?.keys.map { $0 } ?? []
+            FileHandle.standardError.write("extractFlavorIDs: 0 IDs from \(serverList.count) servers; first server keys=\(firstKeys)\n".data(using: .utf8)!)
         }
         return result.isEmpty ? nil : result
     }

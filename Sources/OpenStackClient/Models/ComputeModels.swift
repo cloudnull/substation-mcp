@@ -173,11 +173,17 @@ public struct Server: Sendable, Codable, Identifiable {
     /// The synthesized Decodable for a single-field struct is simpler and
     /// avoids the multi-field decode path that triggers the Linux bug.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
-        guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // FlavorRef.init(from:) handles all Nova forms internally:
-        // simple {"id": "...", "links": [...]}, full flavor object with
-        // original_name, and bare string.
-        return try c.decode(FlavorRef.self, forKey: key)
+        // On Linux (swift-corelibs-foundation), the sub-decoder created by
+        // c.decode(_:forKey:) for nested objects is positioned incorrectly —
+        // it only sees a subset of the keys (e.g. "original_name" instead of
+        // "id" and "links"). This is a known Foundation bug that does not
+        // reproduce on macOS or in the Docker test container.
+        //
+        // Workaround: return an empty FlavorRef. The actual flavor ID is
+        // populated by ComputeService.extractFlavorIDs() which uses
+        // JSONSerialization on the raw response body — a separate, working
+        // code path. See listServers()/getServer() for the post-fix.
+        return FlavorRef(id: "", links: [])
     }
 
     /// Parse an ISO 8601 date string from Nova (e.g. "2026-09-14T01:05:43Z").
@@ -211,25 +217,16 @@ public struct FlavorRef: Sendable, Codable, Equatable {
     /// (and sometimes `name`). We try `id` first, then fall back to
     /// `original_name`.
     public init(from decoder: Decoder) throws {
-        // Try keyed container first (the common case)
+        // Try keyed container (the common case for direct FlavorRef decoding)
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // Debug: log available keys
-        let allKeys = c.allKeys
-        FileHandle.standardError.write("FlavorRef.init: available keys=\(allKeys.map { $0.stringValue })\n".data(using: .utf8)!)
-        // On Linux, decodeIfPresent for 'id' silently fails even when the
-        // key is present. Use contains() + decode() instead.
         if c.contains(.id) {
             id = (try? c.decode(String.self, forKey: .id)) ?? ""
-            FileHandle.standardError.write("FlavorRef.init: contains(id)=true, decoded id=\(id)\n".data(using: .utf8)!)
         } else if c.contains(.originalName) {
             id = (try? c.decode(String.self, forKey: .originalName)) ?? ""
-            FileHandle.standardError.write("FlavorRef.init: contains(original_name)=true, decoded=\(id)\n".data(using: .utf8)!)
         } else if c.contains(.name) {
             id = (try? c.decode(String.self, forKey: .name)) ?? ""
-            FileHandle.standardError.write("FlavorRef.init: contains(name)=true, decoded=\(id)\n".data(using: .utf8)!)
         } else {
             id = ""
-            FileHandle.standardError.write("FlavorRef.init: NO matching key found\n".data(using: .utf8)!)
         }
         links = (try c.decodeIfPresent([Link].self, forKey: .links)) ?? []
     }
