@@ -540,7 +540,7 @@ public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
     public var status: String
     public var state: String
     public var disabledReason: String?
-    public var updated: String?
+    public var updatedAt: String?
 
     public init(
         id: Int,
@@ -550,7 +550,7 @@ public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
         status: String = "",
         state: String = "",
         disabledReason: String? = nil,
-        updated: String? = nil
+        updatedAt: String? = nil
     ) {
         self.id = id
         self.host = host
@@ -559,12 +559,13 @@ public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
         self.status = status
         self.state = state
         self.disabledReason = disabledReason
-        self.updated = updated
+        self.updatedAt = updatedAt
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, host, binary, zone, status, state, updated
+        case id, host, binary, zone, status, state
         case disabledReason = "disabled_reason"
+        case updatedAt = "updated_at"
     }
 }
 

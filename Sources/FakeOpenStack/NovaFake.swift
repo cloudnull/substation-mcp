@@ -312,7 +312,7 @@ public struct NovaFake {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
             return Self.jsonResponse(status: .ok, body: """
-            {"services":[{"id":1,"host":"compute-01","binary":"nova-compute","zone":"internal","status":"enabled","state":"up","disabled_reason":null}]}
+            {"services":[{"id":1,"host":"compute-01","binary":"nova-compute","zone":"internal","status":"enabled","state":"up","updated_at":"2026-10-06T00:00:00.000000","disabled_reason":null}]}
             """)
         }
 

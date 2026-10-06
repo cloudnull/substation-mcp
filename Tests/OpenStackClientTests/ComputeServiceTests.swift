@@ -88,6 +88,28 @@ struct ComputeServiceTests {
         #expect(h.runningVms == 1)
     }
 
+    @Test("ComputeServiceInfo decodes real Nova /os-services JSON", .timeLimit(.minutes(2)))
+    func computeServiceDecodesRealNovaJSON() throws {
+        let novaJSON = """
+        {"services":[{
+            "binary":"nova-compute",
+            "host":"compute-1.cloud.cloudnull.dev.local",
+            "id":43,
+            "zone":"az1",
+            "status":"enabled",
+            "state":"up",
+            "updated_at":"2026-10-06T21:39:43.000000",
+            "disabled_reason":null
+        }]}
+        """
+        struct ServiceList: Decodable { let services: [ComputeServiceInfo] }
+        let decoded = try JSONDecoder().decode(ServiceList.self, from: novaJSON.data(using: .utf8)!)
+        let s = decoded.services[0]
+        #expect(s.binary == "nova-compute")
+        #expect(s.id == 43)
+        #expect(s.updatedAt == "2026-10-06T21:39:43.000000")
+    }
+
     @Test("Server decodes real Nova /servers/detail JSON", .timeLimit(.minutes(2)))
     func serverDecodesRealNovaJSON() throws {
         // Exact JSON shape from live sat0 Nova 2.1 /servers/detail.
