@@ -154,7 +154,20 @@ public struct ComputeRegion: Sendable {
         struct ServerList: Decodable { let servers: [Server] }
 
         let decoded = try JSONDecoder().decode(ServerList.self, from: result.body)
-        let servers = decoded.servers
+        var servers = decoded.servers
+
+        // Post-fix: extract flavor IDs from the raw JSON. On Linux
+        // (swift-corelibs-foundation), the sub-container decode for the
+        // flavor field silently fails, leaving flavor.id empty. We
+        // extract the IDs directly from the raw response body using
+        // JSONSerialization, which is a separate (working) code path.
+        if let flavorIDs = Self.extractFlavorIDs(from: result.body) {
+            for i in servers.indices {
+                if servers[i].flavor.id.isEmpty, let fid = flavorIDs[servers[i].id] {
+                    servers[i].flavor.id = fid
+                }
+            }
+        }
 
         await cache.put(key, ttl: .seconds(60), value: servers)
         return servers
@@ -167,8 +180,15 @@ public struct ComputeRegion: Sendable {
 
         struct ServerResp: Decodable { let server: Server }
 
-        let decoded = try JSONDecoder().decode(ServerResp.self, from: result.body)
-        return decoded.server
+        var server = try JSONDecoder().decode(ServerResp.self, from: result.body).server
+
+        // Post-fix: extract flavor ID from raw JSON (Linux workaround)
+        if server.flavor.id.isEmpty,
+           let flavorIDs = Self.extractFlavorIDs(from: result.body),
+           let fid = flavorIDs[server.id] {
+            server.flavor.id = fid
+        }
+        return server
     }
 
     public func createServer(_ vt: ValidatedToken, _ spec: CreateServerSpec) async throws -> Server {
@@ -621,6 +641,29 @@ public struct ComputeRegion: Sendable {
                 retriable: [429, 502, 503, 504].contains(status)
             )
         }
+    }
+
+    /// Extract flavor IDs from a raw Nova /servers/detail JSON body.
+    /// Returns a mapping of server ID → flavor ID.
+    ///
+    /// This is a workaround for a Linux (swift-corelibs-foundation) bug
+    /// where the Codable sub-container decode for the flavor field
+    /// silently fails, leaving `Server.flavor.id` empty. Using
+    /// JSONSerialization (a separate, working code path) lets us
+    /// extract the flavor IDs directly from the raw JSON.
+    static func extractFlavorIDs(from data: Data) -> [String: String]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = obj["servers"] as? [[String: Any]] else {
+            return nil
+        }
+        var result: [String: String] = [:]
+        for s in servers {
+            guard let serverID = s["id"] as? String,
+                  let flavor = s["flavor"] as? [String: Any],
+                  let flavorID = flavor["id"] as? String else { continue }
+            result[serverID] = flavorID
+        }
+        return result.isEmpty ? nil : result
     }
 
     private static func parseDate(_ string: String) -> Date? {
