@@ -1,20 +1,5 @@
 import Foundation
 
-/// Helper struct for decoding the flavor sub-object inside a Server.
-/// Defined at file scope (not local to a function) so that the synthesized
-/// Decodable conformance works reliably on Linux (swift-corelibs-foundation).
-///
-/// Fields are non-optional because Nova always provides both `id` and
-/// `links` in the flavor object.
-private struct FlavorObj: Decodable {
-    let id: String
-    let links: [Link]
-
-    private enum CodingKeys: String, CodingKey {
-        case id, links
-    }
-}
-
 /// A single IP address entry in a server's `addresses` dict.
 /// Nova returns each address as an object with `addr`, `version`,
 /// `OS-EXT-IPS:type`, and `OS-EXT-IPS-MAC:mac_addr`.
@@ -177,17 +162,13 @@ public struct Server: Sendable, Codable, Identifiable {
     /// Decode the flavor field from a keyed container.
     ///
     /// Nova returns flavor as an object `{"id": "...", "links": [...]}`.
-    /// The bare-string form `"m1.small"` is extremely rare (only seen on
-    /// some legacy clouds). We decode the object form directly.
+    /// Uses the synthesized Decodable on FlavorRef (no custom init).
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Decode as object using the file-scope FlavorObj struct
-        if let obj = try? c.decode(FlavorObj.self, forKey: key) {
-            return FlavorRef(id: obj.id, links: obj.links)
+        if let ref = try? c.decode(FlavorRef.self, forKey: key) {
+            return ref
         }
         // Object decode failed — might be a bare string or null.
-        // c.decode() consumed the key, so we can't retry with a different
-        // type on the same container. Return an empty FlavorRef.
         return FlavorRef(id: "", links: [])
     }
 
@@ -215,41 +196,12 @@ public struct FlavorRef: Sendable, Codable, Equatable {
         self.links = links
     }
 
-    public init(from decoder: Decoder) throws {
-        // Polymorphic decode: Nova returns flavor as either a bare string
-        // ("m1.small") or an object ({"id": "...", "links": [...]}).
-        //
-        // Order matters: try keyedContainer() FIRST. If the JSON value is
-        // an object, this succeeds. If it's a string or null, this throws
-        // (type mismatch) WITHOUT corrupting the decoder state — the
-        // decoder only commits to a container type when the value type
-        // matches. After a failed keyedContainer(), the decoder is still
-        // in a valid state for a subsequent singleValueContainer().
-        if let c = try? decoder.container(keyedBy: FlavorObjKeys.self) {
-            self.id = try c.decode(String.self, forKey: .id)
-            self.links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []
-            return
-        }
-        // Not an object: try as a bare string
-        let sv = try decoder.singleValueContainer()
-        if let s = try? sv.decode(String.self) {
-            self.id = s
-            self.links = []
-            return
-        }
-        if sv.decodeNil() {
-            self.id = ""
-            self.links = []
-            return
-        }
-        // Unrecognized shape
-        self.id = ""
-        self.links = []
-    }
-
-    private enum FlavorObjKeys: String, CodingKey {
-        case id, links
-    }
+    // No custom init(from:) — the synthesized Decodable handles the
+    // standard Nova object form {"id": "...", "links": [...]} directly.
+    // The bare-string form is extremely rare (legacy clouds only) and is
+    // not supported; the synthesized decoder will throw a typeMismatch
+    // for a string value, which the caller (Server.decodeFlavor) catches
+    // and falls back to an empty FlavorRef.
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
