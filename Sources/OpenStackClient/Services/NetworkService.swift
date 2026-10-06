@@ -1050,8 +1050,10 @@ public struct NetworkRegion: Sendable {
 
     public func getQuota(_ vt: ValidatedToken) async throws -> NetworkQuota {
         let region = try resolveRegion(vt)
-        let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/quota/\(projectID)")
+        // Neutron quota endpoint: GET /v2.0/quotas (plural, no project ID).
+        // The response is {"quotas": [{...}]} — an array of quota objects.
+        // We return the first (and typically only) entry.
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/quotas")
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,
@@ -1062,15 +1064,18 @@ public struct NetworkRegion: Sendable {
             )
         }
 
-        struct QuotaResp: Decodable { let quota: NetworkQuota }
-        let decoded = try JSONDecoder().decode(QuotaResp.self, from: result.body)
-        return decoded.quota
+        struct QuotaListResp: Decodable { let quotas: [NetworkQuota] }
+        let decoded = try JSONDecoder().decode(QuotaListResp.self, from: result.body)
+        guard let quota = decoded.quotas.first else {
+            throw OpenStackError(service: "network", status: 404, code: "quotaNotFound", message: "No quota entries returned")
+        }
+        return quota
     }
 
     public func updateQuota(_ vt: ValidatedToken, _ quota: NetworkQuota) async throws -> NetworkQuota {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/quota/\(projectID)", body: quota.updateBody().data(using: .utf8))
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/quotas/\(projectID)", body: quota.updateBody().data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(
                 body: result.body,

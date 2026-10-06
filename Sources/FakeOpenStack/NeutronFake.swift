@@ -738,24 +738,27 @@ public struct NeutronFake {
 
         // MARK: - Quota
 
-        router.get("\(base)/quota/:projectId") { req, ctx in
+        // Neutron quota: GET /v2.0/quotas (plural, no project ID).
+        // Response: {"quotas": [{...}]} — an array of quota objects.
+        router.get("\(base)/quotas") { req, _ in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   await state.validateToken(tokenID) != nil else {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
-            let pid = ctx.parameters.get("projectId") ?? ""
             return Self.jsonResponse(status: .ok, body: """
-            {"quota":{"project_id":"\(pid)","network":10,"subnet":10,"port":50,"security_group":10,"security_group_rule":100,"floatingip":10,"router":10}}
+            {"quotas":[{"project_id":"proj-one","network":10,"subnet":10,"port":50,"security_group":10,"security_group_rule":100,"floatingip":10,"router":10}]}
             """)
         }
 
-        router.put("\(base)/quota/:projectId") { req, ctx in
+        // Update quota: PUT /v2.0/quotas/{project_id}
+        // Response: {"quota": {...}} (singular, per Neutron API)
+        router.put("\(base)/quotas/:projectId") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   await state.validateToken(tokenID) != nil else {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
             _ = req
-            let pid = ctx.parameters.get("projectId") ?? ""
+            let pid = ctx.parameters.get("projectId") ?? "proj-one"
             return Self.jsonResponse(status: .ok, body: """
             {"quota":{"project_id":"\(pid)","network":10,"subnet":10,"port":50,"security_group":10,"security_group_rule":100,"floatingip":10,"router":10}}
             """)

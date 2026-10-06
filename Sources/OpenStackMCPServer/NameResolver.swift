@@ -339,6 +339,36 @@ public actor NameResolver {
                 result["resource"] = .string("flavor")
                 result["region"] = .string(region)
                 return result
+            case "keypair":
+                let kps = try await r.listKeypairs(vt)
+                var result: [String: JSONValue] = try Self.encodeList(kps)
+                result["resource"] = .string("keypair")
+                result["region"] = .string(region)
+                return result
+            case "server_group":
+                let sgs = try await r.listServerGroups(vt)
+                var result: [String: JSONValue] = try Self.encodeList(sgs)
+                result["resource"] = .string("server_group")
+                result["region"] = .string(region)
+                return result
+            case "availability_zone":
+                let azs = try await r.listAvailabilityZones(vt)
+                var result: [String: JSONValue] = try Self.encodeList(azs)
+                result["resource"] = .string("availability_zone")
+                result["region"] = .string(region)
+                return result
+            case "hypervisor":
+                let hvs = try await r.listHypervisors(vt)
+                var result: [String: JSONValue] = try Self.encodeList(hvs)
+                result["resource"] = .string("hypervisor")
+                result["region"] = .string(region)
+                return result
+            case "compute_service":
+                let cs = try await r.listComputeServices(vt)
+                var result: [String: JSONValue] = try Self.encodeList(cs)
+                result["resource"] = .string("compute_service")
+                result["region"] = .string(region)
+                return result
             default:
                 throw OpenStackError(service: "compute", status: 404, message: "Unknown compute resource: \(descriptor.name)")
             }
@@ -363,6 +393,30 @@ public actor NameResolver {
                 result["resource"] = .string("subnet")
                 result["region"] = .string(region)
                 return result
+            case "router":
+                let rts = try await r.listRouters(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(rts)
+                result["resource"] = .string("router")
+                result["region"] = .string(region)
+                return result
+            case "floating_ip":
+                let fips = try await r.listFloatingIPs(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(fips)
+                result["resource"] = .string("floating_ip")
+                result["region"] = .string(region)
+                return result
+            case "security_group":
+                let sgs = try await r.listSecurityGroups(vt, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(sgs)
+                result["resource"] = .string("security_group")
+                result["region"] = .string(region)
+                return result
+            case "security_group_rule":
+                let sgrs = try await r.listSecurityGroupRules(vt, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(sgrs)
+                result["resource"] = .string("security_group_rule")
+                result["region"] = .string(region)
+                return result
             default:
                 throw OpenStackError(service: "network", status: 404, message: "Unknown network resource: \(descriptor.name)")
             }
@@ -373,6 +427,24 @@ public actor NameResolver {
                 let vols = try await r.listVolumes(vt, filters: filters, limit: limit)
                 var result: [String: JSONValue] = try Self.encodeList(vols)
                 result["resource"] = .string("volume")
+                result["region"] = .string(region)
+                return result
+            case "volume_type":
+                let vts = try await r.listVolumeTypes(vt)
+                var result: [String: JSONValue] = try Self.encodeList(vts)
+                result["resource"] = .string("volume_type")
+                result["region"] = .string(region)
+                return result
+            case "volume_snapshot":
+                let snaps = try await r.listSnapshots(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(snaps)
+                result["resource"] = .string("volume_snapshot")
+                result["region"] = .string(region)
+                return result
+            case "volume_backup":
+                let bks = try await r.listBackups(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(bks)
+                result["resource"] = .string("volume_backup")
                 result["region"] = .string(region)
                 return result
             default:
