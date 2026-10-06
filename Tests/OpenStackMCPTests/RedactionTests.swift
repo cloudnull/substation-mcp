@@ -59,6 +59,25 @@ func redactorRedactsTokenPayloadDict() {
     #expect(out.contains("\"region\":\"R1\""))
 }
 
+ @Test("Redactor redacts camelCase/snake_case token-id key variants")
+ func redactorRedactsTokenIDVariants() {
+     // A Keystone token ID *is* the credential. The login-page log used the
+     // key `tokenID` (camelCase), which lowercases to `tokenid` — that variant
+     // was NOT in sensitiveKeys, so the full token leaked into the logs. All
+     // token-id key spellings must be masked, not just the bare `token`.
+     for json in [
+         #"{"tokenID":"gAAAAAB-secret-keystone-token","project":"p1"}"#,
+         #"{"token_id":"gAAAAAB-secret-keystone-token","project":"p1"}"#,
+         #"{"os_auth_token":"gAAAAAB-secret-keystone-token"}"#,
+     ] {
+         let out = Redactor.redact(json)
+         #expect(!out.contains("gAAAAAB-secret-keystone-token"),
+                 "token id leaked in redacted output: \(out)")
+         #expect(out.contains("[REDACTED]"),
+                 "expected a redacted value: \(out)")
+     }
+ }
+
 // MARK: - JSON log handler redacts metadata before it reaches the sink
 
 @Test("JSON log handler redacts sensitive metadata before writing")

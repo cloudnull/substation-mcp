@@ -62,11 +62,17 @@ public struct LoginPage: Sendable {
                 // The secret has been consumed by the minter; only the token
                 // (with metadata) is stored, bound to the elicitation id.
                 await tokenStore.bind(sessionId: req.elicitationId, token: token)
-                // Log the mint with only non-sensitive fields (the token id
-                // and project); the error below carries a generic reason.
+                // Log the mint with only non-sensitive fields. A Keystone token
+                // ID *is* the credential (the Bearer token), so the full id is
+                // never logged — only a short prefix, enough to correlate a
+                // mint with a later use without leaking the secret. The full
+                // token is shown to the user on the completion page (its
+                // intended display surface) and stored in the TokenStore.
+                let tokenRef = String(token.id.prefix(8))
+                let tokenSummary = "\(tokenRef)…(\(token.id.count) chars)"
                 logger.info("Login minted token", metadata: [
                     "elicitationId": "\(req.elicitationId)",
-                    "tokenID": "\(token.id)",
+                    "tokenID": "\(tokenSummary)",
                     "project": "\(token.project.id)",
                 ])
                 return LoginResponse(

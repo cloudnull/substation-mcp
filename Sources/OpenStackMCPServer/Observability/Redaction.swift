@@ -14,10 +14,15 @@ import Logging
 /// `LoggingSystem`.
 public enum Redactor {
     /// Field names whose *value* must never be logged.
+    ///
+    /// A Keystone token ID *is* the credential (it is the Bearer token), so
+    /// every token-id key name is sensitive — not just `token` (which would
+    /// miss camelCase variants like `tokenID` / `token_id`).
     public static let sensitiveKeys: Set<String> = [
         "secret", "password", "adminpass", "user_data",
         "authorization", "x-auth-token", "x-subject-token",
-        "application_credential", "appcredsecret", "token"
+        "application_credential", "appcredsecret",
+        "token", "tokenid", "token_id", "os_auth_token", "auth_token"
     ]
 
     /// Replace the value of every sensitive key in a JSON object/array string
