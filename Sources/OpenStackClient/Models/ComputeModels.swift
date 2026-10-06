@@ -187,32 +187,30 @@ public struct FlavorRef: Sendable, Codable, Equatable {
         // Polymorphic decode: Nova returns flavor as either a bare string
         // ("m1.small") or an object ({"id": "...", "links": [...]}).
         //
-        // The correct pattern: try each shape on a FRESH sub-decoder so we
-        // never mix singleValueContainer and keyedContainer on the same
-        // decoder instance (which corrupts the decoder's internal state).
-        //
-        // 1. Try string
-        // 2. Try object (keyed)
-        // 3. Fall back to empty (null or unrecognized)
-        if let s = try? {
-            let c = try decoder.singleValueContainer()
-            return try c.decode(String.self)
-        }() {
+        // Order matters: try keyedContainer() FIRST. If the JSON value is
+        // an object, this succeeds. If it's a string or null, this throws
+        // (type mismatch) WITHOUT corrupting the decoder state — the
+        // decoder only commits to a container type when the value type
+        // matches. After a failed keyedContainer(), the decoder is still
+        // in a valid state for a subsequent singleValueContainer().
+        if let c = try? decoder.container(keyedBy: FlavorObjKeys.self) {
+            self.id = try c.decode(String.self, forKey: .id)
+            self.links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []
+            return
+        }
+        // Not an object: try as a bare string
+        let sv = try decoder.singleValueContainer()
+        if let s = try? sv.decode(String.self) {
             self.id = s
             self.links = []
             return
         }
-        if let obj = try? {
-            let c = try decoder.container(keyedBy: FlavorObjKeys.self)
-            let id = try c.decode(String.self, forKey: .id)
-            let links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []
-            return (id: id, links: links)
-        }() {
-            self.id = obj.id
-            self.links = obj.links
+        if sv.decodeNil() {
+            self.id = ""
+            self.links = []
             return
         }
-        // null or unrecognized shape
+        // Unrecognized shape
         self.id = ""
         self.links = []
     }
