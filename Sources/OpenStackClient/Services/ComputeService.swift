@@ -653,14 +653,17 @@ public struct ComputeRegion: Sendable {
     /// JSONSerialization (a separate, working code path) lets us
     /// extract the flavor IDs directly from the raw JSON.
     static func extractFlavorIDs(from data: Data) -> [String: String]? {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let servers = obj["servers"] as? [[String: Any]] else {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            FileHandle.standardError.write("extractFlavorIDs: JSONSerialization failed on \(data.count) bytes\n".data(using: .utf8)!)
+            return nil
+        }
+        guard let servers = obj["servers"] as? [[String: Any]] else {
+            FileHandle.standardError.write("extractFlavorIDs: no 'servers' key, got: \(obj.keys)\n".data(using: .utf8)!)
             return nil
         }
         var result: [String: String] = [:]
         for s in servers {
             guard let serverID = s["id"] as? String else { continue }
-            // Flavor can be an object {"id": "..."} or a bare string
             if let flavor = s["flavor"] as? [String: Any],
                let flavorID = flavor["id"] as? String {
                 result[serverID] = flavorID
@@ -668,6 +671,7 @@ public struct ComputeRegion: Sendable {
                 result[serverID] = flavorStr
             }
         }
+        FileHandle.standardError.write("extractFlavorIDs: extracted \(result.count) flavor IDs from \(servers.count) servers\n".data(using: .utf8)!)
         return result.isEmpty ? nil : result
     }
 
