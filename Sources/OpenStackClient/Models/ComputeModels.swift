@@ -3,9 +3,16 @@ import Foundation
 /// Helper struct for decoding the flavor sub-object inside a Server.
 /// Defined at file scope (not local to a function) so that the synthesized
 /// Decodable conformance works reliably on Linux (swift-corelibs-foundation).
+///
+/// Fields are non-optional because Nova always provides both `id` and
+/// `links` in the flavor object.
 private struct FlavorObj: Decodable {
-    let id: String?
-    let links: [Link]?
+    let id: String
+    let links: [Link]
+
+    private enum CodingKeys: String, CodingKey {
+        case id, links
+    }
 }
 
 /// A single IP address entry in a server's `addresses` dict.
@@ -167,20 +174,20 @@ public struct Server: Sendable, Codable, Identifiable {
         if let progress { try c.encode(progress, forKey: .progress) }
     }
 
-    /// Decode the flavor field from a keyed container. Nova returns flavor
-    /// as either an object `{"id": "...", "links": [...]}` or (rarely) a
-    /// bare string `"m1.small"`.
+    /// Decode the flavor field from a keyed container.
+    ///
+    /// Nova returns flavor as an object `{"id": "...", "links": [...]}`.
+    /// The bare-string form `"m1.small"` is extremely rare (only seen on
+    /// some legacy clouds). We decode the object form directly.
     private static func decodeFlavor(_ c: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> FlavorRef {
         guard c.contains(key) else { return FlavorRef(id: "", links: []) }
-        // Object form: {"id": "...", "links": [...]}
+        // Decode as object using the file-scope FlavorObj struct
         if let obj = try? c.decode(FlavorObj.self, forKey: key) {
-            return FlavorRef(id: obj.id ?? "", links: obj.links ?? [])
+            return FlavorRef(id: obj.id, links: obj.links)
         }
-        // Bare-string form: "m1.small"
-        if let s = try? c.decode(String.self, forKey: key) {
-            return FlavorRef(id: s, links: [])
-        }
-        // null or unrecognized
+        // Object decode failed — might be a bare string or null.
+        // c.decode() consumed the key, so we can't retry with a different
+        // type on the same container. Return an empty FlavorRef.
         return FlavorRef(id: "", links: [])
     }
 
