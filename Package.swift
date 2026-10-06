@@ -57,6 +57,12 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
             ],
+            // The logo PNG is NOT a runtime resource — it is the source for the
+            // auto-generated base64 in Logo.swift (substationLogoBase64), which
+            // is embedded directly in the binary. Excluding it silences SwiftPM's
+            // "unhandled file" warning; the login page serves a data-URI, so
+            // Bundle.module is never consulted.
+            exclude: ["Resources"],
             swiftSettings: swiftSettings
         ),
 

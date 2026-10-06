@@ -382,10 +382,14 @@ struct LoginMinterTests {
                 "password did not round-trip through JSON escaping: \(String(describing: user["password"]))")
         #expect(user["name"] as? String == "admin")
         #expect(user["domain"] as? [String: Any] != nil)
-        // 3. The scope must be project-scoped when a project name is given.
+        // 3. The scope must be project-scoped when a project name is given,
+        //    AND the project must carry a domain (Keystone requires it).
         let scope = auth["scope"] as? [String: Any]
-        #expect(scope?["project"] as? [String: Any] != nil,
-                "expected a project scope: \(String(describing: scope))")
+        let project = scope?["project"] as? [String: Any]
+        #expect(project?["name"] as? String == "admin",
+                "project scope missing/wrong name: \(String(describing: project))")
+        #expect(project?["domain"] as? [String: Any] != nil,
+                "project scope must carry a domain: \(String(describing: project))")
     }
 
     /// Regression: an app-credential secret containing a double-quote must be

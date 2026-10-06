@@ -654,11 +654,15 @@ public struct ComputeRegion: Sendable {
                 let name: String
                 let status: String
                 let flavor: FlavorRef
-                let addresses: [String: [String: String]]
+                // Optional to match listServers/getServer: Nova may omit
+                // `addresses` or `metadata` on some responses (e.g. a server
+                // in a transient state), and the non-optional form made the
+                // `??` defaults at the call sites dead code (compiler warning).
+                let addresses: [String: [String: String]]?
                 let key_name: String?
                 let created: String?
                 let updated: String?
-                let metadata: [String: String]
+                let metadata: [String: String]?
                 let security_groups: [String]?
                 let progress: Int?
             }

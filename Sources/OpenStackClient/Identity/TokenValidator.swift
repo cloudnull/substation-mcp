@@ -209,15 +209,24 @@ public actor LoginMinter {
     /// user-supplied strings (user, domain, password, project) are JSON-escaped
     /// correctly.
     ///
-    /// The critical structural detail (verified against keystoneauth1, the
-    /// library the `openstack` CLI uses): when `methods: ["password"]`, the
-    /// user object must be nested under an `identity.password` key — i.e.
-    /// `{"auth":{"identity":{"methods":["password"],
-    ///   "password":{"user":{"name":...,"domain":...,"password":...}}}}}`.
-    /// Keystone dispatches to the sub-object named after the method. Placing
-    /// `user` directly under `identity` (the previous shape) made Keystone
-    /// look for the `password` sub-object, not find it, and reject the mint
-    /// with 400 "Expecting to find password in identity".
+    /// Two structural details (both verified against keystoneauth1, the library
+    /// the `openstack` CLI uses):
+    ///
+    ///  1. When `methods: ["password"]`, the user object must be nested under
+    ///     an `identity.password` key — i.e.
+    ///     `{"auth":{"identity":{"methods":["password"],
+    ///       "password":{"user":{"name":...,"domain":...,"password":...}}}}}`.
+    ///     Keystone dispatches to the sub-object named after the method.
+    ///     Placing `user` directly under `identity` made Keystone look for the
+    ///     `password` sub-object, not find it, and reject the mint with 400
+    ///     "Expecting to find password in identity".
+    ///
+    ///  2. A project-scoped token requires the project to carry a `domain` —
+    ///     `{"scope":{"project":{"name":...,"domain":{"name":...}}}}`. Omitting
+    ///     it makes Keystone reject the mint with 400 "Expecting to find domain
+    ///     in project". keystoneauth1 sends `project_domain_name` from the
+    ///     clouds.yaml; we default the project domain to the user's domain
+    ///     (the common case, e.g. both `default`).
     private static func passwordBody(userID: String, domain: String?, password: String, projectName: String?) -> Data {
         var user: [String: Any] = ["name": userID]
         if let d = domain, !d.isEmpty {
@@ -232,7 +241,13 @@ public actor LoginMinter {
             ],
         ]
         if let p = projectName, !p.isEmpty {
-            auth["scope"] = ["project": ["name": p]]
+            var project: [String: Any] = ["name": p]
+            // A project-scoped token must name the project's domain. Default to
+            // the user's domain (the standard layout) when present.
+            if let d = domain, !d.isEmpty {
+                project["domain"] = ["name": d]
+            }
+            auth["scope"] = ["project": project]
         }
         let body: [String: Any] = ["auth": auth]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
