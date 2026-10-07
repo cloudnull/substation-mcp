@@ -852,6 +852,7 @@ public struct CreateServerSpec: Sendable {
     public var schedulerHints: [String: String]
     public var minCount: Int?
     public var maxCount: Int?
+    public var securityGroups: [String]
     public var serverGroup: String?
     public var hostname: String?  // requires microversion 2.90
     public var pinnedAvailabilityZone: String?  // requires microversion 2.96
@@ -882,6 +883,7 @@ public struct CreateServerSpec: Sendable {
         schedulerHints: [String: String] = [:],
         minCount: Int? = nil,
         maxCount: Int? = nil,
+        securityGroups: [String] = [],
         serverGroup: String? = nil,
         hostname: String? = nil,
         pinnedAvailabilityZone: String? = nil
@@ -899,6 +901,7 @@ public struct CreateServerSpec: Sendable {
         self.schedulerHints = schedulerHints
         self.minCount = minCount
         self.maxCount = maxCount
+        self.securityGroups = securityGroups
         self.serverGroup = serverGroup
         self.hostname = hostname
         self.pinnedAvailabilityZone = pinnedAvailabilityZone
@@ -950,6 +953,11 @@ public struct CreateServerSpec: Sendable {
                 return "{\(netParts.joined(separator: ","))}"
             }.joined(separator: ",")
             body = body.dropLast() + ",\"networks\":[\(nets)]}"
+        }
+
+        if !securityGroups.isEmpty {
+            let sgs = securityGroups.map { "\"\($0)\"" }.joined(separator: ",")
+            body = body.dropLast() + ",\"security_groups\":[\(sgs)]}"
         }
 
         if let minCount, let maxCount {

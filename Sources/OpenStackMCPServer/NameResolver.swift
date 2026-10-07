@@ -780,25 +780,53 @@ public actor NameResolver {
             switch descriptor.name {
             case "server":
                 let name = obj["name"]?.stringValue
-                let flavorID = obj["flavor"]?.stringValue ?? obj["flavorID"]?.stringValue
-                let imageID = obj["image"]?.stringValue ?? obj["imageID"]?.stringValue
-                guard let name, let flavorID, let imageID else {
+                let flavorRef = obj["flavor"]?.stringValue ?? obj["flavorID"]?.stringValue
+                let imageRef = obj["image"]?.stringValue ?? obj["imageID"]?.stringValue
+                guard let name, let flavorRef, let imageRef else {
                     throw OpenStackError(service: "compute", status: 400, message: "Server create requires name, flavor, image")
                 }
+                // Resolve flavor name to UUID
+                let rc = await client.compute(region: region)
+                let flavors = try await rc.listFlavors(vt)
+                let flavorItems = try flavors.map { try Self.encodeObject($0) as [String: JSONValue] }
+                let flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
+                // Resolve image name to UUID
+                let ri = await client.image(region: region)
+                let images = try await ri.listImages(vt)
+                let imageItems = try images.map { try Self.encodeObject($0) as [String: JSONValue] }
+                let imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
                 // Optional fields from the create schema
                 let keyName = obj["key_name"]?.stringValue ?? obj["keyName"]?.stringValue
                 let availabilityZone = obj["availability_zone"]?.stringValue ?? obj["availabilityZone"]?.stringValue
                 let configDrive = obj["config_drive"]?.boolValue
                 let metadata = obj["metadata"]?.objectValue?.reduce(into: [String: String]()) { $0[$1.key] = $1.value.stringValue ?? "" } ?? [:]
-                let networks = obj["networks"]?.arrayValue?.compactMap { entry -> CreateServerSpec.NetworkSpec? in
-                    guard let netObj = entry.objectValue else { return nil }
-                    return CreateServerSpec.NetworkSpec(
-                        port: netObj["port"]?.stringValue,
-                        network: netObj["network"]?.stringValue ?? netObj["uuid"]?.stringValue,
-                        fixedIP: netObj["fixed_ip"]?.stringValue ?? netObj["fixedIP"]?.stringValue
-                    )
-                } ?? []
+                // Resolve network names to UUIDs (fetch network list once)
+                let rawNetworks = obj["networks"]?.arrayValue ?? []
+                var networks: [CreateServerSpec.NetworkSpec] = []
+                var netItemsCache: [[String: JSONValue]]?
+                for entry in rawNetworks {
+                    guard let netObj = entry.objectValue else { continue }
+                    let netRef = netObj["network"]?.stringValue ?? netObj["uuid"]?.stringValue
+                    let port = netObj["port"]?.stringValue
+                    let fixedIP = netObj["fixed_ip"]?.stringValue ?? netObj["fixedIP"]?.stringValue
+                    if let netRef {
+                        let items: [[String: JSONValue]]
+                        if let cached = netItemsCache {
+                            items = cached
+                        } else {
+                            let rn = await client.network(region: region)
+                            let nws = try await rn.listNetworks(vt)
+                            items = try nws.map { try Self.encodeObject($0) as [String: JSONValue] }
+                            netItemsCache = items
+                        }
+                        let netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
+                        networks.append(CreateServerSpec.NetworkSpec(port: port, network: netID, fixedIP: fixedIP))
+                    } else if let port {
+                        networks.append(CreateServerSpec.NetworkSpec(port: port, network: nil, fixedIP: fixedIP))
+                    }
+                }
                 let userData = obj["user_data"]?.stringValue ?? obj["userData"]?.stringValue
+                let securityGroups = obj["security_groups"]?.arrayValue?.compactMap { $0.stringValue } ?? []
                 let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
                 let hostname = obj["hostname"]?.stringValue
 
@@ -806,7 +834,9 @@ public actor NameResolver {
                     name: name, flavorID: flavorID, imageID: imageID,
                     keyName: keyName, availabilityZone: availabilityZone,
                     configDrive: configDrive, metadata: metadata,
-                    networks: networks, userData: userData,
+                    networks: networks,
+                    userData: userData,
+                    securityGroups: securityGroups,
                     serverGroup: serverGroup, hostname: hostname
                 )
                 let s = try await r.createServer(vt, spec)
@@ -1593,5 +1623,37 @@ public actor NameResolver {
         case is NSNull: return .null
         default: return .string(String(describing: value))
         }
+    }
+
+    /// Resolve a resource reference (ID or name) to its ID from a list of
+    /// already-fetched items. Matches on ID first, then name (case-insensitive).
+    static func resolveRef(
+        value: String,
+        resource: String,
+        items: [[String: JSONValue]],
+        service: String
+    ) throws -> String {
+        // 1. Exact ID match
+        for item in items {
+            if item["id"]?.stringValue == value { return value }
+        }
+        // 2. Case-insensitive name match
+        let lower = value.lowercased()
+        var matches: [String] = []
+        for item in items {
+            if let n = item["name"]?.stringValue?.lowercased(), n == lower {
+                matches.append(item["id"]?.stringValue ?? "")
+            }
+        }
+        if matches.count == 1, let id = matches.first, !id.isEmpty {
+            return id
+        }
+        if matches.count > 1 {
+            throw OpenStackError(service: service, status: 400,
+                message: "Ambiguous \(resource) '\(value)': \(matches.count) matches")
+        }
+        throw OpenStackError(service: service, status: 404,
+            code: "itemNotFound",
+            message: "No \(resource) found matching '\(value)'")
     }
 }
