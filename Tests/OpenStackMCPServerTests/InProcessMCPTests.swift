@@ -295,6 +295,21 @@ struct InProcessMCPTests {
         #expect(text?.contains("reboot") == true, "Should mention reboot action")
     }
 
+    @Test("os_describe surfaces phase-1 note on by-design 501 identity resources")
+    func describeIdentityPhase1Note() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        for resource in ["region", "service", "endpoint", "application_credential"] {
+            let result = try await bundle.mcpClient.callTool(name: "os_describe", arguments: ["resource": .string(resource)])
+            #expect(result.isError != true, "\(resource) describe failed")
+            let text = firstText(result.content) ?? ""
+            #expect(text.contains("501 by design"), "\(resource) should document the by-design 501 phase-1 note, got: \(text)")
+        }
+    }
+
     @Test("os_list returns servers with default projection")
     func listServers() async throws {
         let handle = try await FakeApp.start()

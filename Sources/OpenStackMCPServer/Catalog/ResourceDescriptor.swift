@@ -197,6 +197,9 @@ public final class ResourceDescriptor: @unchecked Sendable {
     public let terminalStates: [String]
     public let defaultListFields: [String]
     public let destructiveHints: [String]
+    /// Optional caller-facing note rendered in `os_describe` output, e.g. a
+    /// phase-1 status such as "not resolvable (HTTP 501 by design)".
+    public let phase1Note: String?
     public let dispatch: ServiceDispatch
 
     public init(
@@ -214,6 +217,7 @@ public final class ResourceDescriptor: @unchecked Sendable {
         terminalStates: [String] = [],
         defaultListFields: [String] = ["id", "name"],
         destructiveHints: [String] = [],
+        phase1Note: String? = nil,
         dispatch: ServiceDispatch = ServiceDispatch()
     ) {
         self.name = name
@@ -230,6 +234,7 @@ public final class ResourceDescriptor: @unchecked Sendable {
         self.terminalStates = terminalStates
         self.defaultListFields = defaultListFields
         self.destructiveHints = destructiveHints
+        self.phase1Note = phase1Note
         self.dispatch = dispatch
     }
 }

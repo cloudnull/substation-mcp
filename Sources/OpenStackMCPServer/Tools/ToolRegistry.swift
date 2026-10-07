@@ -492,7 +492,7 @@ public struct ToolRegistry: Sendable {
             ])
         }
 
-        let result: [String: JSONValue] = [
+        var result: [String: JSONValue] = [
             "resource": .string(d.name),
             "service": .string(d.service.rawValue),
             "verbs": .array(d.verbs.sorted { $0.rawValue < $1.rawValue }.map { .string($0.rawValue) }),
@@ -504,6 +504,9 @@ public struct ToolRegistry: Sendable {
             "default_list_fields": .array(d.defaultListFields.map { .string($0) }),
             "list_filters": .array(d.listFilters.sorted().map { .string($0) }),
         ]
+        if let note = d.phase1Note {
+            result["note"] = .string(note)
+        }
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }

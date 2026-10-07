@@ -85,6 +85,7 @@ public struct Policy: Sendable {
                 terminalStates: d.terminalStates,
                 defaultListFields: d.defaultListFields,
                 destructiveHints: d.destructiveHints,
+                phase1Note: d.phase1Note,
                 dispatch: d.dispatch
             ))
         }

@@ -9,7 +9,8 @@ enum IdentityEntries {
             verbs: [.list, .get],
             idField: "id",
             nameField: "id",
-            defaultListFields: ["id"]
+            defaultListFields: ["id"],
+            phase1Note: "Phase 1: identity resources not resolvable (HTTP 501 by design)."
         ),
         ResourceDescriptor(
             name: "project",
@@ -147,7 +148,8 @@ enum IdentityEntries {
             verbs: [.list, .get],
             listFilters: ["type", "name"],
             idField: "id",
-            nameField: "name"
+            nameField: "name",
+            phase1Note: "Phase 1: identity resources not resolvable (HTTP 501 by design)."
         ),
         ResourceDescriptor(
             name: "endpoint",
@@ -155,7 +157,8 @@ enum IdentityEntries {
             verbs: [.list, .get],
             listFilters: ["service_id", "interface", "region"],
             idField: "id",
-            nameField: nil
+            nameField: nil,
+            phase1Note: "Phase 1: identity resources not resolvable (HTTP 501 by design)."
         ),
         ResourceDescriptor(
             name: "application_credential",
@@ -164,7 +167,8 @@ enum IdentityEntries {
             listFilters: ["name", "user"],
             idField: "id",
             nameField: "name",
-            statusField: "enabled"
+            statusField: "enabled",
+            phase1Note: "Phase 1: identity resources not resolvable (HTTP 501 by design)."
         ),
     ]
 }
