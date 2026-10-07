@@ -756,7 +756,9 @@ public actor NameResolver {
             switch descriptor.name {
             case "placement":
                 let nameFilter = filters["name"]
-                let rps = try await r.listResourceProviders(vt, name: nameFilter, limit: limit)
+                // Placement API does not accept a `limit` query param —
+                // it only supports `name`, `marker`, and `type`.
+                let rps = try await r.listResourceProviders(vt, name: nameFilter)
                 var result: [String: JSONValue] = try Self.encodeList(rps)
                 result["resource"] = .string("placement"); result["region"] = .string(region)
                 return result

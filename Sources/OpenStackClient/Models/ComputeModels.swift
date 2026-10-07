@@ -426,7 +426,7 @@ public struct ServerGroup: Sendable, Codable, Identifiable {
 
 /// Hypervisor (live Nova /os-hypervisors/detail shape).
 public struct Hypervisor: Sendable, Codable, Identifiable {
-    public let id: Int
+    public let id: String
     public var hypervisorHostname: String
     public var state: String
     public var status: String
@@ -448,7 +448,7 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
     public var cpuInfo: String?
 
     public init(
-        id: Int,
+        id: String,
         hypervisorHostname: String = "",
         state: String = "",
         status: String = "",
@@ -515,11 +515,11 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
 /// Service reference nested inside a live Nova hypervisor.
 /// (Named `HypervisorServiceRef` to avoid colliding with `ComputeService`.)
 public struct HypervisorServiceRef: Sendable, Codable {
-    public let id: Int
+    public let id: String
     public var host: String
     public var disabledReason: String?
 
-    public init(id: Int, host: String = "", disabledReason: String? = nil) {
+    public init(id: String, host: String = "", disabledReason: String? = nil) {
         self.id = id
         self.host = host
         self.disabledReason = disabledReason

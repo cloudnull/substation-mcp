@@ -56,14 +56,14 @@ struct ComputeServiceTests {
     func hypervisorDecodesRealNovaJSON() throws {
         let novaJSON = """
         {"hypervisors":[{
-            "id":1,
+            "id":"1",
             "hypervisor_hostname":"compute-1.cloud.cloudnull.dev.local",
             "state":"up",
             "status":"enabled",
             "hypervisor_type":"QEMU",
             "hypervisor_version":7002022,
             "host_ip":"172.16.27.34",
-            "service":{"id":43,"host":"compute-1.cloud.cloudnull.dev.local","disabled_reason":null},
+            "service":{"id":"43","host":"compute-1.cloud.cloudnull.dev.local","disabled_reason":null},
             "vcpus":16,
             "memory_mb":63987,
             "local_gb":499,

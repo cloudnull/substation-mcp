@@ -283,7 +283,7 @@ public struct NovaFake {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
             return Self.jsonResponse(status: .ok, body: """
-            {"hypervisors":[{"id":1,"hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":1,"host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
+            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
             """)
         }
 
@@ -296,7 +296,7 @@ public struct NovaFake {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
             return Self.jsonResponse(status: .ok, body: """
-            {"hypervisors":[{"id":1,"hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":1,"host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
+            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
             """)
         }
 
@@ -310,7 +310,7 @@ public struct NovaFake {
             }
             let host = ctx.parameters.get("host") ?? ""
             return Self.jsonResponse(status: .ok, body: """
-            {"hypervisor":{"id":1,"hypervisor_hostname":"\(host)","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":1,"host":"\(host)","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}}
+            {"hypervisor":{"id":"1","hypervisor_hostname":"\(host)","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"\(host)","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}}
             """)
         }
 
