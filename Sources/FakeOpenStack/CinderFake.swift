@@ -164,11 +164,12 @@ public struct CinderFake {
 
         // MARK: - Volume Types
 
-        router.get("\(base)/volume-types") { req, _ in
+        router.get("\(base)/:projectId/volume-types") { req, ctx in
             guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            _ = ctx.parameters.get("projectId")
             let types = await state.listVolumeTypes()
             let items = types.map { Self.volumeTypeJSON($0) }.joined(separator: ",")
             return Self.jsonResponse(status: .ok, body: """
@@ -176,11 +177,12 @@ public struct CinderFake {
             """)
         }
 
-        router.get("\(base)/volume-types/:id") { req, ctx in
+        router.get("\(base)/:projectId/volume-types/:id") { req, ctx in
             guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            _ = ctx.parameters.get("projectId")
             let id = ctx.parameters.get("id") ?? ""
             guard let vt = await state.getVolumeType(id: id) else {
                 return Self.itemNotFound(message: "Volume type \(id) could not be found.")
@@ -190,11 +192,12 @@ public struct CinderFake {
             """)
         }
 
-        router.post("\(base)/volume-types") { req, _ in
+        router.post("\(base)/:projectId/volume-types") { req, ctx in
             guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            _ = ctx.parameters.get("projectId")
             let body = try await Self.readBody(req)
             let vtBody = Self.objectForKey("volumeType", in: body) ?? body
             let name = Self.extractString("name", from: vtBody) ?? "new-type"
@@ -204,11 +207,12 @@ public struct CinderFake {
             """)
         }
 
-        router.delete("\(base)/volume-types/:id") { req, ctx in
+        router.delete("\(base)/:projectId/volume-types/:id") { req, ctx in
             guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            _ = ctx.parameters.get("projectId")
             let id = ctx.parameters.get("id") ?? ""
             guard await state.deleteVolumeType(id: id) else {
                 return Self.itemNotFound(message: "Volume type \(id) could not be found.")

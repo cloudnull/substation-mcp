@@ -202,7 +202,8 @@ public struct BlockStorageRegion: Sendable {
 
     public func listVolumeTypes(_ vt: ValidatedToken) async throws -> [VolumeType] {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volume-types", extraHeaders: versionHeader)
+        let projectID = vt.token.project.id
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/volume-types", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -212,7 +213,8 @@ public struct BlockStorageRegion: Sendable {
 
     public func getVolumeType(_ vt: ValidatedToken, id: String) async throws -> VolumeType {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/volume-types/\(id)", extraHeaders: versionHeader)
+        let projectID = vt.token.project.id
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/volume-types/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -222,7 +224,8 @@ public struct BlockStorageRegion: Sendable {
 
     public func createVolumeType(_ vt: ValidatedToken, _ spec: CreateVolumeTypeSpec) async throws -> VolumeType {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/volume-types", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
+        let projectID = vt.token.project.id
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(projectID)/volume-types", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -232,7 +235,8 @@ public struct BlockStorageRegion: Sendable {
 
     public func deleteVolumeType(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/volume-types/\(id)", extraHeaders: versionHeader)
+        let projectID = vt.token.project.id
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(projectID)/volume-types/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)

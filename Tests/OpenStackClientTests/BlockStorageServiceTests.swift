@@ -242,6 +242,28 @@ struct BlockStorageServiceTests {
         #expect(types.contains(where: { $0.name == "lvmdriver-1" }))
     }
 
+    @Test("volume types path is project-scoped (Cinder v3)", .timeLimit(.minutes(2)))
+    func volumeTypesPathIsProjectScoped() async throws {
+        let (handle, vt, blockStorage, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // Pin the URL contract: Cinder v3 serves volume types only under the
+        // project-scoped path GET /v3/{project_id}/volume-types. The unscoped
+        // path returns 404 on real clouds, so the client must embed the
+        // project id in the path. The fake rejects the unscoped route, so a
+        // regression to /cinder/v3/volume-types 404s and the call throws.
+        let region = blockStorage.region("RegionOne")
+        let projectID = vt.token.project.id
+        #expect(!projectID.isEmpty, "token must carry a project id")
+
+        do {
+            let types = try await region.listVolumeTypes(vt)
+            #expect(types.count >= 1)
+        } catch {
+            Issue.record("Project-scoped volume-types list should succeed, got: \(error)")
+        }
+    }
+
     @Test("create and delete volume type", .timeLimit(.minutes(2)))
     func createDeleteVolumeType() async throws {
         let (handle, vt, blockStorage, _, _, transport) = try await makeSetup()
