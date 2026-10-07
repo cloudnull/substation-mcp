@@ -566,6 +566,34 @@ public struct ComputeRegion: Sendable {
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
     }
 
+    /// List a server's interface attachments (`GET /servers/{id}/os-interface`).
+    public func listServerInterfaces(_ vt: ValidatedToken, serverID: String) async throws -> [ServerInterface] {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/\(serverID)/os-interface")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct InterfaceList: Decodable {
+            let interfaceAttachments: [ServerInterface]
+        }
+        let decoded = try JSONDecoder().decode(InterfaceList.self, from: result.body)
+        return decoded.interfaceAttachments
+    }
+
+    // MARK: - Volume attachments (list)
+
+    /// List a server's volume attachments (`GET /servers/{id}/os-volumes`).
+    public func listServerVolumeAttachments(_ vt: ValidatedToken, serverID: String) async throws -> [ServerVolumeAttachment] {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/servers/\(serverID)/os-volumes")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct VolumeAttachmentList: Decodable {
+            let volumeAttachment: [ServerVolumeAttachment]
+        }
+        let decoded = try JSONDecoder().decode(VolumeAttachmentList.self, from: result.body)
+        return decoded.volumeAttachment
+    }
+
     // MARK: - Update server
 
     public func updateServer(

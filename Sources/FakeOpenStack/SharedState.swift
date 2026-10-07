@@ -903,6 +903,25 @@ public actor FakeState {
         return true
     }
 
+    /// List volume attachments for a server (mimics Nova os-volumes).
+    /// Nova's os-volumes shape has volumeId + device; the volume id doubles
+    /// as the attachment's own id here (the fake does not track separate
+    /// attachment ids for listing).
+    public func listServerVolumeAttachments(serverID: String, projectID: String) -> [FakeVolumeAttachment] {
+        volumes
+            .filter { $0.projectID == projectID }
+            .flatMap { vol in
+                vol.attachments
+                    .filter { $0.serverID == serverID }
+                    .map { FakeVolumeAttachment(id: vol.id, serverID: serverID, volumeID: vol.id, device: $0.device) }
+            }
+    }
+
+    /// List interfaces (ports) attached to a server (mimics Nova os-interface).
+    public func listServerInterfaces(serverID: String, projectID: String) -> [FakePort] {
+        ports.filter { $0.projectID == projectID && $0.deviceID == serverID && $0.deviceOwner == "compute:nova" }
+    }
+
     /// Attach an interface to a server (mimics Nova os-interface-attach).
     /// Returns the port id.
     @discardableResult
@@ -1224,6 +1243,17 @@ public actor FakeState {
             created: "2026-01-01T00:00:00.000"
         ))
         volumeAttachments["att-001"] = (serverID: "srv-0001", volumeID: "vol-001", device: "/dev/vdb", status: "attached")
+        // Mirror the attachment into the volume's attachment list so the
+        // os-volumes list endpoint (which reads volume.attachments) reports
+        // it for srv-0001.
+        if let vIdx = volumes.firstIndex(where: { $0.id == "vol-001" && $0.projectID == "proj-one" }) {
+            volumes[vIdx].attachments.append(FakeVolumeAttachment(
+                id: "att-001",
+                serverID: "srv-0001",
+                volumeID: "vol-001",
+                device: "/dev/vdb"
+            ))
+        }
 
         // Dedicated network + port seeds used by the compute client tests.
         networks.append(FakeNetwork(

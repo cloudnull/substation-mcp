@@ -569,6 +569,86 @@ public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
     }
 }
 
+// MARK: - Interface attachments (os-interface)
+
+/// A fixed IP on an attached interface.
+public struct FixedIPRef: Sendable, Codable {
+    public var subnetID: String
+    public var ipAddress: String
+
+    public init(subnetID: String, ipAddress: String) {
+        self.subnetID = subnetID
+        self.ipAddress = ipAddress
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case subnetID = "subnet_id"
+        case ipAddress = "ip_address"
+    }
+}
+
+/// A server interface attachment (Nova `os-interface`).
+public struct ServerInterface: Sendable, Codable, Identifiable {
+    /// The attachment's identity is its port ID (Nova returns no
+    /// per-attachment id for interfaces).
+    public var id: String { portID }
+    public let netID: String
+    public let portID: String
+    public var macAddr: String
+    public var portState: String
+    public var fixedIPs: [FixedIPRef]
+
+    public init(netID: String = "", portID: String = "", macAddr: String = "", portState: String = "", fixedIPs: [FixedIPRef] = []) {
+        self.netID = netID
+        self.portID = portID
+        self.macAddr = macAddr
+        self.portState = portState
+        self.fixedIPs = fixedIPs
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case netID = "net_id"
+        case portID = "port"
+        case macAddr = "mac_addr"
+        case portState = "port_state"
+        case fixedIPs = "fixed_ips"
+    }
+}
+
+// MARK: - Volume attachments (os-volumes)
+
+/// A volume attached to a server (Nova `os-volumes`).
+public struct ServerVolumeAttachment: Sendable, Codable, Identifiable {
+    /// The attachment's identity is its volume ID (Nova returns no
+    /// per-attachment id for volume attachments).
+    public var id: String { volumeID }
+    public let volumeID: String
+    public var serverID: String?
+    public var devicePath: String?
+    public var status: String?
+    public var bootloader: String?
+    public var readOnly: Bool?
+
+    public init(volumeID: String, serverID: String? = nil, devicePath: String? = nil, status: String? = nil, bootloader: String? = nil, readOnly: Bool? = nil) {
+        self.volumeID = volumeID
+        self.serverID = serverID
+        self.devicePath = devicePath
+        self.status = status
+        self.bootloader = bootloader
+        self.readOnly = readOnly
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case volumeID = "volumeId"
+        case serverID = "serverId"
+        case devicePath = "devicePath"
+        case status, bootloader
+        case readOnly = "readOnly"
+    }
+}
+
+// MARK: - Quotas
+
 /// Quota set.
 public struct QuotaSet: Sendable, Codable {
     public var projectID: String?

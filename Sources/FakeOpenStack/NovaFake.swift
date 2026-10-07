@@ -387,6 +387,51 @@ public struct NovaFake {
             return Self.jsonResponse(status: .accepted, body: "")
         }
 
+        // MARK: - List interface attachments (GET /servers/:id/os-interface)
+
+        router.get("/nova/servers/:id/os-interface") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            let serverID = ctx.parameters.get("id") ?? ""
+            guard await state.getServer(id: serverID, projectID: token.projectID) != nil else {
+                return Self.novaError(status: .notFound, message: "server not found")
+            }
+            let ifaces = await state.listServerInterfaces(serverID: serverID, projectID: token.projectID)
+            let items = ifaces.map { port -> String in
+                let fixed = port.fixedIPs.map { fip -> String in
+                    "{\"subnet_id\":\"\(fip.subnetID)\",\"ip_address\":\"\(fip.ip)\"}"
+                }.joined(separator: ",")
+                let hex = port.id
+                    .replacingOccurrences(of: "-", with: "")
+                    .prefix(8)
+                    .map { String(format: "%02x", $0.asciiValue ?? 0) }
+                    .joined(separator: ":")
+                let mac = "fa:16:3e:\(hex)"
+                return "{\"net_id\":\"\(port.networkID)\",\"port\":\"\(port.id)\",\"mac_addr\":\"\(mac)\",\"port_state\":\"ACTIVE\",\"fixed_ips\":[\(fixed)]}"
+            }
+            return Self.jsonResponse(status: .ok, body: "{\"interfaceAttachments\":[\(items.joined(separator: ","))]}")
+        }
+
+        // MARK: - List volume attachments (GET /servers/:id/os-volumes)
+
+        router.get("/nova/servers/:id/os-volumes") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            let serverID = ctx.parameters.get("id") ?? ""
+            guard await state.getServer(id: serverID, projectID: token.projectID) != nil else {
+                return Self.novaError(status: .notFound, message: "server not found")
+            }
+            let vols = await state.listServerVolumeAttachments(serverID: serverID, projectID: token.projectID)
+            let items = vols.map { vol -> String in
+                "{\"volumeId\":\"\(vol.volumeID)\",\"serverId\":\"\(serverID)\",\"devicePath\":\"\(vol.device)\",\"status\":\"attached\",\"bootloader\":null,\"readOnly\":false}"
+            }
+            return Self.jsonResponse(status: .ok, body: "{\"volumeAttachment\":[\(items.joined(separator: ","))]}")
+        }
+
         // MARK: - Update server (POST /servers/:id)
 
         router.post("/nova/servers/:id") { req, ctx in

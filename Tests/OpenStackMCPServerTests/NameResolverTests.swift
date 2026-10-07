@@ -125,4 +125,143 @@ struct NameResolverTests {
         let result = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "ext-net", region: "RegionOne")
         #expect(result.id == "net-ext", "Expected net-ext, got \(result.id)")
     }
+
+    // MARK: - Catalog-gap resource lists (T2)
+
+    @Test("address_group list returns 200 (items array)", .timeLimit(.minutes(2)))
+    func addressGroupList() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("address_group")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "address_group")
+        #expect(result["region"]?.stringValue == "RegionOne")
+        #expect(result["items"]?.arrayValue != nil, "items should be an array")
+        #expect(result["count"]?.intValue != nil)
+    }
+
+    @Test("volume_quota list returns the project quota wrapped in a 1-item list", .timeLimit(.minutes(2)))
+    func volumeQuotaList() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("volume_quota")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "volume_quota")
+        let items = result["items"]?.arrayValue ?? []
+        #expect(items.count == 1, "volume_quota should be wrapped in a single-element list, got \(items.count)")
+        let first = items.first?.objectValue ?? [:]
+        #expect(first["volumes"]?.intValue == 10)
+        #expect(first["gigabytes"]?.intValue == 1000)
+        #expect(first["snapshots"]?.intValue == 10)
+    }
+
+    @Test("compute_quota list returns the project quota wrapped in a 1-item list", .timeLimit(.minutes(2)))
+    func computeQuotaList() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("compute_quota")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "compute_quota")
+        let items = result["items"]?.arrayValue ?? []
+        #expect(items.count == 1, "compute_quota should be wrapped in a single-element list, got \(items.count)")
+        let first = items.first?.objectValue ?? [:]
+        #expect(first["instances"]?.intValue == 10)
+        #expect(first["cores"]?.intValue == 20)
+        #expect(first["ram"]?.intValue == 51200)
+    }
+
+    @Test("server_interface list flattens per-server interfaces", .timeLimit(.minutes(2)))
+    func serverInterfaceList() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("server_interface")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "server_interface")
+        let items = result["items"]?.arrayValue ?? []
+        // The fake seeds srv-0001 with port-002 attached to compute:nova,
+        // so the flattened list carries at least that one interface.
+        #expect(items.count >= 1, "Expected at least 1 interface, got \(items.count)")
+        let first = items.first?.objectValue ?? [:]
+        #expect(first["port"]?.stringValue != nil, "interface item should have a port id")
+        #expect(first["net_id"]?.stringValue != nil, "interface item should have a net_id")
+    }
+
+    @Test("server_volume_attachment list flattens per-server volume attachments", .timeLimit(.minutes(2)))
+    func serverVolumeAttachmentList() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("server_volume_attachment")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "server_volume_attachment")
+        let items = result["items"]?.arrayValue ?? []
+        // The fake seeds srv-0001 with one attachment (vol-001), so the
+        // flattened list carries at least that one attachment.
+        #expect(items.count >= 1, "Expected at least 1 volume attachment, got \(items.count)")
+        let first = items.first?.objectValue ?? [:]
+        #expect(first["volumeId"]?.stringValue != nil, "attachment item should have volumeId")
+        #expect(first["serverId"]?.stringValue != nil, "attachment item should have serverId")
+    }
+
+    // MARK: - Catalog-gap resource gets (T2)
+
+    @Test("volume_quota get returns the project quota", .timeLimit(.minutes(2)))
+    func volumeQuotaGet() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // Project id for the fake admin token.
+        let descriptor = ResourceCatalog.phase1().descriptor("volume_quota")!
+        let result = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "proj-one", region: "RegionOne")
+        #expect(result.id == "proj-one")
+        #expect(result.raw["volumes"]?.intValue == 10)
+        #expect(result.raw["gigabytes"]?.intValue == 1000)
+        #expect(result.raw["snapshots"]?.intValue == 10)
+    }
+
+    @Test("compute_quota get returns the project quota", .timeLimit(.minutes(2)))
+    func computeQuotaGet() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("compute_quota")!
+        let result = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "proj-one", region: "RegionOne")
+        #expect(result.id == "proj-one")
+        #expect(result.raw["instances"]?.intValue == 10)
+        #expect(result.raw["cores"]?.intValue == 20)
+        #expect(result.raw["ram"]?.intValue == 51200)
+    }
+
+    @Test("address_group get by id returns the group", .timeLimit(.minutes(2)))
+    func addressGroupGet() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // Create an address group through the resolver's create path so we
+        // have a known id to resolve.
+        let createDescriptor = ResourceCatalog.phase1().descriptor("address_group")!
+        let created = try await resolver.createPublic(
+            vt,
+            descriptor: createDescriptor,
+            body: .object([
+                "name": .string("test-ag"),
+                "description": .string("created in test"),
+                "ip_addresses": .array([.string("10.0.0.0/24")]),
+            ]),
+            region: "RegionOne"
+        )
+        let agID = created["id"]?.stringValue
+        #expect(agID != nil, "created address group should have an id")
+        #expect(created["name"]?.stringValue == "test-ag")
+
+        // Now resolve by id and verify we get the same group back.
+        let descriptor = ResourceCatalog.phase1().descriptor("address_group")!
+        let resolved = try await resolver.resolve(vt, descriptor: descriptor, idOrName: agID!, region: "RegionOne")
+        #expect(resolved.id == agID)
+        #expect(resolved.raw["name"]?.stringValue == "test-ag")
+    }
 }

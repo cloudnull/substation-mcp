@@ -146,6 +146,63 @@ public actor NameResolver {
                     throw OpenStackError(service: "compute", status: 404, code: "itemNotFound", message: "Keypair '\(id)' not found")
                 }
                 return try Self.encodeObject(k)
+            case "compute_quota":
+                // Project-scoped; the quota set's id is the project id, so
+                // the requested id is honored only as a project sanity check.
+                let q = try await r.getQuotaSet(vt)
+                var result = try Self.encodeObject(q)
+                result["id"] = .string(id)
+                return result
+            case "server_interface":
+                // Server-scoped. The id is a port id; optionally narrow to a
+                // single server by passing the server id as the id.
+                let matches: [ServerInterface]
+                if let ifaces = try? await r.listServerInterfaces(vt, serverID: id) {
+                    matches = ifaces
+                } else {
+                    // Not a server id: scan every server for the port id.
+                    let servers = try await r.listServers(vt)
+                    var found: [ServerInterface] = []
+                    for s in servers {
+                        if let ifaces = try? await r.listServerInterfaces(vt, serverID: s.id),
+                           let match = ifaces.first(where: { $0.portID == id }) {
+                            found.append(match)
+                        }
+                    }
+                    matches = found
+                }
+                guard let match = matches.first else {
+                    throw OpenStackError(service: "compute", status: 404, code: "itemNotFound", message: "Interface '\(id)' not found")
+                }
+                if matches.count > 1 {
+                    throw AmbiguousNameError(candidates: matches.map { (id: $0.portID, name: $0.portID) })
+                }
+                return try Self.encodeObject(match)
+            case "server_volume_attachment":
+                // Server-scoped. The id is a volume id; optionally narrow to a
+                // single server by passing the server id as the id.
+                let matches: [ServerVolumeAttachment]
+                if let vols = try? await r.listServerVolumeAttachments(vt, serverID: id) {
+                    matches = vols
+                } else {
+                    // Not a server id: scan every server for the volume id.
+                    let servers = try await r.listServers(vt)
+                    var found: [ServerVolumeAttachment] = []
+                    for s in servers {
+                        if let vols = try? await r.listServerVolumeAttachments(vt, serverID: s.id),
+                           let match = vols.first(where: { $0.volumeID == id }) {
+                            found.append(match)
+                        }
+                    }
+                    matches = found
+                }
+                guard let match = matches.first else {
+                    throw OpenStackError(service: "compute", status: 404, code: "itemNotFound", message: "Volume attachment for '\(id)' not found")
+                }
+                if matches.count > 1 {
+                    throw AmbiguousNameError(candidates: matches.map { (id: $0.volumeID, name: $0.volumeID) })
+                }
+                return try Self.encodeObject(match)
             default:
                 throw OpenStackError(service: "compute", status: 404, message: "Unknown compute resource: \(descriptor.name)")
             }
@@ -170,6 +227,9 @@ public actor NameResolver {
             case "security_group":
                 let sg = try await r.getSecurityGroup(vt, id: id)
                 return try Self.encodeObject(sg)
+            case "address_group":
+                let ag = try await r.getAddressGroup(vt, id: id)
+                return try Self.encodeObject(ag)
             default:
                 throw OpenStackError(service: "network", status: 404, message: "Unknown network resource: \(descriptor.name)")
             }
@@ -188,6 +248,13 @@ public actor NameResolver {
             case "volume_backup":
                 let b = try await r.getBackup(vt, id: id)
                 return try Self.encodeObject(b)
+            case "volume_quota":
+                // Project-scoped; the quota has no per-item id, so echo the
+                // requested id back for consistency with the resolve() contract.
+                let q = try await r.getQuota(vt)
+                var result = try Self.encodeObject(q)
+                result["id"] = .string(id)
+                return result
             default:
                 throw OpenStackError(service: "volumev3", status: 404, message: "Unknown volume resource: \(descriptor.name)")
             }
@@ -369,6 +436,40 @@ public actor NameResolver {
                 result["resource"] = .string("compute_service")
                 result["region"] = .string(region)
                 return result
+            case "server_interface":
+                // Per-server resource: flatten interfaces across all
+                // servers (optionally narrowed by a server_id filter).
+                let servers = try await r.listServers(vt, filters: filters, limit: limit)
+                var all: [ServerInterface] = []
+                for s in servers {
+                    if let ifaces = try? await r.listServerInterfaces(vt, serverID: s.id) {
+                        all.append(contentsOf: ifaces)
+                    }
+                }
+                var result: [String: JSONValue] = try Self.encodeList(all)
+                result["resource"] = .string("server_interface")
+                result["region"] = .string(region)
+                return result
+            case "server_volume_attachment":
+                // Per-server resource: flatten volume attachments across all
+                // servers (optionally narrowed by a server_id filter).
+                let servers = try await r.listServers(vt, filters: filters, limit: limit)
+                var all: [ServerVolumeAttachment] = []
+                for s in servers {
+                    if let vols = try? await r.listServerVolumeAttachments(vt, serverID: s.id) {
+                        all.append(contentsOf: vols)
+                    }
+                }
+                var result: [String: JSONValue] = try Self.encodeList(all)
+                result["resource"] = .string("server_volume_attachment")
+                result["region"] = .string(region)
+                return result
+            case "compute_quota":
+                let q = try await r.getQuotaSet(vt)
+                var result: [String: JSONValue] = try Self.encodeList([q])
+                result["resource"] = .string("compute_quota")
+                result["region"] = .string(region)
+                return result
             default:
                 throw OpenStackError(service: "compute", status: 404, message: "Unknown compute resource: \(descriptor.name)")
             }
@@ -417,6 +518,12 @@ public actor NameResolver {
                 result["resource"] = .string("security_group_rule")
                 result["region"] = .string(region)
                 return result
+            case "address_group":
+                let ags = try await r.listAddressGroups(vt)
+                var result: [String: JSONValue] = try Self.encodeList(ags)
+                result["resource"] = .string("address_group")
+                result["region"] = .string(region)
+                return result
             default:
                 throw OpenStackError(service: "network", status: 404, message: "Unknown network resource: \(descriptor.name)")
             }
@@ -445,6 +552,12 @@ public actor NameResolver {
                 let bks = try await r.listBackups(vt, filters: filters, limit: limit)
                 var result: [String: JSONValue] = try Self.encodeList(bks)
                 result["resource"] = .string("volume_backup")
+                result["region"] = .string(region)
+                return result
+            case "volume_quota":
+                let q = try await r.getQuota(vt)
+                var result: [String: JSONValue] = try Self.encodeList([q])
+                result["resource"] = .string("volume_quota")
                 result["region"] = .string(region)
                 return result
             default:
@@ -705,6 +818,18 @@ public actor NameResolver {
                     remoteIPPrefix: obj["remote_ip_prefix"]?.stringValue
                 )
                 return try Self.encodeObject(rule)
+            case "address_group":
+                let name = obj["name"]?.stringValue
+                guard let name else {
+                    throw OpenStackError(service: "network", status: 400, message: "Address group create requires name")
+                }
+                let spec = CreateAddressGroupSpec(
+                    name: name,
+                    description: obj["description"]?.stringValue ?? "",
+                    addresses: obj["ip_addresses"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                )
+                let ag = try await r.createAddressGroup(vt, spec)
+                return try Self.encodeObject(ag)
             default:
                 throw OpenStackError(service: "network", status: 400, message: "Unknown network create: \(descriptor.name)")
             }
