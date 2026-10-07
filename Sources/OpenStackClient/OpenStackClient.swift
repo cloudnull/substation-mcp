@@ -143,6 +143,13 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Placement client (per-host resource provider inventory —
+    /// the authoritative GPU/RAM/vCPU source).
+    public func placement(region: String? = nil) -> PlacementRegion {
+        PlacementService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

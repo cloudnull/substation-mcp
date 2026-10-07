@@ -62,10 +62,12 @@ struct CatalogCompletenessTests {
             "stack",
             // Shared file systems (2) — phase 2
             "share", "share_access",
+            // Placement (1)
+            "placement",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 51, "Expected 51 resources (10+10+9+5+1+2+2+5+2+2+1+2), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 52, "Expected 52 resources (10+10+9+5+1+2+2+5+2+2+1+2+1), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)

@@ -719,6 +719,34 @@ public actor FakeState {
             self.state = state
         }
     }
+
+    // MARK: - Placement (resource providers) fake state
+
+    /// A fake Placement resource provider: the per-host inventory entry.
+    /// `name` is the provider name (real clouds use `compute://<host>`).
+    public struct FakePlacementResourceProvider: Sendable, Identifiable {
+        public let uuid: String
+        public var name: String
+        public var generation: Int
+        public var traits: [String]
+        /// Total capacity per resource class (VCPU, MEMORY_MB, DISK_GB, ...).
+        public var inventory: [String: Int]
+        /// Allocated amount per resource class.
+        public var usages: [String: Int]
+
+        public init(uuid: String, name: String, generation: Int = 1, traits: [String] = [], inventory: [String: Int] = [:], usages: [String: Int] = [:]) {
+            self.uuid = uuid
+            self.name = name
+            self.generation = generation
+            self.traits = traits
+            self.inventory = inventory
+            self.usages = usages
+        }
+
+        public var id: String { uuid }
+    }
+
+    public private(set) var resourceProviders: [FakePlacementResourceProvider] = []
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -1366,6 +1394,28 @@ public actor FakeState {
         shares.append(FakeShare(id: "share-1", projectID: "proj-one", name: "fake-share", status: "available", shareSize: 10, shareType: "generic", isPublic: false))
         shareAccessIDCounter = 1
         shareAccesses.append(FakeShareAccess(id: "sa-1", projectID: "proj-one", shareID: "share-1", accessTo: "10.0.0.0/24", accessType: "ip", accessProtocol: "nfs", state: "accessible"))
+
+        // Placement (resource providers) seed: two providers — one bare
+        // compute host and one GPU host. Real clouds name providers
+        // `compute://<host>`; the fake uses that shape so the client's
+        // name-correlation logic (provider name vs server hostId) is testable.
+        resourceProviders = [
+            FakePlacementResourceProvider(
+                uuid: "rp-0001",
+                name: "compute://fake-host-1",
+                generation: 3,
+                inventory: ["VCPU": 16, "MEMORY_MB": 65536, "DISK_GB": 512],
+                usages: ["VCPU": 4, "MEMORY_MB": 8192, "DISK_GB": 61]
+            ),
+            FakePlacementResourceProvider(
+                uuid: "rp-0002",
+                name: "compute://fake-gpu-host-1",
+                generation: 1,
+                traits: ["GPU", "NVIDIA:A100"],
+                inventory: ["VCPU": 8, "MEMORY_MB": 32768, "DISK_GB": 256, "GPU": 2],
+                usages: ["VCPU": 2, "MEMORY_MB": 4096, "DISK_GB": 20, "GPU": 1]
+            ),
+        ]
 
         // Keystone identity bootstrap: the standard domains + roles that every
         // OpenStack cloud ships with, so provisioning tests are realistic.
@@ -2902,5 +2952,31 @@ public actor FakeState {
         guard let idx else { return false }
         shareAccesses.remove(at: idx)
         return true
+    }
+
+    // MARK: - Placement (resource providers) CRUD
+
+    /// Resource providers are not project-scoped in real Placement (an admin
+    /// sees all of them), so the fake ignores the project and returns every
+    /// seeded provider. `name` is an exact-match filter (real Placement
+    /// semantics).
+    public func listResourceProviders(name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakePlacementResourceProvider] {
+        var result = resourceProviders
+        if let name { result = result.filter { $0.name == name } }
+        if let marker, let idx = result.firstIndex(where: { $0.uuid == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getResourceProvider(uuid: String) -> FakePlacementResourceProvider? {
+        resourceProviders.first { $0.uuid == uuid }
+    }
+
+    public func resourceProviderInventories(uuid: String) -> [String: Int]? {
+        getResourceProvider(uuid: uuid)?.inventory
+    }
+
+    public func resourceProviderUsages(uuid: String) -> [String: Int]? {
+        getResourceProvider(uuid: uuid)?.usages
     }
 }

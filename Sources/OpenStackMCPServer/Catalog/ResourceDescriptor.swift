@@ -14,6 +14,7 @@ public enum Service: String, Sendable, CaseIterable, Codable {
     case containerInfra
     case orchestration
     case sharev2
+    case placement
 }
 
 extension Service {
@@ -38,6 +39,7 @@ extension Service {
         case .containerInfra: "container-infra"
         case .orchestration: "orchestration"
         case .sharev2: "sharev2"
+        case .placement: "placement"
         }
     }
 

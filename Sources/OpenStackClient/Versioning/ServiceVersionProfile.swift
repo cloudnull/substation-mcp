@@ -74,7 +74,7 @@ extension ServiceVersionProfile {
                 headerValue: { "volume \($0.major).\($0.minor)" }
             )
         case "image", "network", "load-balancer", "key-manager", "container-infra",
-             "orchestration", "object-store", "dns", "sharev2":
+             "orchestration", "object-store", "dns", "sharev2", "placement":
             // Version-unit only; no microversion header.
             return ServiceVersionProfile(serviceType: serviceType, clientMax: Microversion(major: 1, minor: 0))
         default:

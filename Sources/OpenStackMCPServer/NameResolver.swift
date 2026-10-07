@@ -386,6 +386,27 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "sharev2", status: 404, message: "Unknown share resource: \(descriptor.name)")
             }
+        case .placement:
+            let r = await client.placement(region: region)
+            switch descriptor.name {
+            case "placement":
+                // The id is the resource provider's uuid. Merge the provider
+                // with its inventories (totals) and usages (allocated) so a
+                // single os_get call returns the host's full inventory.
+                let rp = try await r.getResourceProvider(vt, uuid: id)
+                var obj = try Self.encodeObject(rp)
+                if let inv = try? await r.getInventories(vt, uuid: id) {
+                    let invObj = try Self.encodeObject(inv)
+                    obj["inventory"] = invObj["resources"] ?? .object(invObj)
+                }
+                if let usg = try? await r.getUsages(vt, uuid: id) {
+                    let usgObj = try Self.encodeObject(usg)
+                    obj["usages"] = usgObj["resources"] ?? .object(usgObj)
+                }
+                return obj
+            default:
+                throw OpenStackError(service: "placement", status: 404, message: "Unknown placement resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -730,6 +751,18 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "sharev2", status: 404, message: "Unknown share resource: \(descriptor.name)")
             }
+        case .placement:
+            let r = await client.placement(region: region)
+            switch descriptor.name {
+            case "placement":
+                let nameFilter = filters["name"]
+                let rps = try await r.listResourceProviders(vt, name: nameFilter, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(rps)
+                result["resource"] = .string("placement"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "placement", status: 404, message: "Unknown placement resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -1045,6 +1078,11 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "sharev2", status: 400, message: "Unknown share create: \(descriptor.name)")
             }
+        case .placement:
+            // Resource providers are host-scoped and not creatable via this
+            // MCP surface (the Placement API only allows it as an admin with
+            // generation control).
+            throw OpenStackError(service: "placement", status: 400, message: "Placement resource providers are not creatable (host-scoped, admin-only)")
         }
     }
 
@@ -1115,6 +1153,10 @@ public actor NameResolver {
         case .sharev2:
             // Manila shares/access are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "sharev2", status: 501, message: "Share resources are not updatable (re-create instead)")
+        case .placement:
+            // Resource provider inventory is reported by the hypervisor agent
+            // and cannot be updated through this MCP surface.
+            throw OpenStackError(service: "placement", status: 501, message: "Placement resource providers are not updatable (inventory is agent-reported)")
         }
     }
 
@@ -1259,6 +1301,10 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "sharev2", status: 400, message: "Unknown share delete: \(descriptor.name)")
             }
+        case .placement:
+            // Deleting a resource provider is an admin operation that detaches
+            // live hosts from the scheduler; not exposed through this surface.
+            throw OpenStackError(service: "placement", status: 400, message: "Placement resource providers are not deletable through this surface")
         }
         return ["deleted": .bool(true), "id": .string(id)]
     }
@@ -1458,6 +1504,9 @@ public actor NameResolver {
         case .sharev2:
             // Manila has no custom actions in phase 2.
             throw OpenStackError(service: "sharev2", status: 501, message: "Share actions not supported")
+        case .placement:
+            // Placement has no custom actions in phase 2.
+            throw OpenStackError(service: "placement", status: 501, message: "Placement actions not supported")
         }
     }
 

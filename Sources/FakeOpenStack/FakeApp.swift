@@ -30,6 +30,7 @@ public enum FakeApp {
         MagnumFake.registerRoutes(router, state: state)
         OrchestrationFake.registerRoutes(router, state: state)
         ManilaFake.registerRoutes(router, state: state)
+        PlacementFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()

@@ -185,6 +185,7 @@ public struct Waiter: Sendable {
         case .containerInfra: return descriptor.name == "cluster"
         case .orchestration: return descriptor.name == "stack"
         case .sharev2: return descriptor.name == "share"
+        case .placement: return false
         }
     }
 
@@ -302,6 +303,9 @@ public struct Waiter: Sendable {
                 return ["status": .string(s.status)]
             }
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
+        case .placement:
+            // Resource providers have no lifecycle status a waiter can poll.
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on placement resources not supported")
         }
     }
 

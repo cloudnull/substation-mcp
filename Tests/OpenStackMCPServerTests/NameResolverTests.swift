@@ -264,4 +264,39 @@ struct NameResolverTests {
         #expect(resolved.id == agID)
         #expect(resolved.raw["name"]?.stringValue == "test-ag")
     }
+
+    // MARK: - Placement (resource provider inventory)
+
+    @Test("os_list placement returns the seeded providers via the resolver", .timeLimit(.minutes(2)))
+    func listPlacement() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("placement")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: [:], limit: nil, marker: nil, region: "RegionOne")
+        #expect(result["resource"]?.stringValue == "placement")
+        #expect(result["region"]?.stringValue == "RegionOne")
+        let items = result["items"]?.arrayValue
+        #expect(items?.count == 2, "Expected 2 items, got \(String(describing: items?.count))")
+        #expect(items?.contains(where: { $0.objectValue?["uuid"]?.stringValue == "rp-0001" }) == true)
+    }
+
+    @Test("os_get placement merges provider + inventory + usages", .timeLimit(.minutes(2)))
+    func getPlacement() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("placement")!
+        let result = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "rp-0002", region: "RegionOne")
+        #expect(result.id == "rp-0002")
+        #expect(result.raw["name"]?.stringValue == "compute://fake-gpu-host-1")
+        // Merged inventory: open map keyed by resource class.
+        let inventory = result.raw["inventory"]?.objectValue
+        #expect(inventory?["VCPU"]?.objectValue?["total"]?.intValue == 8)
+        #expect(inventory?["GPU"]?.objectValue?["total"]?.intValue == 2)
+        // Merged usages.
+        let usages = result.raw["usages"]?.objectValue
+        #expect(usages?["VCPU"]?.intValue == 2)
+        #expect(usages?["GPU"]?.intValue == 1)
+    }
 }
