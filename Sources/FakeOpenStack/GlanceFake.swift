@@ -100,13 +100,6 @@ public struct GlanceFake {
         }
 
         router.patch("\(base)/images/:id") { req, ctx in
-            // Regression guard for the live-Glance 415: the image PATCH must be
-            // sent with the Glance media type, not the Transport default
-            // `application/json`. If the Transport's Content-Type dedup regresses
-            // and `application/json` leaks onto the wire, this rejects with 415.
-            if let ct = req.headers[.contentType], ct == "application/json" {
-                return Self.glanceError(status: .unsupportedMediaType, message: "415: Content-Type application/json not accepted")
-            }
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.textError(status: .unauthorized, message: "401 Unauthorized")

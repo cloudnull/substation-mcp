@@ -430,21 +430,21 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
     public var hypervisorHostname: String
     public var state: String
     public var status: String
-    public var hypervisorType: String
-    public var hypervisorVersion: Int
-    public var hostIP: String
+    public var hypervisorType: String?
+    public var hypervisorVersion: Int?
+    public var hostIP: String?
     public var service: HypervisorServiceRef?
-    public var vcpus: Int
-    public var memoryMB: Int
-    public var localGB: Int
-    public var vcpusUsed: Int
-    public var memoryMBUsed: Int
-    public var localGBUsed: Int
-    public var freeRAMMB: Int
-    public var freeDiskGB: Int
-    public var currentWorkload: Int
-    public var runningVms: Int
-    public var diskAvailableLeast: Int
+    public var vcpus: Int?
+    public var memoryMB: Int?
+    public var localGB: Int?
+    public var vcpusUsed: Int?
+    public var memoryMBUsed: Int?
+    public var localGBUsed: Int?
+    public var freeRAMMB: Int?
+    public var freeDiskGB: Int?
+    public var currentWorkload: Int?
+    public var runningVms: Int?
+    public var diskAvailableLeast: Int?
     public var cpuInfo: String?
 
     public init(
@@ -452,21 +452,21 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         hypervisorHostname: String = "",
         state: String = "",
         status: String = "",
-        hypervisorType: String = "",
-        hypervisorVersion: Int = 0,
-        hostIP: String = "",
+        hypervisorType: String? = nil,
+        hypervisorVersion: Int? = nil,
+        hostIP: String? = nil,
         service: HypervisorServiceRef? = nil,
-        vcpus: Int = 0,
-        memoryMB: Int = 0,
-        localGB: Int = 0,
-        vcpusUsed: Int = 0,
-        memoryMBUsed: Int = 0,
-        localGBUsed: Int = 0,
-        freeRAMMB: Int = 0,
-        freeDiskGB: Int = 0,
-        currentWorkload: Int = 0,
-        runningVms: Int = 0,
-        diskAvailableLeast: Int = 0,
+        vcpus: Int? = nil,
+        memoryMB: Int? = nil,
+        localGB: Int? = nil,
+        vcpusUsed: Int? = nil,
+        memoryMBUsed: Int? = nil,
+        localGBUsed: Int? = nil,
+        freeRAMMB: Int? = nil,
+        freeDiskGB: Int? = nil,
+        currentWorkload: Int? = nil,
+        runningVms: Int? = nil,
+        diskAvailableLeast: Int? = nil,
         cpuInfo: String? = nil
     ) {
         self.id = id
@@ -489,6 +489,34 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         self.runningVms = runningVms
         self.diskAvailableLeast = diskAvailableLeast
         self.cpuInfo = cpuInfo
+    }
+
+    /// Custom decoder: the Nova `/os-hypervisors` (summary) endpoint returns
+    /// only id/hypervisor_hostname/state/status, while `/os-hypervisors/detail`
+    /// returns all fields. The internal endpoint (used by the MCP pod) may
+    /// return either shape, so all detail fields are optional.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        hypervisorHostname = try c.decodeIfPresent(String.self, forKey: .hypervisorHostname) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        hypervisorType = try c.decodeIfPresent(String.self, forKey: .hypervisorType)
+        hypervisorVersion = try c.decodeIfPresent(Int.self, forKey: .hypervisorVersion)
+        hostIP = try c.decodeIfPresent(String.self, forKey: .hostIP)
+        service = try c.decodeIfPresent(HypervisorServiceRef.self, forKey: .service)
+        vcpus = try c.decodeIfPresent(Int.self, forKey: .vcpus)
+        memoryMB = try c.decodeIfPresent(Int.self, forKey: .memoryMB)
+        localGB = try c.decodeIfPresent(Int.self, forKey: .localGB)
+        vcpusUsed = try c.decodeIfPresent(Int.self, forKey: .vcpusUsed)
+        memoryMBUsed = try c.decodeIfPresent(Int.self, forKey: .memoryMBUsed)
+        localGBUsed = try c.decodeIfPresent(Int.self, forKey: .localGBUsed)
+        freeRAMMB = try c.decodeIfPresent(Int.self, forKey: .freeRAMMB)
+        freeDiskGB = try c.decodeIfPresent(Int.self, forKey: .freeDiskGB)
+        currentWorkload = try c.decodeIfPresent(Int.self, forKey: .currentWorkload)
+        runningVms = try c.decodeIfPresent(Int.self, forKey: .runningVms)
+        diskAvailableLeast = try c.decodeIfPresent(Int.self, forKey: .diskAvailableLeast)
+        cpuInfo = try c.decodeIfPresent(String.self, forKey: .cpuInfo)
     }
 
     enum CodingKeys: String, CodingKey {

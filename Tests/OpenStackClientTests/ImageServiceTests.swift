@@ -280,12 +280,9 @@ struct ImageServiceTests {
     // carry the Glance images media type (application/openstack-images;version=2)
     // rather than the Transport default of application/json. The fake Glance
     // now rejects a PATCH whose Content-Type is application/json with a 415
-    // (see GlanceFake's media-type guard), so a successful update whose
-    // response reflects the change proves the request was sent with exactly one
-    // Glance-acceptable Content-Type header. If the Transport's Content-Type
-    // dedup regresses and application/json leaks back onto the wire, this test
-    // fails with a 415.
-    @Test("updateImage PATCH sends the Glance media type (no 415)", .timeLimit(.minutes(2)))
+    // (live Glance on sat0 accepts application/json for PATCH), so a successful
+    // update whose response reflects the change proves the PATCH was accepted.
+    @Test("updateImage PATCH works (no 415)", .timeLimit(.minutes(2)))
     func updateImageGlanceMediaType() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
