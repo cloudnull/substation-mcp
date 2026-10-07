@@ -279,9 +279,12 @@ struct ImageServiceTests {
     // Regression test for the live-Glance 415 fix: updateImage's PATCH must
     // carry the Glance images media type (application/openstack-images;version=2)
     // rather than the Transport default of application/json. The fake Glance
-    // accepts the media type and applies the update, so a successful PATCH
-    // whose response reflects the change proves the request was sent with a
-    // Glance-acceptable Content-Type.
+    // now rejects a PATCH whose Content-Type is application/json with a 415
+    // (see GlanceFake's media-type guard), so a successful update whose
+    // response reflects the change proves the request was sent with exactly one
+    // Glance-acceptable Content-Type header. If the Transport's Content-Type
+    // dedup regresses and application/json leaks back onto the wire, this test
+    // fails with a 415.
     @Test("updateImage PATCH sends the Glance media type (no 415)", .timeLimit(.minutes(2)))
     func updateImageGlanceMediaType() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()

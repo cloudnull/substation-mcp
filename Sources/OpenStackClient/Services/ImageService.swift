@@ -138,9 +138,10 @@ public struct ImageRegion: Sendable {
 
         // Glance v2 PATCH expects the images media type, not application/json:
         // live Glance rejects `Content-Type: application/json` with HTTP 415
-        // (Unsupported Media Type). The Transport sends `application/json` by
-        // default; overriding it here so both Content-Type headers carry the
-        // Glance media type.
+        // (Unsupported Media Type). The Transport adds a default
+        // `application/json` Content-Type only when the caller does not
+        // supply one, so this extraHeader is the sole Content-Type header and
+        // carries the Glance media type.
         let result = try await req(vt, region, method: "PATCH", path: "\(basePath)/images/\(id)", body: body.data(using: .utf8), extraHeaders: [("Content-Type", "application/openstack-images;version=2")])
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)

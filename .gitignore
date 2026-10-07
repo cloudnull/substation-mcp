@@ -9,3 +9,4 @@ xcuserdata/
 .opencode/
 .openstack-credentials.md
 dist/
+.validation-plan.md

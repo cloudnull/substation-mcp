@@ -193,7 +193,13 @@ public actor Transport {
             }
         }
         req.headers.add(name: "Accept", value: "application/json")
-        req.headers.add(name: "Content-Type", value: "application/json")
+        // Only set the default Content-Type if the caller has not already
+        // supplied one via extraHeaders. Unconditionally adding it would emit
+        // two Content-Type headers (the default, then the caller's), which some
+        // servers (e.g. live Glance) reject.
+        if !extraHeaders.contains(where: { $0.0 == "Content-Type" }) {
+            req.headers.add(name: "Content-Type", value: "application/json")
+        }
         req.headers.add(name: "User-Agent", value: "substation-mcp/\(openStackClientVersion)")
         req.headers.add(name: "X-OpenStack-Request-Id", value: requestID)
         for (name, value) in extraHeaders {
