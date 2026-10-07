@@ -425,7 +425,7 @@ public struct ComputeRegion: Sendable {
 
     public func listHypervisors(_ vt: ValidatedToken) async throws -> [Hypervisor] {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors")
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/detail")
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct HypervisorList: Decodable {

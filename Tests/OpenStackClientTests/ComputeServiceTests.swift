@@ -94,7 +94,7 @@ struct ComputeServiceTests {
         {"services":[{
             "binary":"nova-compute",
             "host":"compute-1.cloud.cloudnull.dev.local",
-            "id":43,
+            "id":"43",
             "zone":"az1",
             "status":"enabled",
             "state":"up",
@@ -106,7 +106,7 @@ struct ComputeServiceTests {
         let decoded = try JSONDecoder().decode(ServiceList.self, from: novaJSON.data(using: .utf8)!)
         let s = decoded.services[0]
         #expect(s.binary == "nova-compute")
-        #expect(s.id == 43)
+        #expect(s.id == "43")
         #expect(s.updatedAt == "2026-10-06T21:39:43.000000")
     }
 

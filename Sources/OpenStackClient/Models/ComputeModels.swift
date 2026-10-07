@@ -533,7 +533,7 @@ public struct HypervisorServiceRef: Sendable, Codable {
 
 /// Compute service.
 public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
-    public let id: Int
+    public let id: String
     public var host: String
     public var binary: String
     public var zone: String
@@ -543,7 +543,7 @@ public struct ComputeServiceInfo: Sendable, Codable, Identifiable {
     public var updatedAt: String?
 
     public init(
-        id: Int,
+        id: String,
         host: String = "",
         binary: String = "",
         zone: String = "",
