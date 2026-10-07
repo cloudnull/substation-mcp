@@ -16,7 +16,6 @@ public struct ServeApp: Sendable {
     public let app: Application<RouterResponder<BasicRequestContext>>
     public let config: OpenStackMCPConfig
     public let wiring: CloudWiring
-    public let tokenStore: TokenStore
 
     /// Shut down the underlying HTTP client (and the Hummingbird app's
     /// event-loop group when it owns one). Call at process exit or test
@@ -29,11 +28,9 @@ public struct ServeApp: Sendable {
     public init(
         config: OpenStackMCPConfig,
         cloud: CloudEntry,
-        tokenStore: TokenStore,
         logger: Logger
     ) {
         self.config = config
-        self.tokenStore = tokenStore
         let wiring = CloudWiring(config: config, cloud: cloud, logger: logger)
         self.wiring = wiring
 
@@ -67,7 +64,7 @@ public struct ServeApp: Sendable {
         )
 
         let minter = LoginMinter(transport: wiring.transport, logger: logger)
-        let loginPage = LoginPage(minter: minter, tokenStore: tokenStore, logger: logger)
+        let loginPage = LoginPage(minter: minter, logger: logger)
 
         let serverFactory = wiring.makeServerFactory(
             policy: policy,
@@ -92,8 +89,9 @@ public struct ServeApp: Sendable {
             validator: appValidator,
             serverFactory: serverFactory,
             gate: gate,
-            terminated: { sessionId in
-                Task { await tokenStore.zeroize(sessionId: sessionId) }
+            terminated: { _ in
+                // WS-A (Option 2): the server holds no minted token, so there is
+                // nothing to zeroize on session end — the callback is a no-op.
             },
             logger: logger,
             onSessionStart: { OSMetrics.sessionStarted() },

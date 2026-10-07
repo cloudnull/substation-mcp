@@ -2,78 +2,35 @@ import Foundation
 import Logging
 import OpenStackClient
 
-// MARK: - Login-minted token store (spec §6.1b)
+// MARK: - Login-minted token store (spec §6.1b) — NO-OP STUB (WS-A)
 
-/// A single stored, login-minted token bound to a session.
+/// `TokenStore` used to hold login-minted tokens server-side, keyed by session
+/// id, for the URL-mode elicitation path. As of Workstream A (Option 2) the
+/// server stores **no** token: `/v1/login` mints a token and *displays* it on
+/// the completion page, but never binds it to a session. The primary login path
+/// is the client-side mint (app-cred or password → Keystone), and every
+/// subsequent request re-validates its own bearer token per-request (spec §6.0).
 ///
-/// This is the **only** server-held credential-adjacent state (the one
-/// stateful element the spec mandates for the URL-mode elicitation path).
-/// Client-presented tokens are NOT stored here.
-public struct StoredToken: Sendable {
-    public let token: Token
-    public let boundAt: Date
-
-    public init(token: Token, boundAt: Date = Date()) {
-        self.token = token
-        self.boundAt = boundAt
-    }
-}
-
-/// Actor-isolated store of login-minted tokens, keyed by session id.
-///
-/// Each entry's TTL is the token's `expires_at`; entries are evicted (and
-/// zeroized) when idle past their expiry or when the session terminates.
-/// The serve command wires the adapter's `terminated` callback to
-/// ``zeroize(sessionId:)``.
+/// The actor is retained as a no-op stub — its methods do nothing — so existing
+/// callers and test sites that construct `TokenStore()` still compile. There is
+/// no server-held credential-adjacent state anymore.
 public actor TokenStore {
-    private var entries: [String: StoredToken] = [:]
-    private let clock: () -> Date
-    private let logger: Logger
-
-    /// - Parameters:
-    ///   - clock: Injectable clock for tests (defaults to `Date`).
-    ///   - logger: Logger.
     public init(clock: @escaping @Sendable () -> Date = { Date() },
-                logger: Logger = Logger(label: "token-store")) {
-        self.clock = clock
-        self.logger = logger
-    }
+                logger: Logger = Logger(label: "token-store")) {}
 
-    /// Bind a login-minted token to a session (replaces any prior binding).
-    public func bind(sessionId: String, token: Token) {
-        entries[sessionId] = StoredToken(token: token)
-        logger.debug("Token bound to session", metadata: ["sessionID": "\(sessionId)"])
-    }
+    /// No-op: the server no longer binds minted tokens to sessions.
+    public func bind(sessionId: String, token: Token) {}
 
-    /// The token bound to a session, or `nil`.
-    public func token(for sessionId: String) -> Token? {
-        guard let entry = entries[sessionId] else { return nil }
-        return entry.token.expiresAt > clock() ? entry.token : nil
-    }
+    /// No-op: the server holds no token, so there is nothing to return.
+    public func token(for sessionId: String) -> Token? { nil }
 
-    /// Remove and zeroize a session's token. Idempotent.
-    public func zeroize(sessionId: String) {
-        if entries.removeValue(forKey: sessionId) != nil {
-            logger.debug("Token zeroized for session", metadata: ["sessionID": "\(sessionId)"])
-        }
-    }
+    /// No-op: the server holds no token, so there is nothing to zeroize.
+    public func zeroize(sessionId: String) {}
 
-    /// Evict and zeroize all entries whose token has expired. Returns the
-    /// session ids evicted.
+    /// No-op: nothing to evict; always returns an empty list.
     @discardableResult
-    public func evictExpired(now: Date = Date()) -> [String] {
-        let expired = entries.filter { $0.value.token.expiresAt <= now }.map(\.key)
-        for id in expired {
-            entries.removeValue(forKey: id)
-        }
-        if !expired.isEmpty {
-            logger.debug("Evicted expired tokens", metadata: ["count": "\(expired.count)"])
-        }
-        return expired
-    }
+    public func evictExpired(now: Date = Date()) -> [String] { [] }
 
-    /// The number of live (non-expired) bindings. For tests + metrics.
-    public var count: Int {
-        entries.count
-    }
+    /// Always 0: the server holds no live bindings.
+    public var count: Int { 0 }
 }

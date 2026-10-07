@@ -19,13 +19,23 @@ import FakeOpenStack
 //   - PRM document contents (spec §6.1 / RFC 9728)
 //   - the URL-mode login page (GET form + POST mint) (spec §6.1b)
 //   - session init → tools/list with a real minted token (read vs write)
-//   - DELETE terminates the session and zeroizes its stored token
+//   - DELETE terminates the session (WS-A: no server-held token to zeroize)
+
+/// Build a full `ServeApp` against a running `FakeApp`.
+@_disfavoredOverload
+func makeServeApp(
+    handle: FakeHandle,
+    config: OpenStackMCPConfig,
+    tokenStore: TokenStore,
+    logger: Logger = Logger(label: "serve-test")
+) -> ServeApp {
+    makeServeApp(handle: handle, config: config, logger: logger)
+}
 
 /// Build a full `ServeApp` against a running `FakeApp`.
 func makeServeApp(
     handle: FakeHandle,
     config: OpenStackMCPConfig,
-    tokenStore: TokenStore,
     logger: Logger = Logger(label: "serve-test")
 ) -> ServeApp {
     let cloud = CloudEntry(
@@ -39,7 +49,7 @@ func makeServeApp(
     var cfg = config
     // Point Keystone at the fake for the PRM document + validation.
     cfg.authKeystoneURL = handle.keystoneURL.absoluteString
-    return ServeApp(config: cfg, cloud: cloud, tokenStore: tokenStore, logger: logger)
+    return ServeApp(config: cfg, cloud: cloud, logger: logger)
 }
 
 /// A full-serve `ServeApp` whose cloud `authURL` is the fake's **base** URL
@@ -60,10 +70,19 @@ func makeServeApp(
 /// OpenStack call (os_list / os_get / os_find / os_quota / os_describe) through
 /// the full HTTP path. Tests that only exercise the auth/session/PRM surface
 /// can keep using `makeServeApp`.
+@_disfavoredOverload
 func makeServeAppReachable(
     handle: FakeHandle,
     config: OpenStackMCPConfig,
     tokenStore: TokenStore,
+    logger: Logger = Logger(label: "serve-reachable")
+) -> ServeApp {
+    makeServeAppReachable(handle: handle, config: config, logger: logger)
+}
+
+func makeServeAppReachable(
+    handle: FakeHandle,
+    config: OpenStackMCPConfig,
     logger: Logger = Logger(label: "serve-reachable")
 ) -> ServeApp {
     let cloud = CloudEntry(
@@ -74,7 +93,7 @@ func makeServeAppReachable(
     var cfg = config
     // PRM + Keystone reference point at the fake's Keystone.
     cfg.authKeystoneURL = handle.keystoneURL.absoluteString
-    return ServeApp(config: cfg, cloud: cloud, tokenStore: tokenStore, logger: logger)
+    return ServeApp(config: cfg, cloud: cloud, logger: logger)
 }
 
 /// Shared config for the full-serve tests.
@@ -198,7 +217,7 @@ struct ServeSessionTests {
         }
     }
 
-    @Test("login page POST mints a token and stores it bound to the elicitation id")
+    @Test("login page POST mints a token and displays it (not stored server-side)")
     func loginPagePost() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -227,19 +246,13 @@ struct ServeSessionTests {
             #expect(!respBody.contains("secret-admin"), "secret leaked in completion page: \(respBody)")
         }
 
-        // The store must now hold the minted token bound to the elicitation id.
+        // WS-A (Option 2): the mint is display-only — the server stores NO token.
         let stored = await store.token(for: elicitationId)
-        #expect(stored != nil, "token not stored for elicitation id")
-        #expect(stored?.id.hasPrefix("fake-tok") == true)
-        // Review Focus 4: only the token (and its metadata) is stored — the
-        // app-cred secret bytes never touch the store.
-        if let stored {
-            let storedJSON = String(data: try JSONEncoder().encode(stored), encoding: .utf8) ?? ""
-            #expect(!storedJSON.contains("secret-admin"), "secret leaked into stored token: \(storedJSON)")
-        }
+        #expect(stored == nil, "server must not hold a minted token")
+        #expect(await store.count == 0, "server must hold no token bindings")
     }
 
-    @Test("login page POST as form-encoded (browser) mints a token")
+    @Test("login page POST as form-encoded (browser) mints a token (display-only)")
     func loginPagePostFormEncoded() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -268,9 +281,8 @@ struct ServeSessionTests {
             #expect(!respBody.contains("secret-admin"), "secret leaked: \(respBody)")
         }
 
-        let stored = await store.token(for: elicitationId)
-        #expect(stored != nil, "token not stored for elicitation id")
-        #expect(stored?.id.hasPrefix("fake-tok") == true)
+        // WS-A (Option 2): display-only — the server stores no token.
+        #expect(await store.token(for: elicitationId) == nil, "server must not hold a minted token")
     }
 
     @Test("login page POST without a Content-Type header still works (form sniff)")
@@ -522,10 +534,13 @@ struct ServeSessionTests {
     }
 }
 
-// MARK: - TokenStore unit tests
+// MARK: - TokenStore (WS-A: no-op stub)
+//
+// As of Workstream A (Option 2) the server holds no minted token, so `TokenStore`
+// is a no-op stub. This test pins the new invariant: nothing is ever stored.
 
-@Suite("TokenStore tests", .timeLimit(.minutes(2)))
-struct TokenStoreTests {
+@Suite("TokenStore stub", .timeLimit(.minutes(2)))
+struct TokenStoreStubTests {
 
     private func makeToken(id: String, expiresAt: Date) -> Token {
         Token(
@@ -539,32 +554,13 @@ struct TokenStoreTests {
         )
     }
 
-    @Test("bind + token(for:) round trip; zeroize removes")
-    func bindAndZeroize() async {
+    @Test("the server stores no token: bind is a no-op, token(for:) is nil")
+    func storesNothing() async {
         let store = TokenStore()
         await store.bind(sessionId: "s1", token: makeToken(id: "t1", expiresAt: .distantFuture))
-        #expect(await store.token(for: "s1")?.id == "t1")
-        await store.zeroize(sessionId: "s1")
-        #expect(await store.token(for: "s1") == nil)
-        #expect(await store.count == 0)
-    }
-
-    @Test("expired token is not returned and is evicted")
-    func expiredToken() async {
-        let store = TokenStore()
-        await store.bind(sessionId: "s1", token: makeToken(id: "t1", expiresAt: .distantPast))
-        #expect(await store.token(for: "s1") == nil, "expired token must not be returned")
-        let evicted = await store.evictExpired()
-        #expect(evicted.contains("s1"))
-        #expect(await store.count == 0)
-    }
-
-    @Test("bind replaces a prior binding for the same session")
-    func bindReplaces() async {
-        let store = TokenStore()
-        await store.bind(sessionId: "s1", token: makeToken(id: "t1", expiresAt: .distantFuture))
-        await store.bind(sessionId: "s1", token: makeToken(id: "t2", expiresAt: .distantFuture))
-        #expect(await store.token(for: "s1")?.id == "t2")
-        #expect(await store.count == 1)
+        #expect(await store.token(for: "s1") == nil, "server must not hold a bound token")
+        #expect(await store.count == 0, "server must hold no bindings")
+        // evictExpired has nothing to evict.
+        #expect(await store.evictExpired() == [])
     }
 }

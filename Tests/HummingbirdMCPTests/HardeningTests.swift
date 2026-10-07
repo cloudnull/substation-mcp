@@ -24,7 +24,7 @@ import FakeOpenStack
 //   - token-per-request: an expired token on a live session -> 401
 //   - tenant isolation (two projects, no cross-session resource leak)
 //   - read-only token's mutating call -> 403 insufficient_scope
-//   - login secret never stored (TokenStore round-trip)
+//   - login secret never stored (WS-A: no server-held token)
 //   - PRM document at both canonical and endpoint-scoped URLs
 //
 // Origin/CORS: the MCP 2025-11-25 spec does not mandate Origin checks on an
@@ -336,7 +336,7 @@ struct HardeningTests {
 
     // MARK: - Login secret never stored
 
-    @Test("login-minted token: the credential secret is never stored")
+    @Test("login-minted token: the credential is never stored server-side")
     func loginSecretNeverStored() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -358,12 +358,10 @@ struct HardeningTests {
             let respBody = bodyString(response)
             #expect(!respBody.contains("secret-admin"), "secret leaked in completion page: \(respBody)")
         }
-        let stored = await store.token(for: elicitationId)
-        #expect(stored != nil, "token not stored for elicitation id")
-        if let stored {
-            let storedJSON = String(data: try JSONEncoder().encode(stored), encoding: .utf8) ?? ""
-            #expect(!storedJSON.contains("secret-admin"), "secret leaked into stored token: \(storedJSON)")
-        }
+        // WS-A (Option 2): the mint is display-only — the server stores NO token
+        // (so there is no stored token that could leak the secret).
+        #expect(await store.token(for: elicitationId) == nil, "server must not hold a minted token")
+        #expect(await store.count == 0, "server must hold no token bindings")
     }
 
     // MARK: - Login page is URL-mode (spec §6.1b): a server-rendered HTML form,

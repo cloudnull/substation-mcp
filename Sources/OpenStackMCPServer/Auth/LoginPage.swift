@@ -5,33 +5,28 @@ import OpenStackClient
 
 // MARK: - Login page (URL-mode elicitation, spec §6.1b)
 
-/// Wires the adapter's `login:` closure to the OpenStack `LoginMinter` and
-/// `TokenStore`.
+/// Wires the adapter's `login:` closure to the OpenStack `LoginMinter`.
 ///
 /// The adapter (Task 17) already renders the HTML form and completion page;
-/// this closure performs the Keystone exchange on POST and stores the
-/// minted token bound to the elicitation id (the one stateful element the
-/// spec mandates). The POST body's secret is consumed by the minter and is
-/// never logged or stored — only the resulting token id is kept.
+/// this closure performs the Keystone exchange on POST and displays the minted
+/// token on the completion page. It is **display-only**: the server stores no
+/// token and never binds one to the elicitation id (WS-A, Option 2). The POST
+/// body's secret is consumed by the minter and is never logged or stored.
 public struct LoginPage: Sendable {
     private let minter: LoginMinter
-    private let tokenStore: TokenStore
     private let logger: Logger
 
     public init(
         minter: LoginMinter,
-        tokenStore: TokenStore,
         logger: Logger = Logger(label: "login-page")
     ) {
         self.minter = minter
-        self.tokenStore = tokenStore
         self.logger = logger
     }
 
     /// The `login:` closure for `MCPRoute.install`.
     public func handler() -> @Sendable (LoginRequest) async -> LoginResponse {
         let minter = self.minter
-        let tokenStore = self.tokenStore
         let logger = self.logger
         return { req in
             let method: MintMethod
@@ -59,15 +54,14 @@ public struct LoginPage: Sendable {
 
             do {
                 let token = try await minter.mint(method: method)
-                // The secret has been consumed by the minter; only the token
-                // (with metadata) is stored, bound to the elicitation id.
-                await tokenStore.bind(sessionId: req.elicitationId, token: token)
+                // The secret has been consumed by the minter. The minted token
+                // is display-only: it is shown on the completion page (its
+                // intended surface) but NEVER stored server-side — there is no
+                // server-held token to zeroize (WS-A, Option 2).
                 // Log the mint with only non-sensitive fields. A Keystone token
                 // ID *is* the credential (the Bearer token), so the full id is
                 // never logged — only a short prefix, enough to correlate a
-                // mint with a later use without leaking the secret. The full
-                // token is shown to the user on the completion page (its
-                // intended display surface) and stored in the TokenStore.
+                // mint with a later use without leaking the secret.
                 let tokenRef = String(token.id.prefix(8))
                 let tokenSummary = "\(tokenRef)…(\(token.id.count) chars)"
                 logger.info("Login minted token", metadata: [
@@ -77,7 +71,7 @@ public struct LoginPage: Sendable {
                 ])
                 return LoginResponse(
                     tokenID: token.id,
-                    storePath: "session:\(req.elicitationId)",
+                    storePath: "display-only",
                     completion: true
                 )
             } catch {

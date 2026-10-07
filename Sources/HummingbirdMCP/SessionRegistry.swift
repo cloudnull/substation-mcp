@@ -40,8 +40,10 @@ public struct MCPSession: @unchecked Sendable {
 
 /// Actor-isolated store of live MCP sessions, keyed by `Mcp-Session-Id`.
 ///
-/// `terminate` calls the `terminated` callback so the caller (Task 18) can
-/// zeroize any login-minted token bound to that session. `evictExpired` drops
+/// `terminate` calls the `terminated` callback. As of WS-A (Option 2) the server
+/// stores no login-minted token, so token zeroization on session end is a no-op
+/// — the callback exists only so callers can observe session end (e.g. for
+/// metrics). `evictExpired` drops
 /// sessions idle beyond `idleTTL`; a background cleanup task runs it on a fixed
 /// interval.
 public actor SessionRegistry {

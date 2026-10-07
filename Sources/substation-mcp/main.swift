@@ -68,8 +68,7 @@ struct ServeCommand: AsyncParsableCommand {
         let logger = makeLogger(level: cfg.logLevel, format: cfg.logFormat, sink: .standardOutput)
         let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
 
-        let tokenStore = TokenStore(logger: logger)
-        let app = ServeApp(config: cfg, cloud: cloudEntry, tokenStore: tokenStore, logger: logger)
+        let app = ServeApp(config: cfg, cloud: cloudEntry, logger: logger)
 
         logger.info("substation-mcp serving", metadata: [
             "cloud": "\(cloudEntry.name)",
