@@ -912,11 +912,14 @@ public struct CreateServerSpec: Sendable {
         var server: [String: String] = [
             "name": name
         ]
-        // Nova accepts both the object form ({"flavorRef":{"id":"..."}}) and
-        // the string form ({"flavor":"..."}). Some clouds reject the object
-        // form with a 400, so use the string form which is universally accepted.
-        server["flavor"] = flavorID
-        server["image"] = imageID
+        // sat0's Nova (2026 cloud, strict schema) requires the *string*
+        // flavorRef/imageRef form: {"flavorRef":"<uuid>","imageRef":"<uuid>"}.
+        // It rejects the bare "flavor"/"image" keys ("'flavorRef' is a required
+        // property") and rejects the object form flavorRef:{id:...} ("not of type
+        // 'string'"). Live-validated via curl probe (flavorRef str + imageRef str
+        // + networks[].uuid -> 202).
+        server["flavorRef"] = flavorID
+        server["imageRef"] = imageID
         if let keyName { server["key_name"] = keyName }
         if let availabilityZone { server["availability_zone"] = availabilityZone }
         if let configDrive { server["config_drive"] = configDrive ? "true" : "false" }
@@ -948,7 +951,10 @@ public struct CreateServerSpec: Sendable {
             let nets = networks.map { net -> String in
                 var netParts: [String] = []
                 if let port = net.port { netParts.append("\"port\":\"\(port)\"") }
-                if let network = net.network { netParts.append("\"network\":\"\(network)\"") }
+                // sat0 Nova's create schema rejects the "network" key on a
+                // networks[] entry ("Additional properties are not allowed") but
+                // accepts "uuid". Live-validated: networks:[{"uuid":"..."}] -> 202.
+                if let network = net.network { netParts.append("\"uuid\":\"\(network)\"") }
                 if let fixedIP = net.fixedIP { netParts.append("\"fixed_ip\":\"\(fixedIP)\"") }
                 return "{\(netParts.joined(separator: ","))}"
             }.joined(separator: ",")

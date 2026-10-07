@@ -323,7 +323,7 @@ struct ComputeServiceTests {
         }
     }
 
-    @Test("create server body uses string-form flavor/image and includes networks", .timeLimit(.minutes(2)))
+    @Test("create server body uses string flavorRef/imageRef and networks[].uuid", .timeLimit(.minutes(2)))
     func createServerBodyFormat() throws {
         let spec = CreateServerSpec(
             name: "test-net",
@@ -333,14 +333,19 @@ struct ComputeServiceTests {
             networks: [CreateServerSpec.NetworkSpec(network: "flat-net")]
         )
         let body = spec.body()
-        // Must use string form, not object form
-        #expect(body.contains("\"flavor\":\"flv-001\""))
-        #expect(body.contains("\"image\":\"img-001\""))
-        #expect(!body.contains("flavorRef"))
-        #expect(!body.contains("imageRef"))
-        // Must include networks
+        // sat0 Nova (strict schema) requires STRING flavorRef/imageRef.
+        // Live-validated via curl: {"flavorRef":"<uuid>","imageRef":"<uuid>"} -> 202.
+        #expect(body.contains("\"flavorRef\":\"flv-001\""))
+        #expect(body.contains("\"imageRef\":\"img-001\""))
+        // The bare "flavor"/"image" keys are rejected by Nova ("'flavorRef' is a
+        // required property"); the object form flavorRef:{id:...} is also rejected.
+        #expect(!body.contains("\"flavor\":"))
+        #expect(!body.contains("\"image\":"))
+        #expect(!body.contains("\"flavorRef\":{"))
+        // networks[] entries use the "uuid" key (Nova rejects "network").
         #expect(body.contains("\"networks\""))
-        #expect(body.contains("\"network\":\"flat-net\""))
+        #expect(body.contains("\"uuid\":\"flat-net\""))
+        #expect(!body.contains("\"network\":\"flat-net\""))
         // Must include key_name
         #expect(body.contains("\"key_name\":\"mykey\""))
     }
