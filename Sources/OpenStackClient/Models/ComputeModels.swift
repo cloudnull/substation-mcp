@@ -945,7 +945,7 @@ public struct CreateServerSpec: Sendable {
             }
         }
 
-        var body = "{\"server\":{\(parts.joined(separator: ","))}"
+        var body = "{\"server\":{\(parts.joined(separator: ","))"
 
         if !networks.isEmpty {
             let nets = networks.map { net -> String in
@@ -958,22 +958,22 @@ public struct CreateServerSpec: Sendable {
                 if let fixedIP = net.fixedIP { netParts.append("\"fixed_ip\":\"\(fixedIP)\"") }
                 return "{\(netParts.joined(separator: ","))}"
             }.joined(separator: ",")
-            body = body.dropLast() + ",\"networks\":[\(nets)]}"
+            body = body + ",\"networks\":[\(nets)]"
         }
 
         if !securityGroups.isEmpty {
             let sgs = securityGroups.map { "\"\($0)\"" }.joined(separator: ",")
-            body = body.dropLast() + ",\"security_groups\":[\(sgs)]}"
+            body = body + ",\"security_groups\":[\(sgs)]"
         }
 
         if let minCount, let maxCount {
-            body = body.dropLast() + ",\"min_count\":\(minCount),\"max_count\":\(maxCount)}"
+            body = body + ",\"min_count\":\(minCount),\"max_count\":\(maxCount)"
         }
 
         if let serverGroup {
-            body = body.dropLast() + ",\"scheduler_hints\":{\"group\":\"\(serverGroup)\"}}"
+            body = body + ",\"scheduler_hints\":{\"group\":\"\(serverGroup)\"}"
         }
 
-        return body
+        return body + "}}"
     }
 }

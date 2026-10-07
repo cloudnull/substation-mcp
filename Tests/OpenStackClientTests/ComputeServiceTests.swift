@@ -348,6 +348,48 @@ struct ComputeServiceTests {
         #expect(!body.contains("\"network\":\"flat-net\""))
         // Must include key_name
         #expect(body.contains("\"key_name\":\"mykey\""))
+        // The body must be well-formed JSON (guards against unbalanced braces when
+        // networks/security_groups/min-max/server_group are appended via dropLast).
+        #expect(Self.isValidJSON(body), "body is not valid JSON: \(body)")
+    }
+
+    /// Returns true if `s` parses as a JSON object (used to guard body() brace balance).
+    private static func isValidJSON(_ s: String) -> Bool {
+        guard let data = s.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data)) != nil
+    }
+
+    @Test("create server body stays valid JSON across all appendable fields", .timeLimit(.minutes(2)))
+    func createServerBodyBalancedAllFields() throws {
+        // Exercise every optional append at once: networks + security_groups +
+        // min/max + server_group. Each appends via dropLast, so an off-by-one brace
+        // would produce invalid JSON. (Regression: the networks block previously
+        // left the server object unclosed.)
+        let spec = CreateServerSpec(
+            name: "bal",
+            flavorID: "f",
+            imageID: "i",
+            keyName: "k",
+            metadata: ["a": "b"],
+            networks: [CreateServerSpec.NetworkSpec(port: "p1", network: "n1", fixedIP: "10.0.0.2")],
+            minCount: 1, maxCount: 2,
+            securityGroups: ["default"],
+            serverGroup: "grp"
+        )
+        let body = spec.body()
+        #expect(Self.isValidJSON(body), "multi-append body is not valid JSON: \(body)")
+        // The server object must be the single top-level key.
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let server = obj["server"] as? [String: Any] else {
+            #expect(false, "unexpected top-level shape: \(body)")
+            return
+        }
+        #expect((server["networks"] as? [[String: Any]])?.count == 1)
+        #expect((server["security_groups"] as? [String])?.contains("default") == true)
+        #expect(server["min_count"] as? Int == 1)
+        #expect(server["max_count"] as? Int == 2)
+        #expect((server["scheduler_hints"] as? [String: Any])?["group"] as? String == "grp")
     }
 
     @Test("create server", .timeLimit(.minutes(2)))
