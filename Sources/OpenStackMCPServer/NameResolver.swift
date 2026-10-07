@@ -785,7 +785,30 @@ public actor NameResolver {
                 guard let name, let flavorID, let imageID else {
                     throw OpenStackError(service: "compute", status: 400, message: "Server create requires name, flavor, image")
                 }
-                let spec = CreateServerSpec(name: name, flavorID: flavorID, imageID: imageID)
+                // Optional fields from the create schema
+                let keyName = obj["key_name"]?.stringValue ?? obj["keyName"]?.stringValue
+                let availabilityZone = obj["availability_zone"]?.stringValue ?? obj["availabilityZone"]?.stringValue
+                let configDrive = obj["config_drive"]?.boolValue
+                let metadata = obj["metadata"]?.objectValue?.reduce(into: [String: String]()) { $0[$1.key] = $1.value.stringValue ?? "" } ?? [:]
+                let networks = obj["networks"]?.arrayValue?.compactMap { entry -> CreateServerSpec.NetworkSpec? in
+                    guard let netObj = entry.objectValue else { return nil }
+                    return CreateServerSpec.NetworkSpec(
+                        port: netObj["port"]?.stringValue,
+                        network: netObj["network"]?.stringValue ?? netObj["uuid"]?.stringValue,
+                        fixedIP: netObj["fixed_ip"]?.stringValue ?? netObj["fixedIP"]?.stringValue
+                    )
+                } ?? []
+                let userData = obj["user_data"]?.stringValue ?? obj["userData"]?.stringValue
+                let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
+                let hostname = obj["hostname"]?.stringValue
+
+                let spec = CreateServerSpec(
+                    name: name, flavorID: flavorID, imageID: imageID,
+                    keyName: keyName, availabilityZone: availabilityZone,
+                    configDrive: configDrive, metadata: metadata,
+                    networks: networks, userData: userData,
+                    serverGroup: serverGroup, hostname: hostname
+                )
                 let s = try await r.createServer(vt, spec)
                 return try Self.encodeObject(s)
             case "keypair":

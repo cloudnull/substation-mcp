@@ -905,15 +905,15 @@ public struct CreateServerSpec: Sendable {
     }
 
     /// Build the JSON body for the create request.
-    func body() -> String {
+    public func body() -> String {
         var server: [String: String] = [
             "name": name
         ]
-        // flavorRef and imageRef are objects in Nova API, not strings
-        let flavorJSON = "{\"id\":\"\(flavorID)\"}"
-        let imageJSON = "{\"id\":\"\(imageID)\"}"
-        server["flavorRef"] = flavorJSON
-        server["imageRef"] = imageJSON
+        // Nova accepts both the object form ({"flavorRef":{"id":"..."}}) and
+        // the string form ({"flavor":"..."}). Some clouds reject the object
+        // form with a 400, so use the string form which is universally accepted.
+        server["flavor"] = flavorID
+        server["image"] = imageID
         if let keyName { server["key_name"] = keyName }
         if let availabilityZone { server["availability_zone"] = availabilityZone }
         if let configDrive { server["config_drive"] = configDrive ? "true" : "false" }

@@ -323,6 +323,28 @@ struct ComputeServiceTests {
         }
     }
 
+    @Test("create server body uses string-form flavor/image and includes networks", .timeLimit(.minutes(2)))
+    func createServerBodyFormat() throws {
+        let spec = CreateServerSpec(
+            name: "test-net",
+            flavorID: "flv-001",
+            imageID: "img-001",
+            keyName: "mykey",
+            networks: [CreateServerSpec.NetworkSpec(network: "flat-net")]
+        )
+        let body = spec.body()
+        // Must use string form, not object form
+        #expect(body.contains("\"flavor\":\"flv-001\""))
+        #expect(body.contains("\"image\":\"img-001\""))
+        #expect(!body.contains("flavorRef"))
+        #expect(!body.contains("imageRef"))
+        // Must include networks
+        #expect(body.contains("\"networks\""))
+        #expect(body.contains("\"network\":\"flat-net\""))
+        // Must include key_name
+        #expect(body.contains("\"key_name\":\"mykey\""))
+    }
+
     @Test("create server", .timeLimit(.minutes(2)))
     func createServer() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()
