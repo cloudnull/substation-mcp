@@ -275,4 +275,23 @@ struct ImageServiceTests {
             #expect(!page1IDs.contains(item.id))
         }
     }
+
+    // Regression test for the live-Glance 415 fix: updateImage's PATCH must
+    // carry the Glance images media type (application/openstack-images;version=2)
+    // rather than the Transport default of application/json. The fake Glance
+    // accepts the media type and applies the update, so a successful PATCH
+    // whose response reflects the change proves the request was sent with a
+    // Glance-acceptable Content-Type.
+    @Test("updateImage PATCH sends the Glance media type (no 415)", .timeLimit(.minutes(2)))
+    func updateImageGlanceMediaType() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let updated = try await region.updateImage(vt, id: "img-1", name: "renamed-glance")
+        #expect(updated.name == "renamed-glance")
+
+        let fetched = try await region.getImage(vt, id: "img-1")
+        #expect(fetched.name == "renamed-glance")
+    }
 }

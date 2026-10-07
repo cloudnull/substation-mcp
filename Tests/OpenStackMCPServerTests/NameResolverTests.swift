@@ -299,4 +299,80 @@ struct NameResolverTests {
         #expect(usages?["VCPU"]?.intValue == 2)
         #expect(usages?["GPU"]?.intValue == 1)
     }
+
+    // MARK: - Image actions (os_action wiring)
+
+    @Test("image action set_visibility applies the new visibility", .timeLimit(.minutes(2)))
+    func imageSetVisibilityAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "set_visibility", params: ["visibility": .string("public")], region: "RegionOne")
+        #expect(result["id"]?.stringValue == "img-1")
+        #expect(result["visibility"]?.stringValue == "public")
+    }
+
+    @Test("image action add_tag adds a single tag", .timeLimit(.minutes(2)))
+    func imageAddTagAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "add_tag", params: ["tag": .string("env:staging")], region: "RegionOne")
+        #expect(result["action"]?.stringValue == "add_tag")
+        #expect(result["id"]?.stringValue == "img-1")
+        #expect(result["tag"]?.stringValue == "env:staging")
+
+        // Verify the tag was actually added.
+        let got = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "img-1", region: "RegionOne")
+        let tags = got.raw["tags"]?.arrayValue ?? []
+        #expect(tags.contains(.string("env:staging")))
+    }
+
+    @Test("image action remove_tag removes a tag", .timeLimit(.minutes(2)))
+    func imageRemoveTagAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+        // Seed a tag, then remove it.
+        _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "add_tag", params: ["tag": .string("os:ubuntu")], region: "RegionOne")
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "remove_tag", params: ["tag": .string("os:ubuntu")], region: "RegionOne")
+        #expect(result["action"]?.stringValue == "remove_tag")
+        #expect(result["tag"]?.stringValue == "os:ubuntu")
+
+        let got = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "img-1", region: "RegionOne")
+        let tags = got.raw["tags"]?.arrayValue ?? []
+        #expect(!tags.contains(.string("os:ubuntu")))
+    }
+
+    @Test("image action reactivate restores an image to active", .timeLimit(.minutes(2)))
+    func imageReactivateAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+        _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "deactivate", params: [:], region: "RegionOne")
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "reactivate", params: [:], region: "RegionOne")
+        #expect(result["id"]?.stringValue == "img-1")
+        #expect(result["status"]?.stringValue == "active")
+    }
+
+    @Test("image action set_visibility without visibility param returns 400", .timeLimit(.minutes(2)))
+    func imageSetVisibilityMissingParam() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+        do {
+            _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "set_visibility", params: [:], region: "RegionOne")
+            Issue.record("Expected 400 for missing visibility")
+        } catch let error as OpenStackError {
+            #expect(error.status == 400)
+            #expect(error.message.contains("visibility"))
+        } catch {
+            Issue.record("Expected OpenStackError, got \(error)")
+        }
+    }
 }

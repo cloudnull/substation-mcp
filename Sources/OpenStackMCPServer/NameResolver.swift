@@ -1450,6 +1450,21 @@ public actor NameResolver {
                 case "unprotect": let img = try await r.unprotect(vt, id: id); return try Self.encodeObject(img)
                 case "deactivate": let img = try await r.deactivate(vt, id: id); return try Self.encodeObject(img)
                 case "reactivate": let img = try await r.reactivate(vt, id: id); return try Self.encodeObject(img)
+                case "set_visibility":
+                    let visibility = params["visibility"]?.stringValue
+                    guard let visibility else { throw OpenStackError(service: "image", status: 400, message: "set_visibility requires visibility") }
+                    let img = try await r.setVisibility(vt, id: id, visibility: visibility)
+                    return try Self.encodeObject(img)
+                case "add_tag":
+                    let tag = params["tag"]?.stringValue
+                    guard let tag else { throw OpenStackError(service: "image", status: 400, message: "add_tag requires tag") }
+                    try await r.addTags(vt, id: id, tags: [tag])
+                    return ["action": .string("add_tag"), "id": .string(id), "tag": .string(tag)]
+                case "remove_tag":
+                    let tag = params["tag"]?.stringValue
+                    guard let tag else { throw OpenStackError(service: "image", status: 400, message: "remove_tag requires tag") }
+                    try await r.removeTag(vt, id: id, tag: tag)
+                    return ["action": .string("remove_tag"), "id": .string(id), "tag": .string(tag)]
                 default: throw OpenStackError(service: "image", status: 400, message: "Unknown image action: \(action)")
                 }
             default:

@@ -30,7 +30,8 @@ public struct ImageRegion: Sendable {
         path: String,
         query: [URLQueryItem]? = nil,
         body: Data? = nil,
-        timeoutOverride: Duration? = nil
+        timeoutOverride: Duration? = nil,
+        extraHeaders: [(String, String)] = []
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let ep = resolveServiceEndpoint(
             vt: vt, region: region, cloud: cloud,
@@ -44,6 +45,7 @@ public struct ImageRegion: Sendable {
             query: query ?? [],
             body: body,
             tokenOverride: vt.token.id,
+            extraHeaders: extraHeaders,
             timeoutOverride: timeoutOverride,
             overrideBase: ep.overrideBase
         )
@@ -134,7 +136,12 @@ public struct ImageRegion: Sendable {
         if let status { parts.append("\"status\":\"\(status)\"") }
         let body = "{\"image\":{\(parts.joined(separator: ","))}}"
 
-        let result = try await req(vt, region, method: "PATCH", path: "\(basePath)/images/\(id)", body: body.data(using: .utf8))
+        // Glance v2 PATCH expects the images media type, not application/json:
+        // live Glance rejects `Content-Type: application/json` with HTTP 415
+        // (Unsupported Media Type). The Transport sends `application/json` by
+        // default; overriding it here so both Content-Type headers carry the
+        // Glance media type.
+        let result = try await req(vt, region, method: "PATCH", path: "\(basePath)/images/\(id)", body: body.data(using: .utf8), extraHeaders: [("Content-Type", "application/openstack-images;version=2")])
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
