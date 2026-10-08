@@ -21,6 +21,15 @@
   see the `Genestack deployment` section below (digest `ea3ae61e`, real
   ACTIVE→SHUTOFF wait observed). The E2E exposed a `timeout` vs `timeout_seconds`
   gotcha, fixed in `8749860` (`timeout` now honored as an alias).
+- **Clean live compute E2E COMPLETE on Rackspace IAD3 (2026-10-08)** — the alias rollout
+  is now live-verified against a full-catalog real cloud: `os_get` by UUID, `os_wait` with
+  `timeout: 2` and `timeout_seconds: 2` (both → immediate on an ACTIVE server; both →
+  `408 code:timeout` after 2s on a never-occurring SHUTOFF), and precedence
+  (`timeout_seconds` wins over `timeout`). This surfaced + fixed a second latent bug:
+  `ImageRef` didn't decode Rackspace's bare-string `image` field (500 on `os_list`/`os_get`).
+  Full record + container-ops gotchas in the "2026-10-08 (cont): Clean live IAD3 compute
+  E2E" section below. **sat0** clean compute E2E remains blocked on sat0 Keystone infra
+  (NULL endpoint service links) — unrelated to MCP code.
 - **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
 - **Native image**: `scripts/build-image.sh` → `dist/substation-mcp-aarch64-ubi10-v*.tar.gz`
@@ -658,7 +667,83 @@ The alias rollout is functionally complete and live-verified. The "clean live co
 - `os_wait.id` is not name-resolved — pass a server UUID.
 
 ### Status
-- Alias rollout: **DONE** (commit `8749860`, sat0 pod verified).
-- Clean live compute E2E: **BLOCKED — sat0 Keystone endpoints table has NULL service links** (infra fix required).
+- Alias rollout: **DONE** (commit `8749860`, sat0 pod verified; **clean live IAD3 E2E now done** — see next section).
+- Clean live compute E2E on sat0: **STILL BLOCKED — sat0 Keystone endpoints table has NULL service links** (infra fix required).
 - Volume lifecycle E2E: **BLOCKED** — sat0 Cinder has no usable backend (unchanged).
-- No further substation-mcp server code change required from this investigation.
+
+## 2026-10-08 (cont): Clean live IAD3 compute E2E — PASS on the Rackspace IAD3 environment
+
+Per instruction to "use the IAD3 environment, as it is configured", the clean live compute
+E2E was completed against the live Rackspace **IAD3** cloud via the Cline `substation__` MCP
+(local `localhost:8080/v1` dev server). This supersedes the sat0-blocked E2E as the
+completed rollout proof; sat0 remains blocked on its Keystone infra as above.
+
+### What the E2E caught: the running IAD3 dev binary was STALE (pre-alias)
+The local IAD3 server is an **Apple container** (`substation-mcp`, image
+`swift:6.4-rhel-ubi10`) whose `/work` is a **bind mount of the `80e90` Cline worktree**
+(`/Users/cloudnull/.cline/worktrees/80e90/openstack-mcp`, gitdir
+`/Users/cloudnull/Projects/openstack-mcp/.git/worktrees/openstack-mcp`), launched:
+`/work/.build/debug/substation-mcp serve --config /work/dist/rackspace-iad3/config.yaml`
+(port 8080). That worktree was checked out at `daf83a8` — **before** the alias commit
+`8749860` — so its compiled binary ignored the `timeout` alias. The E2E symptom:
+`timeout: 2` on an unsatisfied wait blew **past the 60s client timeout** (alias dropped →
+120s default), while `timeout_seconds: 2` correctly returned `408 code:timeout` after 2s.
+
+### Container-ops gotchas (Apple `container` CLI)
+- `container stop` on this container **destroyed it entirely** (it had been created
+  `--rm`); `container start` afterwards → "container not found". Recreate with
+  `container run --name substation-mcp -p 8080:8080 -v <worktree>:/work -w /work
+  swift:6.4-rhel-ubi10 sh -c '... serve --config /work/dist/rackspace-iad3/config.yaml'`.
+  **Do NOT pass `--rm`** if you want stop/start to work (recreated without `--rm` on
+  2026-10-08).
+- `container copy hostfile cont:path` did NOT reliably update files in this environment;
+  use `cat file | container exec -i cont sh -c 'cat > /work/...'` (or a bind mount) instead.
+- The IAD3 cloud config lives at **`<worktree>/dist/rackspace-iad3/{config,clouds}.yaml`**
+  (bind-mounted into the container at `/work/dist/rackspace-iad3/`). `dist/` is
+  **gitignored**, so these are local-only; the `80e90` worktree copy was used as the
+  canonical source to restore it. `clouds.yaml` holds an app credential for
+  `https://keystone.api.iad3.rackspacecloud.com` (region `IAD3`, `interface: public`).
+- `os_whoami`/`os_clouds` report the **server's own app-cred identity**, not the client
+  Bearer token (HANDOFF above) — treat them as "is the IAD3 app-cred healthy", not
+  "is the client token healthy".
+
+### Second latent bug found + fixed: `ImageRef` decode for bare-string Nova `image`
+After rebuilding the IAD3 binary from current (main) sources, `os_list`/`os_get`/`os_wait`
+on IAD3 returned **HTTP 500** `DecodingError.typeMismatch: Expected Dictionary, found a
+string. Path: servers[0].image`. Rackspace Nova returns the server `image` field as a
+**bare string id** (`"image": "<uuid>"`), whereas standard Nova (sat0) returns an object
+(`{"id":..., "links":...}`). The committed `ImageRef.init(from:)` was keyed-only and
+crashed on the string form — the same polymorphic-decode bug class already fixed for
+`FlavorRef` in commit `3fb7621` (fresh sub-decoder per shape; never mix
+`singleValueContainer` and `keyedBy` on one decoder). `ImageRef` was fixed to try a
+string first, then fall back to the keyed object form, with 3 regression tests added
+(bare-string `ImageRef`, full server response with bare-string image, object-form
+`ImageRef`). The old IAD3 binary only "worked" because it was a stale build predating
+the keyed-only `ImageRef`; a fresh build from `daf83a8`/HEAD would have broken it too.
+
+### Final clean live IAD3 E2E (all PASS, 2026-10-08, region IAD3, server vtest1
+`c2fa19dd-4f47-4094-8c84-b1cecb873a72`)
+- `initialize` → session + `serverInfo substation-mcp 1.0.0`.
+- `os_whoami` → full IAD3 service catalog (compute, volumev3, image, network, etc.).
+- `os_get` server **by UUID** → `{status:ACTIVE, name:vtest1}` (raw-id path works).
+- `os_wait timeout:2 until:[ACTIVE]` (already satisfied) → immediate `status:ACTIVE`, ~0.3s.
+- `os_wait timeout_seconds:2 until:[ACTIVE]` → immediate `status:ACTIVE`, ~0.2s.
+- `os_wait timeout:2 until:[SHUTOFF]` (never happens) → **`408 code:timeout` "after 2s,
+  Last status: ACTIVE"** in **2.0s** — proves the `timeout` alias is honored end-to-end
+  (pre-alias this hung past the 60s client timeout).
+- `os_wait timeout_seconds:2 until:[SHUTOFF]` control → identical 408/2s.
+- Precedence `timeout_seconds:2 + timeout:60 until:[SHUTOFF]` → honored **2**s (the
+  documented key wins), elapsed 2.0s.
+
+Tests: 502 unit tests, **0 failures** across all targets (OpenStackClientTests 237 incl.
+the 3 new ImageRef tests, OpenStackMCPServerTests 176, HummingbirdMCPTests 47,
+OpenStackMCPTests 42).
+
+### Status (updated)
+- Alias rollout: **DONE** — commit `8749860`; clean **live IAD3 compute E2E PASS** above
+  (alias honored, precedence honored, transient/waiter behavior intact).
+- `ImageRef` bare-string-image decode: **DONE** — committed alongside the E2E (see
+  commit log); 3 regression tests added.
+- Clean live compute E2E on **sat0**: still **BLOCKED** (sat0 Keystone NULL service
+  links — infra fix required; unrelated to MCP code).
+- Volume lifecycle E2E: still **BLOCKED** — sat0 Cinder has no usable backend.
