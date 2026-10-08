@@ -23,7 +23,10 @@
   `reservation`, `allocation`, `backup`, `schedule`, `cfn_stack`). `cfn_stack` is
   501-by-design (SigV4, not Keystone tokens).
 - **Live IAD3 gap-fill status** (2026-10-08): Trove + Gnocchi fully live with real
-  data; ZaQar (525 TLS at edge), Blazar (503 backend down), Freezer (catalog points
+  data; ZaQar (525 edge TLS healed 2026-10-08 ~19:00 UTC to a clean 401 unauthed,
+  but origin now returns a stable 503 "service temporarily unavailable" for all
+  paths incl. the authenticated `/v1/{proj}/queues` — still upstream), Blazar
+  (503 backend down), Freezer (catalog points
   at a dfw3 dev host, 401) are upstream-broken — clients are wired and fake-verified,
   zero code change needed when the endpoints heal. Details in the
   "IAD3 gap-fill: six remaining services (2026-10-08)" section below.
@@ -718,7 +721,7 @@ container-infra/orchestration + fake). After: **63** (+11).
 | `database_datastore` | `count: 1` (mysql) | ✅ reachable |
 | `metric` | `count: 200` (real metrics) | ✅ reachable |
 | `resource_type` | `count: 24` | ✅ reachable |
-| `queue` | `525` (Cloudflare SSL handshake failed w/ origin) | ⚠️ upstream TLS |
+| `queue` | `525` at edge healed (now `401` unauthed, correct edge auth behavior); origin returns stable `503` for all paths incl. authed `/v1/{proj}/queues` (verified 5× with fresh subject tokens, 2026-10-08 ~19:25 UTC) | ⚠️ upstream origin down |
 | `reservation` | `503` (backend down; flapped 404 earlier) | ⚠️ upstream |
 | `allocation` | `503` | ⚠️ upstream |
 | `backup` | `401` (catalog → dfw3 dev host) | ⚠️ wrong endpoint |
@@ -729,7 +732,15 @@ container-infra/orchestration + fake). After: **63** (+11).
 with the subject token (no substation in the loop) reproduces them identically:
 - ZaQar: `GET https://zaqar.api.iad3.rackspacecloud.com/` with **no token** returns
   525 — it fails independent of auth/path/project. 525 = the Rackspace edge failed
-  the TLS session with the ZaQar origin pod.
+  the TLS session with the ZaQar origin pod. **Update (2026-10-08 ~19:00 UTC):** the
+  525 edge-TLS failure healed — the unauthed probe now returns a clean `401`
+  (correct edge auth behavior) and the authenticated request reaches the origin
+  (`x-openstack-request-id` present, `server: cloudflare`, no more TLS handshake
+  failure) — but the origin itself answers a stable `503 "The server is currently
+  unavailable ... temporarily unavailable"` for every path, verified 5× over
+  ~25 min with freshly minted subject tokens (list **and** create, exact client
+  path `/v1/{proj}/queues`). So the ZaQar origin pod is still down/redeploying;
+  the edge↔origin link is fixed, the app behind it is not.
 - Blazar: `https://blazar.api.iad3.rackspacecloud.com/v1/reservations` returns a
   stable 503 whose error page says "The **Keystone** service is temporarily
   unavailable" — a mislabeled generic stack page meaning the Blazar API isn't up
