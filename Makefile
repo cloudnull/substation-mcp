@@ -26,18 +26,16 @@ PLATFORM := $(shell uname -s)
 DESTDIR := .build
 
 # ── Resolve the Swift invocation ──────────────────────────────────────────────
-# Default: native on macOS (with SDKROOT pin), container on Linux (scripts/swift).
+# Default: the pinned Swift 6.4 container toolchain (scripts/swift) on every
+# platform, matching CI. Native `swift` overrides only via SWIFT=swift.
+#
+# History: macOS previously used the native toolchain with a pinned SDKROOT
+# (the 6.3.3 release toolchain crashed compiling dependency manifests without
+# it), but it cannot compile this codebase's async-defer patterns (added in
+# Swift 6.4), so all local builds now go through the container.
 ifneq ($(SWIFT),)
   SWIFT_CMD := $(SWIFT)
-else ifeq ($(PLATFORM),Darwin)
-  # Pin the macOS SDK. The Swift 6.3.3 release toolchain crashes in
-  # swift-frontend ("unknown argument: -target-arch-variant") when it falls
-  # back to the Xcode/CommandLineTools default SDK on this host; an explicit
-  # SDKROOT avoids that. Override with SDKROOT=... to use a different one.
-  SDKROOT ?= /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
-  SWIFT_CMD := env SDKROOT=$(SDKROOT) swift
 else
-  # Linux: go through the pinned container toolchain (same image as CI).
   SWIFT_CMD := scripts/swift
 endif
 
