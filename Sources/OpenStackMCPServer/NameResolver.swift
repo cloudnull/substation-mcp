@@ -407,6 +407,80 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "placement", status: 404, message: "Unknown placement resource: \(descriptor.name)")
             }
+        case .database:
+            let r = await client.database(region: region)
+            switch descriptor.name {
+            case "database_instance":
+                let i = try await r.getInstance(vt, id: id)
+                return try Self.encodeObject(i)
+            case "database_flavor":
+                let items = try await r.listFlavors(vt)
+                guard let f = items.first(where: { $0.id == id }) else {
+                    throw OpenStackError(service: "database", status: 404, code: "itemNotFound", message: "Flavor '\(id)' not found")
+                }
+                return try Self.encodeObject(f)
+            case "database_datastore":
+                let items = try await r.listDatastores(vt)
+                guard let d = items.first(where: { $0.id == id }) else {
+                    throw OpenStackError(service: "database", status: 404, code: "itemNotFound", message: "Datastore '\(id)' not found")
+                }
+                return try Self.encodeObject(d)
+            default:
+                throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
+            }
+        case .metric:
+            let r = await client.metric(region: region)
+            switch descriptor.name {
+            case "metric":
+                let items = try await r.listMetrics(vt, name: id)
+                guard let m = items.first else {
+                    throw OpenStackError(service: "metric", status: 404, code: "itemNotFound", message: "Metric '\(id)' not found")
+                }
+                return try Self.encodeObject(m)
+            case "resource_type":
+                let items = try await r.listResourceTypes(vt)
+                guard let rt = items.first(where: { $0.id == id }) else {
+                    throw OpenStackError(service: "metric", status: 404, code: "itemNotFound", message: "Resource type '\(id)' not found")
+                }
+                return try Self.encodeObject(rt)
+            default:
+                throw OpenStackError(service: "metric", status: 404, message: "Unknown metric resource: \(descriptor.name)")
+            }
+        case .messaging:
+            let r = await client.messaging(region: region)
+            switch descriptor.name {
+            case "queue":
+                let q = try await r.getQueue(vt, name: id)
+                return try Self.encodeObject(q)
+            default:
+                throw OpenStackError(service: "messaging", status: 404, message: "Unknown messaging resource: \(descriptor.name)")
+            }
+        case .reservation:
+            let r = await client.reservation(region: region)
+            switch descriptor.name {
+            case "reservation":
+                let res = try await r.getReservation(vt, id: id)
+                return try Self.encodeObject(res)
+            case "allocation":
+                let a = try await r.getAllocation(vt, id: id)
+                return try Self.encodeObject(a)
+            default:
+                throw OpenStackError(service: "reservation", status: 404, message: "Unknown reservation resource: \(descriptor.name)")
+            }
+        case .backup:
+            let r = await client.backup(region: region)
+            switch descriptor.name {
+            case "backup":
+                let b = try await r.getBackup(vt, id: id)
+                return try Self.encodeObject(b)
+            case "schedule":
+                let s = try await r.getSchedule(vt, id: id)
+                return try Self.encodeObject(s)
+            default:
+                throw OpenStackError(service: "backup", status: 404, message: "Unknown backup resource: \(descriptor.name)")
+            }
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
     }
 
@@ -765,6 +839,88 @@ public actor NameResolver {
             default:
                 throw OpenStackError(service: "placement", status: 404, message: "Unknown placement resource: \(descriptor.name)")
             }
+        case .database:
+            let r = await client.database(region: region)
+            switch descriptor.name {
+            case "database_instance":
+                let items = try await r.listInstances(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("database_instance"); result["region"] = .string(region)
+                return result
+            case "database_flavor":
+                let items = try await r.listFlavors(vt, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("database_flavor"); result["region"] = .string(region)
+                return result
+            case "database_datastore":
+                let items = try await r.listDatastores(vt, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("database_datastore"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
+            }
+        case .metric:
+            let r = await client.metric(region: region)
+            switch descriptor.name {
+            case "metric":
+                let items = try await r.listMetrics(vt, name: filters["name"], limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("metric"); result["region"] = .string(region)
+                return result
+            case "resource_type":
+                let items = try await r.listResourceTypes(vt)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("resource_type"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "metric", status: 404, message: "Unknown metric resource: \(descriptor.name)")
+            }
+        case .messaging:
+            let r = await client.messaging(region: region)
+            switch descriptor.name {
+            case "queue":
+                let items = try await r.listQueues(vt)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("queue"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "messaging", status: 404, message: "Unknown messaging resource: \(descriptor.name)")
+            }
+        case .reservation:
+            let r = await client.reservation(region: region)
+            switch descriptor.name {
+            case "reservation":
+                let items = try await r.listReservations(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("reservation"); result["region"] = .string(region)
+                return result
+            case "allocation":
+                let items = try await r.listAllocations(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("allocation"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "reservation", status: 404, message: "Unknown reservation resource: \(descriptor.name)")
+            }
+        case .backup:
+            let r = await client.backup(region: region)
+            switch descriptor.name {
+            case "backup":
+                let items = try await r.listBackups(vt, filters: filters, limit: limit, marker: filters["marker"])
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("backup"); result["region"] = .string(region)
+                return result
+            case "schedule":
+                let items = try await r.listSchedules(vt, filters: filters, limit: limit)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("schedule"); result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "backup", status: 404, message: "Unknown backup resource: \(descriptor.name)")
+            }
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
     }
 
@@ -1138,6 +1294,43 @@ public actor NameResolver {
             // MCP surface (the Placement API only allows it as an admin with
             // generation control).
             throw OpenStackError(service: "placement", status: 400, message: "Placement resource providers are not creatable (host-scoped, admin-only)")
+        case .database:
+            let r = await client.database(region: region)
+            switch descriptor.name {
+            case "database_instance":
+                let name = obj["name"]?.stringValue
+                let flavor = obj["flavorRef"]?.stringValue ?? obj["flavor_ref"]?.stringValue
+                let volume = obj["volume_size"]?.intValue ?? obj["size"]?.intValue
+                let datastore = obj["datastore"]?.stringValue
+                guard let name, let flavor, let volume else {
+                    throw OpenStackError(service: "database", status: 400, message: "Database instance create requires name, flavorRef, volume_size")
+                }
+                let created = try await r.createInstance(vt, CreateDatabaseInstanceSpec(name: name, flavorRef: flavor, volumeSize: volume, datastore: datastore ?? "mysql"))
+                return try Self.encodeObject(created)
+            default:
+                throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
+            }
+        case .metric:
+            throw OpenStackError(service: "metric", status: 400, message: "Metrics are written by Ceilometer collectors; not creatable through this surface")
+        case .messaging:
+            throw OpenStackError(service: "messaging", status: 400, message: "ZaQar queues are created implicitly on first use; not creatable through this surface")
+        case .reservation:
+            let r = await client.reservation(region: region)
+            switch descriptor.name {
+            case "reservation":
+                let name = obj["name"]?.stringValue
+                let flavorID = obj["flavor_id"]?.stringValue
+                let expiry = obj["expiry"]?.stringValue
+                let spec = CreateBlazarReservationSpec(name: name, flavorID: flavorID, expiry: expiry, requiredAny: [])
+                let created = try await r.createReservation(vt, spec)
+                return try Self.encodeObject(created)
+            default:
+                throw OpenStackError(service: "reservation", status: 404, message: "Unknown reservation resource: \(descriptor.name)")
+            }
+        case .backup:
+            throw OpenStackError(service: "backup", status: 400, message: "Freezer backups are created via the volume backup API; not creatable through this surface")
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
     }
 
@@ -1212,6 +1405,18 @@ public actor NameResolver {
             // Resource provider inventory is reported by the hypervisor agent
             // and cannot be updated through this MCP surface.
             throw OpenStackError(service: "placement", status: 501, message: "Placement resource providers are not updatable (inventory is agent-reported)")
+        case .database:
+            throw OpenStackError(service: "database", status: 501, message: "Database instances are resized via a resize action, not update")
+        case .metric:
+            throw OpenStackError(service: "metric", status: 501, message: "Metrics are not updatable (collector-written)")
+        case .messaging:
+            throw OpenStackError(service: "messaging", status: 501, message: "Queues are not updatable (re-create instead)")
+        case .reservation:
+            throw OpenStackError(service: "reservation", status: 501, message: "Reservations are not updatable (delete and re-create)")
+        case .backup:
+            throw OpenStackError(service: "backup", status: 501, message: "Backups are not updatable")
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
     }
 
@@ -1360,6 +1565,32 @@ public actor NameResolver {
             // Deleting a resource provider is an admin operation that detaches
             // live hosts from the scheduler; not exposed through this surface.
             throw OpenStackError(service: "placement", status: 400, message: "Placement resource providers are not deletable through this surface")
+        case .database:
+            let r = await client.database(region: region)
+            switch descriptor.name {
+            case "database_instance":
+                try await r.deleteInstance(vt, id: id)
+                return ["deleted": .bool(true), "id": .string(id)]
+            default:
+                throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
+            }
+        case .metric:
+            throw OpenStackError(service: "metric", status: 400, message: "Metrics are deleted via the Gnocchi REST API directly; not exposed through this surface")
+        case .messaging:
+            throw OpenStackError(service: "messaging", status: 400, message: "Queues are deleted via the ZaQar REST API directly; not exposed through this surface")
+        case .reservation:
+            let r = await client.reservation(region: region)
+            switch descriptor.name {
+            case "reservation":
+                try await r.deleteReservation(vt, id: id)
+                return ["deleted": .bool(true), "id": .string(id)]
+            default:
+                throw OpenStackError(service: "reservation", status: 404, message: "Unknown reservation resource: \(descriptor.name)")
+            }
+        case .backup:
+            throw OpenStackError(service: "backup", status: 400, message: "Freezer backup deletion is not exposed through this surface")
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
         return ["deleted": .bool(true), "id": .string(id)]
     }
@@ -1577,6 +1808,18 @@ public actor NameResolver {
         case .placement:
             // Placement has no custom actions in phase 2.
             throw OpenStackError(service: "placement", status: 501, message: "Placement actions not supported")
+        case .database:
+            throw OpenStackError(service: "database", status: 501, message: "Database actions not supported in phase 1")
+        case .metric:
+            throw OpenStackError(service: "metric", status: 501, message: "Metric actions not supported in phase 1")
+        case .messaging:
+            throw OpenStackError(service: "messaging", status: 501, message: "Messaging actions not supported in phase 1")
+        case .reservation:
+            throw OpenStackError(service: "reservation", status: 501, message: "Reservation actions not supported in phase 1")
+        case .backup:
+            throw OpenStackError(service: "backup", status: 501, message: "Backup actions not supported in phase 1")
+        case .cloudformation:
+            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
         }
     }
 

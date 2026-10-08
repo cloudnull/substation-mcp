@@ -31,6 +31,12 @@ public enum FakeApp {
         OrchestrationFake.registerRoutes(router, state: state)
         ManilaFake.registerRoutes(router, state: state)
         PlacementFake.registerRoutes(router, state: state)
+        // IAD3 gap-fill fakes (phase 2)
+        DatabaseFake.registerRoutes(router, state: state)
+        MetricFake.registerRoutes(router, state: state)
+        MessagingFake.registerRoutes(router, state: state)
+        ReservationFake.registerRoutes(router, state: state)
+        BackupFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()

@@ -64,10 +64,17 @@ struct CatalogCompletenessTests {
             "share", "share_access",
             // Placement (1)
             "placement",
+            // IAD3 gap-fill (11) — phase 2
+            "database_instance", "database_flavor", "database_datastore",
+            "metric", "resource_type",
+            "queue",
+            "reservation", "allocation",
+            "backup", "schedule",
+            "cfn_stack",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 52, "Expected 52 resources (10+10+9+5+1+2+2+5+2+2+1+2+1), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 63, "Expected 63 resources (52 + 11 IAD3 gap-fill), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -423,5 +430,62 @@ struct CatalogCompletenessTests {
         #expect(obj.service == .objectStorage)
         #expect(obj.createSchema != nil)
         #expect(obj.listFilters.contains("container"))
+    }
+
+    // MARK: - IAD3 gap-fill services (phase 2)
+
+    @Test("database has 3 resources and database_instance is pollable + creatable")
+    func databaseCount() {
+        #expect(catalog.resources(for: .database).count == 3)
+        let d = catalog.descriptor("database_instance")!
+        #expect(d.service == .database)
+        #expect(d.statusField == "status")
+        #expect(d.terminalStates.contains("ACTIVE"))
+        #expect(d.verbs.contains(.create) && d.verbs.contains(.delete))
+        #expect(d.createSchema != nil)
+    }
+
+    @Test("metric has 2 resources")
+    func metricCount() {
+        #expect(catalog.resources(for: .metric).count == 2)
+        #expect(catalog.descriptor("metric")!.service == .metric)
+        #expect(catalog.descriptor("resource_type")!.service == .metric)
+        // read-only: no create/update/delete
+        let m = catalog.descriptor("metric")!
+        #expect(!m.verbs.contains(.create) && !m.verbs.contains(.delete))
+    }
+
+    @Test("messaging has 1 read-only queue resource keyed by name")
+    func messagingCount() {
+        #expect(catalog.resources(for: .messaging).count == 1)
+        let q = catalog.descriptor("queue")!
+        #expect(q.service == .messaging)
+        #expect(q.idField == "name")
+        #expect(!q.verbs.contains(.create))
+    }
+
+    @Test("reservation has 2 resources and reservation is pollable + creatable")
+    func reservationCount() {
+        #expect(catalog.resources(for: .reservation).count == 2)
+        let r = catalog.descriptor("reservation")!
+        #expect(r.service == .reservation)
+        #expect(r.statusField == "status")
+        #expect(r.terminalStates.contains("ACTIVE"))
+        #expect(r.verbs.contains(.create) && r.verbs.contains(.delete))
+    }
+
+    @Test("backup has 2 read-only resources")
+    func backupCount() {
+        #expect(catalog.resources(for: .backup).count == 2)
+        #expect(catalog.descriptor("backup")!.service == .backup)
+        #expect(catalog.descriptor("schedule")!.service == .backup)
+    }
+
+    @Test("cloudformation cfn_stack is registered but phase-1 (501 by design)")
+    func cloudFormationCount() {
+        #expect(catalog.resources(for: .cloudformation).count == 1)
+        let c = catalog.descriptor("cfn_stack")!
+        #expect(c.service == .cloudformation)
+        #expect(c.phase1Note != nil)
     }
 }

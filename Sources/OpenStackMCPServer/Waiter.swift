@@ -196,6 +196,12 @@ public struct Waiter: Sendable {
         case .orchestration: return descriptor.name == "stack"
         case .sharev2: return descriptor.name == "share"
         case .placement: return false
+        case .database: return descriptor.name == "database_instance"
+        case .metric: return false
+        case .messaging: return false
+        case .reservation: return descriptor.name == "reservation"
+        case .backup: return false
+        case .cloudformation: return false
         }
     }
 
@@ -327,6 +333,28 @@ public struct Waiter: Sendable {
         case .placement:
             // Resource providers have no lifecycle status a waiter can poll.
             throw OpenStackError(service: "mcp", status: 501, message: "Waiting on placement resources not supported")
+        case .database:
+            if descriptor.name == "database_instance" {
+                let r = await client.database(region: region)
+                let i = try await r.getInstance(vt, id: id)
+                return ["status": .string(i.status)]
+            }
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
+        case .metric:
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on metric resources not supported")
+        case .messaging:
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on messaging resources not supported")
+        case .reservation:
+            if descriptor.name == "reservation" {
+                let r = await client.reservation(region: region)
+                let res = try await r.getReservation(vt, id: id)
+                return ["status": .string(res.status)]
+            }
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")
+        case .backup:
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on backup resources not supported")
+        case .cloudformation:
+            throw OpenStackError(service: "mcp", status: 501, message: "Waiting on cloudformation resources not supported")
         }
     }
 

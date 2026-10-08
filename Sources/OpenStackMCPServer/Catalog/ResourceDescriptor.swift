@@ -15,6 +15,13 @@ public enum Service: String, Sendable, CaseIterable, Codable {
     case orchestration
     case sharev2
     case placement
+    // Phase 2 — IAD3 gap-fill services.
+    case database
+    case metric
+    case messaging
+    case reservation
+    case backup
+    case cloudformation
 }
 
 extension Service {
@@ -40,6 +47,12 @@ extension Service {
         case .orchestration: "orchestration"
         case .sharev2: "sharev2"
         case .placement: "placement"
+        case .database: "database"
+        case .metric: "metric"
+        case .messaging: "messaging"
+        case .reservation: "reservation"
+        case .backup: "backup"
+        case .cloudformation: "cloudformation"
         }
     }
 

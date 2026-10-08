@@ -28,6 +28,13 @@ public struct ResourceCatalog: Sendable {
             OrchestrationEntries.all,
             ShareEntries.all,
             PlacementEntries.all,
+            // Phase 2 — IAD3 gap-fill services.
+            DatabaseEntries.all,
+            MetricEntries.all,
+            MessagingEntries.all,
+            ReservationEntries.all,
+            BackupEntries.all,
+            CloudFormationEntries.all,
         ].flatMap { $0 }
         return ResourceCatalog(resources: all)
     }

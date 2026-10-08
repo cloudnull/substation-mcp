@@ -150,6 +150,36 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Trove database client (phase 2 — IAD3 gap-fill).
+    public func database(region: String? = nil) -> DatabaseRegion {
+        DatabaseService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
+    /// Region-bound Gnocchi metric client (phase 2 — IAD3 gap-fill).
+    public func metric(region: String? = nil) -> MetricRegion {
+        MetricService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
+    /// Region-bound ZaQar messaging client (phase 2 — IAD3 gap-fill).
+    public func messaging(region: String? = nil) -> MessagingRegion {
+        MessagingService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
+    /// Region-bound Blazar reservation client (phase 2 — IAD3 gap-fill).
+    public func reservation(region: String? = nil) -> ReservationRegion {
+        ReservationService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
+    /// Region-bound Freezer backup client (phase 2 — IAD3 gap-fill).
+    public func backup(region: String? = nil) -> BackupRegion {
+        BackupService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

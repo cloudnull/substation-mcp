@@ -633,6 +633,146 @@ public actor FakeState {
         }
     }
 
+    // MARK: - IAD3 gap-fill fake state (phase 2)
+
+    public struct FakeDatabaseInstance: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var flavorRef: String?
+        public var volumeSize: Int
+        public var versionNumber: String?
+        public var created: String
+
+        public init(id: String, projectID: String, name: String, status: String = "ACTIVE", flavorRef: String? = nil, volumeSize: Int = 1, versionNumber: String? = nil, created: String = "2026-01-01T00:00:00.000") {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.flavorRef = flavorRef
+            self.volumeSize = volumeSize
+            self.versionNumber = versionNumber
+            self.created = created
+        }
+    }
+
+    public struct FakeDatabaseFlavor: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var vcpus: Int
+        public var ram: Int
+        public var disk: Int
+
+        public init(id: String, projectID: String, name: String? = nil, vcpus: Int = 1, ram: Int = 1024, disk: Int = 0) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.vcpus = vcpus
+            self.ram = ram
+            self.disk = disk
+        }
+    }
+
+    public struct FakeDatabaseDatastore: Sendable, Identifiable {
+        public let id: String
+        public var name: String?
+
+        public init(id: String, name: String? = nil) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    public struct FakeGnocchiMetric: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var unit: String?
+        public var resourceID: String?
+        public var created: String
+
+        public init(id: String, projectID: String, name: String, unit: String? = nil, resourceID: String? = nil, created: String = "2026-01-01T00:00:00.000") {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.unit = unit
+            self.resourceID = resourceID
+            self.created = created
+        }
+    }
+
+    public struct FakeBlazarReservation: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String?
+        public var status: String
+        public var allocationID: String?
+        public var flavorID: String?
+        public var created: String
+
+        public init(id: String, projectID: String, name: String? = nil, status: String = "ACTIVE", allocationID: String? = nil, flavorID: String? = nil, created: String = "2026-01-01T00:00:00.000") {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.allocationID = allocationID
+            self.flavorID = flavorID
+            self.created = created
+        }
+    }
+
+    public struct FakeBlazarAllocation: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var status: String
+        public var nodeID: String?
+        public var reservationID: String?
+        public var created: String
+
+        public init(id: String, projectID: String, status: String = "ACTIVE", nodeID: String? = nil, reservationID: String? = nil, created: String = "2026-01-01T00:00:00.000") {
+            self.id = id
+            self.projectID = projectID
+            self.status = status
+            self.nodeID = nodeID
+            self.reservationID = reservationID
+            self.created = created
+        }
+    }
+
+    public struct FakeFreezerBackup: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var volumeID: String?
+        public var status: String
+        public var size: Int?
+        public var lastBackup: String?
+
+        public init(id: String, projectID: String, volumeID: String? = nil, status: String = "backup", size: Int? = nil, lastBackup: String? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.volumeID = volumeID
+            self.status = status
+            self.size = size
+            self.lastBackup = lastBackup
+        }
+    }
+
+    public struct FakeFreezerSchedule: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var volumeID: String?
+        public var backupIntervalHours: Int?
+
+        public init(id: String, projectID: String, volumeID: String? = nil, backupIntervalHours: Int? = nil) {
+            self.id = id
+            self.projectID = projectID
+            self.volumeID = volumeID
+            self.backupIntervalHours = backupIntervalHours
+        }
+    }
+
     // MARK: - Heat (orchestration) fake state
 
     public struct FakeHeatStack: Sendable, Identifiable {
@@ -674,6 +814,16 @@ public actor FakeState {
     public private(set) var magnumTemplates: [FakeMagnumTemplate] = []
     public private(set) var heatStacks: [FakeHeatStack] = []
     public private(set) var shares: [FakeShare] = []
+    // IAD3 gap-fill storage (phase 2)
+    public private(set) var databaseInstances: [FakeDatabaseInstance] = []
+    public private(set) var databaseFlavors: [FakeDatabaseFlavor] = []
+    public private(set) var databaseDatastores: [FakeDatabaseDatastore] = []
+    public private(set) var gnocchiMetrics: [FakeGnocchiMetric] = []
+    public private(set) var blazarReservations: [FakeBlazarReservation] = []
+    public private(set) var blazarAllocations: [FakeBlazarAllocation] = []
+    public private(set) var freezerBackups: [FakeFreezerBackup] = []
+    public private(set) var freezerSchedules: [FakeFreezerSchedule] = []
+    public private(set) var zaqarQueues: [String: [String]] = [:]  // projectID -> [queue names]
     public private(set) var shareAccesses: [FakeShareAccess] = []
 
     // MARK: - Manila (shared file systems) fake state
@@ -1120,6 +1270,10 @@ public actor FakeState {
     private var heatStackIDCounter = 0
     private var shareIDCounter = 0
     private var shareAccessIDCounter = 0
+    // IAD3 gap-fill counters (phase 2)
+    private var databaseInstanceIDCounter = 0
+    private var blazarReservationIDCounter = 0
+    private var blazarAllocationIDCounter = 0
     private var volTypeIDCounter = 0
     private var snapIDCounter = 0
     private var backupIDCounter = 0
@@ -1397,6 +1551,29 @@ public actor FakeState {
         magnumTemplates.append(FakeMagnumTemplate(id: "ct-1", projectID: "proj-one", name: "fake-k8s-template", masterCount: 1, nodeCount: 3))
         magnumClusterIDCounter = 1
         magnumClusters.append(FakeMagnumCluster(id: "cluster-1", projectID: "proj-one", name: "fake-k8s-cluster", status: "ACTIVE", masterCount: 1, nodeCount: 3, clusterTemplateID: "ct-1"))
+
+        // IAD3 gap-fill seed (phase 2)
+        databaseFlavors = [
+            FakeDatabaseFlavor(id: "fl-1", projectID: "proj-one", name: "db-1", vcpus: 1, ram: 2048, disk: 0),
+            FakeDatabaseFlavor(id: "fl-2", projectID: "proj-one", name: "db-2", vcpus: 2, ram: 4096, disk: 0),
+        ]
+        databaseDatastores = [
+            FakeDatabaseDatastore(id: "mysql", name: "mysql"),
+            FakeDatabaseDatastore(id: "postgresql", name: "postgresql"),
+        ]
+        databaseInstanceIDCounter = 1
+        databaseInstances.append(FakeDatabaseInstance(id: "db-1", projectID: "proj-one", name: "fake-mysql", status: "ACTIVE", flavorRef: "fl-1", volumeSize: 10, versionNumber: "8.0"))
+        gnocchiMetrics = [
+            FakeGnocchiMetric(id: "gnocchi-1", projectID: "proj-one", name: "cpu.utilization", unit: "%", resourceID: "inst-1"),
+            FakeGnocchiMetric(id: "gnocchi-2", projectID: "proj-one", name: "memory.usage", unit: "B", resourceID: "inst-1"),
+        ]
+        blazarReservationIDCounter = 1
+        blazarReservations.append(FakeBlazarReservation(id: "res-1", projectID: "proj-one", name: "fake-reservation", status: "ACTIVE", allocationID: "alloc-1", flavorID: "flavor-1"))
+        blazarAllocationIDCounter = 1
+        blazarAllocations.append(FakeBlazarAllocation(id: "alloc-1", projectID: "proj-one", status: "ACTIVE", nodeID: "node-1", reservationID: "res-1"))
+        freezerBackups = [FakeFreezerBackup(id: "bk-1", projectID: "proj-one", volumeID: "vol-1", status: "backup", size: 1024, lastBackup: "2026-01-01T00:00:00.000")]
+        freezerSchedules = [FakeFreezerSchedule(id: "sched-1", projectID: "proj-one", volumeID: "vol-1", backupIntervalHours: 24)]
+        zaqarQueues["proj-one"] = ["queue-1", "queue-2"]
 
         // Heat (orchestration) seed: one CREATE_COMPLETE stack with an output.
         heatStackIDCounter = 1
@@ -3006,5 +3183,121 @@ public actor FakeState {
 
     public func resourceProviderUsages(uuid: String) -> [String: Int]? {
         getResourceProvider(uuid: uuid)?.usages
+    }
+
+    // MARK: - IAD3 gap-fill CRUD (phase 2)
+
+    // Trove (database)
+    public func listDatabaseInstances(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeDatabaseInstance] {
+        var result = databaseInstances.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name == name || $0.name.contains(name) } }
+        result.sort { $0.id < $1.id }
+        if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getDatabaseInstance(id: String, projectID: String) -> FakeDatabaseInstance? {
+        databaseInstances.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func createDatabaseInstance(projectID: String, name: String, flavorRef: String?, volumeSize: Int?) -> FakeDatabaseInstance {
+        databaseInstanceIDCounter += 1
+        let i = FakeDatabaseInstance(id: "db-\(databaseInstanceIDCounter)", projectID: projectID, name: name, status: "ACTIVE", flavorRef: flavorRef, volumeSize: volumeSize ?? 1, versionNumber: "8.0")
+        databaseInstances.append(i)
+        return i
+    }
+
+    public func deleteDatabaseInstance(id: String, projectID: String) -> Bool {
+        let idx = databaseInstances.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        databaseInstances.remove(at: idx)
+        return true
+    }
+
+    public func listDatabaseFlavors(projectID: String) -> [FakeDatabaseFlavor] {
+        databaseFlavors.filter { $0.projectID == projectID }.sorted { $0.id < $1.id }
+    }
+
+    public func listDatabaseDatastores(projectID: String) -> [FakeDatabaseDatastore] {
+        databaseDatastores.sorted { $0.id < $1.id }
+    }
+
+    // Gnocchi (metric)
+    public func listGnocchiMetrics(projectID: String, name: String? = nil, limit: Int? = nil) -> [FakeGnocchiMetric] {
+        var result = gnocchiMetrics.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name == name } }
+        result.sort { $0.id < $1.id }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func gnocchiResourceTypes() -> [String] {
+        ["instance", "host", "generic", "image", "identity"]
+    }
+
+    // ZaQar (messaging)
+    public func listZaQarQueues(projectID: String) -> [String] {
+        zaqarQueues[projectID] ?? []
+    }
+
+    public func getZaQarQueue(name: String, projectID: String) -> Bool {
+        (zaqarQueues[projectID] ?? []).contains(name)
+    }
+
+    // Blazar (reservation)
+    public func listBlazarReservations(projectID: String, name: String? = nil, limit: Int? = nil) -> [FakeBlazarReservation] {
+        var result = blazarReservations.filter { $0.projectID == projectID }
+        if let name { result = result.filter { $0.name == name } }
+        result.sort { $0.id < $1.id }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getBlazarReservation(id: String, projectID: String) -> FakeBlazarReservation? {
+        blazarReservations.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func createBlazarReservation(projectID: String, name: String?, flavorID: String?) -> FakeBlazarReservation {
+        blazarReservationIDCounter += 1
+        let r = FakeBlazarReservation(id: "res-\(blazarReservationIDCounter)", projectID: projectID, name: name, status: "ACTIVE", allocationID: nil, flavorID: flavorID)
+        blazarReservations.append(r)
+        return r
+    }
+
+    public func deleteBlazarReservation(id: String, projectID: String) -> Bool {
+        let idx = blazarReservations.firstIndex { $0.id == id && $0.projectID == projectID }
+        guard let idx else { return false }
+        blazarReservations.remove(at: idx)
+        return true
+    }
+
+    public func listBlazarAllocations(projectID: String) -> [FakeBlazarAllocation] {
+        blazarAllocations.filter { $0.projectID == projectID }.sorted { $0.id < $1.id }
+    }
+
+    public func getBlazarAllocation(id: String, projectID: String) -> FakeBlazarAllocation? {
+        blazarAllocations.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    // Freezer (backup)
+    public func listFreezerBackups(projectID: String, limit: Int? = nil) -> [FakeFreezerBackup] {
+        var result = freezerBackups.filter { $0.projectID == projectID }.sorted { $0.id < $1.id }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getFreezerBackup(id: String, projectID: String) -> FakeFreezerBackup? {
+        freezerBackups.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func listFreezerSchedules(projectID: String, limit: Int? = nil) -> [FakeFreezerSchedule] {
+        var result = freezerSchedules.filter { $0.projectID == projectID }.sorted { $0.id < $1.id }
+        if let limit, limit < result.count { result = Array(result[0..<limit]) }
+        return result
+    }
+
+    public func getFreezerSchedule(id: String, projectID: String) -> FakeFreezerSchedule? {
+        freezerSchedules.first { $0.id == id && $0.projectID == projectID }
     }
 }
