@@ -344,6 +344,12 @@ public struct ToolRegistry: Sendable {
     }
     private func argOptional(_ params: CallTool.Parameters, _ name: String) -> String? { arg(params, name)?.stringValue }
     private func argInt(_ params: CallTool.Parameters, _ name: String) -> Int? { arg(params, name)?.intValue }
+    /// Read the wait timeout in seconds. `timeout_seconds` is the documented
+    /// parameter; `timeout` is a convenience alias so a client sending the
+    /// shorter name still gets an honored value instead of a silent ignore.
+    private func argTimeoutSeconds(_ params: CallTool.Parameters) -> Int {
+        argInt(params, "timeout_seconds") ?? argInt(params, "timeout") ?? 120
+    }
     private func argBool(_ params: CallTool.Parameters, _ name: String) -> Bool { arg(params, name)?.boolValue ?? false }
     private func argObject(_ params: CallTool.Parameters, _ name: String) -> [String: Value]? { arg(params, name)?.objectValue }
     private func argStringArray(_ params: CallTool.Parameters, _ name: String) -> [String]? {
@@ -675,7 +681,7 @@ public struct ToolRegistry: Sendable {
         let id = try argString(params, "id")
         let region = try await resolveRegion(params)
         let until = argStringArray(params, "until")
-        let timeoutSeconds = argInt(params, "timeout_seconds") ?? 120
+        let timeoutSeconds = argTimeoutSeconds(params)
         let vt = identity.vt
         let progressToken = params._meta?.progressToken
 
@@ -703,7 +709,7 @@ public struct ToolRegistry: Sendable {
         let id = try argString(params, "id")
         let region = try await resolveRegion(params)
         let until = argStringArray(params, "until")
-        let timeoutSeconds = argInt(params, "timeout_seconds") ?? 120
+        let timeoutSeconds = argTimeoutSeconds(params)
         let vt = identity.vt
         let tokenID = vt.token.id
         let taskRegistry = self.taskRegistry

@@ -116,6 +116,52 @@ struct WaiterTests {
         #expect(text?.contains("ACTIVE") == true, "Should report last observed status")
     }
 
+    @Test("os_wait honors `timeout` as an alias for `timeout_seconds`", )
+    func waitTimeoutAlias() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // srv-0001 is ACTIVE; asking for SHUTOFF without an action means the
+        // state never changes. Pass the timeout under the `timeout` alias —
+        // if it were silently ignored the waiter would run its 120s default
+        // and this test would blow well past its time limit instead of
+        // failing fast at 2s.
+        let result = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("srv-0001"),
+            "until": .array([.string("SHUTOFF")]),
+            "timeout": .int(2),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content)
+        #expect(text?.contains("Timed out") == true, "Should be a timeout error, got: \(text ?? "nil")")
+        #expect(text?.contains("ACTIVE") == true, "Should report last observed status")
+    }
+
+    @Test("os_wait prefers `timeout_seconds` over the `timeout` alias when both are sent", )
+    func waitTimeoutAliasPrecedence() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Conflict: `timeout_seconds` (2s, the documented name) must win over
+        // the alias (120s) — otherwise a fast timeout call could be stretched
+        // by a stray alias value.
+        let result = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("srv-0001"),
+            "until": .array([.string("SHUTOFF")]),
+            "timeout_seconds": .int(2),
+            "timeout": .int(120),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content)
+        #expect(text?.contains("Timed out") == true, "Should be a timeout error, got: \(text ?? "nil")")
+    }
+
     @Test("Waiter reports intermediate status via progress notifications", )
     func waiterProgressDirect() async throws {
         let handle = try await FakeApp.start()
