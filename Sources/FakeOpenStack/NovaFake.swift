@@ -56,6 +56,13 @@ public struct NovaFake {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
             let id = ctx.parameters.get("id") ?? ""
+            // Test-only transient fault injection: one-shot non-404 error so
+            // waiter tests can prove a fetch failure is not mistaken for
+            // "resource gone".
+            if let failStatus = await state.consumeServerGetFailNext(serverID: id) {
+                let code = failStatus >= 400 && failStatus <= 599 ? failStatus : 500
+                return Self.novaError(status: .init(code: code), message: "Injected transient fault (test)")
+            }
             guard let server = await state.getServer(id: id, projectID: token.projectID) else {
                 return Self.novaError(status: .notFound, message: "The resource could not be found.")
             }

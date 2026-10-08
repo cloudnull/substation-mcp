@@ -95,9 +95,18 @@ public struct Waiter: Sendable {
 
         while Date() < timeoutDate {
             polls += 1
-            let (status, exists): (String, Bool) = await fetchStatus(vt, descriptor: descriptor, id: id, region: region)
+            let outcome = await fetchStatus(vt, descriptor: descriptor, id: id, region: region)
 
-            if !exists {
+            switch outcome {
+            case .transient(let error):
+                // A fetch error that is NOT a confirmed 404 (e.g. Nova 500/503,
+                // Keystone flap) is transient. Keep polling — it must never be
+                // reported as deletion or "resource no longer exists". The last
+                // observed status is deliberately left untouched so a later
+                // timeout still reports a real state, not the error.
+                logger.debug("wait poll transient error for \(descriptor.name) \(id): \(error.localizedDescription)")
+
+            case .gone:
                 if waitingForDelete {
                     return [
                         "resource": .string(resource),
@@ -109,42 +118,43 @@ public struct Waiter: Sendable {
                         "polls": .integer(polls),
                     ]
                 }
-                // Resource vanished while waiting for a state: report it
+                // Confirmed 404: the resource vanished while waiting for a state.
                 throw OpenStackError(
                     service: "mcp", status: 404, code: "itemNotFound",
                     message: "Resource \(resource) \(id) no longer exists (last status: \(lastStatus ?? "unknown"))"
                 )
-            }
 
-            lastStatus = status
+            case .found(let status):
+                lastStatus = status
 
-            if faultStates.contains(status) {
-                return [
-                    "resource": .string(resource),
-                    "id": .string(id),
-                    "region": .string(region),
-                    "status": .string(status),
-                    "fault": .bool(true),
-                    "message": .string("\(resource) \(id) reached fault state \(status)"),
-                    "elapsedSeconds": .float(elapsed(start)),
-                    "polls": .integer(polls),
-                ]
-            }
+                if faultStates.contains(status) {
+                    return [
+                        "resource": .string(resource),
+                        "id": .string(id),
+                        "region": .string(region),
+                        "status": .string(status),
+                        "fault": .bool(true),
+                        "message": .string("\(resource) \(id) reached fault state \(status)"),
+                        "elapsedSeconds": .float(elapsed(start)),
+                        "polls": .integer(polls),
+                    ]
+                }
 
-            if targets.contains(status) {
-                return [
-                    "resource": .string(resource),
-                    "id": .string(id),
-                    "region": .string(region),
-                    "status": .string(status),
-                    "elapsedSeconds": .float(elapsed(start)),
-                    "polls": .integer(polls),
-                ]
-            }
+                if targets.contains(status) {
+                    return [
+                        "resource": .string(resource),
+                        "id": .string(id),
+                        "region": .string(region),
+                        "status": .string(status),
+                        "elapsedSeconds": .float(elapsed(start)),
+                        "polls": .integer(polls),
+                    ]
+                }
 
-            // Progress notification with the current status and elapsed seconds
-            if let server, let progressToken {
-                await sendProgress(server: server, token: progressToken, status: status, elapsed: elapsed(start))
+                // Progress notification with the current status and elapsed seconds
+                if let server, let progressToken {
+                    await sendProgress(server: server, token: progressToken, status: status, elapsed: elapsed(start))
+                }
             }
 
             // Sleep with backoff, but never past the timeout
@@ -189,19 +199,30 @@ public struct Waiter: Sendable {
         }
     }
 
-    private func fetchStatus(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async -> (status: String, exists: Bool) {
+    /// The outcome of a single status fetch. Distinguishes "resource exists
+    /// with this status" from "resource confirmed gone (true 404)" from
+    /// "fetch failed transiently". The old `(status, exists)` tuple collapsed
+    /// *every* non-404 error (Nova 500/503, Keystone flap, 429, ...) into
+    /// "not exists", which a poll loop could then misreport as deletion or
+    /// "resource no longer exists".
+    private enum FetchOutcome {
+        case found(status: String)
+        case gone
+        case transient(underlying: Error)
+    }
+
+    private func fetchStatus(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async -> FetchOutcome {
         do {
             let raw = try await getRaw(vt, descriptor: descriptor, id: id, region: region)
             let status = raw["status"]?.stringValue ?? ""
-            return (status, true)
+            return .found(status: status)
         } catch {
             if let e = error as? OpenStackError, e.status == 404 {
-                return ("", false)
+                return .gone
             }
-            // Transient errors: treat as not-found for this poll cycle? No —
-            // surface them, but a 404 is the only meaningful "gone".
-            logger.debug("wait poll error for \(descriptor.name) \(id): \(error.localizedDescription)")
-            return ("", false)
+            // Any other error is transient: the poll loop keeps waiting
+            // instead of treating the resource as gone.
+            return .transient(underlying: error)
         }
     }
 

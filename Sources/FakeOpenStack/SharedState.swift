@@ -870,6 +870,26 @@ public actor FakeState {
         transitionDelay = delay
     }
 
+    /// Test-only knob: the next GET /nova/servers/{id} whose id matches
+    /// `serverID` fails with `status` (e.g. 500) and the knob is consumed.
+    /// Lets waiter tests inject a transient, non-404 fetch failure without
+    /// touching real state. Nil = no failure armed.
+    public var serverGetFailNext: (serverID: String, status: Int)? = nil
+
+    /// Arm a one-shot failure for the next matching fake server GET.
+    public func setServerGetFailNext(_ value: (serverID: String, status: Int)?) {
+        serverGetFailNext = value
+    }
+
+    /// Consume the armed one-shot failure if the requested server id matches.
+    /// Returns the HTTP status to emit, and clears the knob atomically; a
+    /// non-matching id leaves the knob armed (so the arm is precise).
+    public func consumeServerGetFailNext(serverID: String) -> Int? {
+        guard let armed = serverGetFailNext, armed.serverID == serverID else { return nil }
+        serverGetFailNext = nil
+        return armed.status
+    }
+
     public func removeExtension(_ alias: String) {
         extensions.remove(alias)
     }
