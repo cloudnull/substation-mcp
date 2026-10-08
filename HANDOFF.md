@@ -628,3 +628,37 @@ public struct XRegion: Sendable {
 - SDD ledger at `.superpowers/sdd/2026-09-28-substation-mcp-phase-1/progress.md` (gitignored, local-only)
 - Plan at `docs/superpowers/plans/2026-09-28-substation-mcp-phase-1.md`
 - Spec at `specs/substation-mcp-spec.md`
+
+## 2026-10-08: Clean live sat0 compute E2E — blocked by sat0 Keystone endpoint-table corruption (infra, not MCP code)
+
+The alias rollout is functionally complete and live-verified. The "clean live compute E2E" (os_get / os_wait against real Nova) is **blocked at the sat0 Keystone**, not in substation-mcp. Full investigation record:
+
+### What was tried and found (sat0 host `172.16.27.67`, pod `substation-mcp-5745b679-f7vdl`, digest `7849feacc`)
+1. **The `no compute endpoint in region SAT0` error is correct server behavior, caused by an empty token catalog.** `EndpointResolver.endpoint` (Sources/OpenStackClient/EndpointResolver.swift:129) filters the *client token's* catalog by `type == "compute"` and `region == "SAT0"` (case-sensitive) and throws `code: no-endpoint` when nothing matches. With `catalog=0` it must throw.
+2. **Every credential minted from the sat0 host now returns a degraded token.** Probed via public Keystone (`https://keystone.api.sat0.cloudnull.dev`):
+   - admin password, unscoped → token body has `user`, `audit_ids`, `expires_at`, `issued_at`, `methods` only — **no `id`, no `catalog`, no project/domain**.
+   - admin password, project-scoped → 201, **project silently dropped, catalog=0**.
+   - admin password, domain-scoped → 201, `domain=Default`, `roles=[admin, reader, member, manager]`, but catalog flickered: one probe returned `catalog=10`, then 4× and 15× repeats returned `catalog=0`. Non-deterministic → suggests either an active migration on the endpoints table or an LB with mixed backends.
+   - provisioned app-cred `fdd0967e…` (substation/service, the pod's own identity, from k8s secret `substation-mcp-service-identity`) → scope-less mint 201, `roles=[]`, **catalog=0**. Even the pod's own identity has no catalog now.
+3. **`/v3/endpoints` (admin) shows the smoking gun**: 30 endpoint rows, all `region=SAT0`, all **`service_type=None`** (NULL service links). Catalog construction joins endpoints to services by type; with NULL types, zero endpoints can attach to any service → empty catalog for every scoped token.
+4. **Pod-level confirmation**: minting via the in-cluster `keystone-api.openstack.svc.cluster.local:5000` (same path the pod's TokenValidator uses) gives the identical degraded token. A Bearer client token passes validation, then `os_get` fails with `no-endpoint` and `os_wait` reports `Last status: unknown` (transient no-endpoint retries) — exactly the observed symptoms.
+5. **`os_whoami` does NOT prove the client token is healthy.** `handleWhoami` (Sources/OpenStackMCPServer/Tools/ToolRegistry.swift:520) reads `identity.whoami` — the **server's own app-cred identity** (`identity.vt`), not the request's Bearer token. Same for `os_clouds` (:534). During this investigation a live sat0 `os_whoami` returned `project:"unscoped"`, `services:{}`, `regions:[]` — the pod's identity token itself is now degraded. Do not use `os_whoami` output as evidence of client-token health.
+6. The earlier handoff note ("Cline MCP showed `compute: [SAT0]`") was **stale**: the currently connected `substation__` MCP in this Cline environment points at a **Rackspace cloud (region IAD3)**, not sat0. It cannot serve as a sat0 E2E client.
+
+### Conclusion
+- No client-credential choice can fix this: the Keystone backends currently serve catalogs with **no endpoints bound to service types**, so no token (password any scope, app-cred) carries `compute@SAT0`.
+- **Fix is on the sat0 platform side**: repair the Keystone endpoints table (re-register endpoints against services — e.g. `openstack endpoint list`/re-create, or fix the `endpoint.service_id` links / service catalog in the RDO/Genestack deployment) and verify with a domain-scoped admin mint that `catalog` ≥ 10 with `compute` region `SAT0`. Possibly a recent cloud migration/tooling left endpoints orphaned from services.
+- Until then, keep: alias verified live (both `timeout: 2` and `timeout_seconds: 2` → ~2s, HTTP 408 `code: timeout`), `os_wait` transient-fetch behavior verified, 461 local tests green.
+
+### Diagnostic gotchas worth remembering
+- Keystone v3: app-creds carry a **fixed scope**; sending `"scope"` in the mint body → 400/401. Mint scope-less.
+- App-cred mints may need `id` (+`user_id` for name/secret forms) — name+secret+domain alone → 400 "Expecting to find user in application credential".
+- sat0 in-cluster keystone svc rejects some scoped password mints (spurious 400 "invalid JSON" per deploy README); public endpoint accepts them — but currently BOTH return empty catalogs.
+- `kubectl exec POD -- curl -d <json>` works when the JSON has no shell-special chars beyond quotes; avoid embedding secrets in heredoc'd shell scripts (quoting through ssh+heredoc mangles backslashes). Host-side Python + `subprocess` kubectl is the reliable pattern.
+- `os_wait.id` is not name-resolved — pass a server UUID.
+
+### Status
+- Alias rollout: **DONE** (commit `8749860`, sat0 pod verified).
+- Clean live compute E2E: **BLOCKED — sat0 Keystone endpoints table has NULL service links** (infra fix required).
+- Volume lifecycle E2E: **BLOCKED** — sat0 Cinder has no usable backend (unchanged).
+- No further substation-mcp server code change required from this investigation.
