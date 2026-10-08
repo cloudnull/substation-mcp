@@ -7,17 +7,20 @@
   **P2 per-service scopes** — all validated against a real Rackspace sjc3 cloud.
 - **Branch**: `main` (commits land directly on main; the worktree ff-merges).
 - **Latest commits** (newest first):
+  - `8749860` feat(os_wait): honor `timeout` as an alias for `timeout_seconds`
   - `daf83a8` fix(tests): rearmTransientFailures is a free func, not nonisolated
   - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone (+ `fa9adee`
     build(make): default all platforms to the Swift 6.4 container toolchain via `scripts/swift`)
   - `f87be31` fix(compute): rename server via PUT /servers/{id}, not POST
   - `541db14` fix(server-create): handle Nova 202 minimal create response (fallback getServer)
   - `4d9624e` fix(server-create): balance braces in CreateServerSpec.body() (was invalid JSON)
-- **Tests**: **234 tests, 0 failures** across the full suite after the waiter +
-  Swift-6.4 toolchain commits (strict-concurrency test helper fixed in `daf83a8`).
+- **Tests**: **461 tests, 0 failures** across all targets — OpenStackClientTests 176,
+  OpenStackMCPServerTests 236 (incl. the waiter transient-error + `timeout`-alias
+  tests), OpenStackMCPTests 2, HummingbirdMCPTests 47.
 - **os_wait transient-fetch fix deployed to sat0 and live-E2E verified 2026-10-08** —
   see the `Genestack deployment` section below (digest `ea3ae61e`, real
-  ACTIVE→SHUTOFF wait observed).
+  ACTIVE→SHUTOFF wait observed). The E2E exposed a `timeout` vs `timeout_seconds`
+  gotcha, fixed in `8749860` (`timeout` now honored as an alias).
 - **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
 - **Native image**: `scripts/build-image.sh` → `dist/substation-mcp-aarch64-ubi10-v*.tar.gz`
@@ -238,7 +241,9 @@ transient retry; persistent transient errors = **timeout**, never a spurious
 **REMAINING / BLOCKED**: volume-lifecycle E2E is blocked on sat0 Cinder — no usable
 `cinder-volume` backend (`lvmdriver-1` / LVM) is configured, so real volume create/attach
 cannot be exercised. The in-process data-plane is covered by the full suite
-(234 tests, 0 failures after the waiter + Swift-6.4 toolchain commits).
+(461 tests, 0 failures). The `timeout` alias (`8749860`) is merged but not yet on the
+sat0 image — the next CI build + `kubectl rollout restart` picks it up; no behavior
+change for correct callers.
 
 ## Task 20 Implementation Notes (new)
 
