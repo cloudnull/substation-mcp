@@ -630,7 +630,7 @@ public struct ComputeRegion: Sendable {
         }
 
         let body = "{\"server\":{\(parts.joined(separator: ","))}}"
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(id)", body: body.data(using: .utf8))
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/servers/\(id)", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
 

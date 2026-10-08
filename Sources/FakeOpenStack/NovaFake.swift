@@ -445,20 +445,30 @@ public struct NovaFake {
             return Self.jsonResponse(status: .ok, body: "{\"volumeAttachment\":[\(items.joined(separator: ","))]}")
         }
 
-        // MARK: - Update server (POST /servers/:id)
+        // MARK: - Update server (PUT /servers/:id)
 
-        router.post("/nova/servers/:id") { req, ctx in
+        router.put("/nova/servers/:id") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
             let serverID = ctx.parameters.get("id") ?? ""
-            let servers = await state.listServers(projectID: token.projectID)
-            guard let server = servers.first(where: { $0.id == serverID }) else {
+            // Parse "name" from the request body (real Nova rename).
+            var newName: String? = nil
+            if let body = try? await Self.readBody(req),
+               let data = body.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let server = obj["server"] as? [String: Any],
+               let n = server["name"] as? String {
+                newName = n
+            }
+            guard await state.updateServer(id: serverID, name: newName, projectID: token.projectID) else {
                 return Self.novaError(status: .notFound, message: "Server not found")
             }
-            return Self.jsonResponse(status: .accepted, body: Self.serverJSON(server: server))
+            guard let server = await state.getServer(id: serverID, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "Server not found")
+            }
+            return Self.jsonResponse(status: .ok, body: Self.serverJSON(server: server))
         }
     }
 

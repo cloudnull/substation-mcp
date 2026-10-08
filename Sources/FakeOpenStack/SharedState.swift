@@ -1699,6 +1699,14 @@ public actor FakeState {
         return true
     }
 
+    public func updateServer(id: String, name: String? = nil, projectID: String) -> Bool {
+        guard let idx = servers.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else {
+            return false
+        }
+        if let name { servers[idx].name = name }
+        return true
+    }
+
     public func serverAction(id: String, projectID: String, action: String) -> (success: Bool, error: String?) {
         guard let idx = servers.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else {
             return (false, "server not found")

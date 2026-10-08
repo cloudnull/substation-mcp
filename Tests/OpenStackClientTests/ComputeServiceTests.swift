@@ -756,6 +756,10 @@ struct ComputeServiceTests {
         let region = compute.region("RegionOne")
         let server = try await region.updateServer(vt, id: "srv-0001", name: "renamed-server")
         #expect(server.id == "srv-0001")
+        #expect(server.name == "renamed-server")
+        // The rename must persist: a fresh GET reflects the new name.
+        let fetched = try await region.getServer(vt, id: "srv-0001")
+        #expect(fetched.name == "renamed-server")
     }
 
     @Test("tenant isolation: proj-one cannot see proj-two servers", .timeLimit(.minutes(2)))
