@@ -260,7 +260,22 @@ public struct ImageRef: Sendable, Codable, Equatable {
         self.links = links
     }
 
+    /// Polymorphic decoder: Nova returns the server image field either as a
+    /// bare string id (`"image": "<uuid>"`, observed on Rackspace) or as an
+    /// object (`{"id": "<uuid>", "links": [...]}`, standard Nova, where `id`
+    /// may be `null` for imageless servers). Each shape is decoded on a FRESH
+    /// sub-decoder via a `try?` closure so we never mix singleValueContainer
+    /// and keyedContainer on the same decoder instance — mixing corrupts the
+    /// decoder's internal state (same bug class as FlavorRef, commit 3fb7621).
     public init(from decoder: Decoder) throws {
+        if let s = try? {
+            let c = try decoder.singleValueContainer()
+            return try c.decode(String.self)
+        }() {
+            id = s
+            links = []
+            return
+        }
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
         links = try c.decodeIfPresent([Link].self, forKey: .links) ?? []

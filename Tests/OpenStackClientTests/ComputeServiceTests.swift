@@ -251,6 +251,54 @@ struct ComputeServiceTests {
         #expect(ref.id == "m1.small")
     }
 
+    @Test("ImageRef decodes from bare-string id (Rackspace Nova)", .timeLimit(.minutes(2)))
+    func imageRefBareStringForm() throws {
+        // Rackspace Nova returns "image" as a bare string id in server
+        // responses; the keyed-only decoder 500'd os_list/os_get on IAD3
+        // with DecodingError.typeMismatch (Expected Dictionary, found String).
+        let json = "\"e1c9f0a2-1111-2222-3333-444455556666\""
+        let ref = try JSONDecoder().decode(ImageRef.self, from: json.data(using: .utf8)!)
+        #expect(ref.id == "e1c9f0a2-1111-2222-3333-444455556666")
+        #expect(ref.links.isEmpty)
+    }
+
+    @Test("Server decodes bare-string image in full Nova response", .timeLimit(.minutes(2)))
+    func serverDecodesBareStringImage() throws {
+        // Shape Rackspace IAD3 /servers/detail returns: "image" as a bare
+        // string id while "flavor" is the standard object form. The keyed-only
+        // ImageRef 500'd os_list/os_get with DecodingError.typeMismatch
+        // (Expected Dictionary, found String) at servers[0].image.
+        let novaJSON = """
+        {"servers":[{
+            "id":"c2fa19dd-4f47-4094-8c84-b1cecb873a72",
+            "name":"vtest1",
+            "status":"ACTIVE",
+            "image":"e1c9f0a2-1111-2222-3333-444455556666",
+            "flavor":{"id":"gp.0.2.6","links":[]},
+            "addresses":{},
+            "metadata":{},
+            "created":"2026-10-01T00:00:00Z",
+            "security_groups":[]
+        }]}
+        """
+        struct ServerList: Decodable { let servers: [Server] }
+        let decoded = try JSONDecoder().decode(ServerList.self, from: novaJSON.data(using: .utf8)!)
+        let s = decoded.servers[0]
+        #expect(s.id == "c2fa19dd-4f47-4094-8c84-b1cecb873a72")
+        #expect(s.image?.id == "e1c9f0a2-1111-2222-3333-444455556666")
+        #expect(s.image?.links.isEmpty == true)
+    }
+
+    @Test("ImageRef still decodes object form with links (standard Nova)", .timeLimit(.minutes(2)))
+    func imageRefObjectForm() throws {
+        let json = """
+        {"id":"c8705b50-fdb2-4d12-8dd6-ab0e6dd35702","links":[{"rel":"bookmark","href":"https://nova/images/c8705b50"}]}
+        """
+        let ref = try JSONDecoder().decode(ImageRef.self, from: json.data(using: .utf8)!)
+        #expect(ref.id == "c8705b50-fdb2-4d12-8dd6-ab0e6dd35702")
+        #expect(ref.links.count == 1)
+    }
+
     @Test("list servers returns seeded servers for proj-one", .timeLimit(.minutes(2)))
     func listServers() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()
