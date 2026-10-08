@@ -220,7 +220,19 @@ public struct ComputeRegion: Sendable {
         // Invalidate server list cache
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)
 
-        return try decodeSingleServer(result.body)
+        // Nova's 202 create response is a minimal shape ({"server":{"id","links",
+        // "OS-DCF:diskConfig","security_groups","adminPass"}}) that omits
+        // name/status/flavor, which Server.init(from:) requires — a direct decode
+        // of the create body throws keyNotFound. The server DOES exist once Nova
+        // accepts the build request, so fall back to a GET by id (full shape).
+        // If the id can't even be parsed, surface the original decode error.
+        if let server = try? decodeSingleServer(result.body) {
+            return server
+        }
+        guard let id = Self.extractServerID(from: result.body) else {
+            return try decodeSingleServer(result.body)
+        }
+        return try await getServer(vt, id: id)
     }
 
     public func deleteServer(_ vt: ValidatedToken, id: String, force: Bool = false) async throws {
@@ -721,5 +733,19 @@ public struct ComputeRegion: Sendable {
         struct ServerResp: Decodable { let server: Server }
         let decoded = try JSONDecoder().decode(ServerResp.self, from: data)
         return decoded.server
+    }
+
+    /// Pull the server id out of a Nova 202 create response, whose body is
+    /// {"server":{"id":"...","links":[...],...}}. Returns nil when no id is
+    /// present. Uses JSONSerialization on the raw body (the same approach as
+    /// extractFlavorIDs) rather than the Server model, which rejects the
+    /// minimal create shape.
+    static func extractServerID(from data: Data) -> String? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let server = obj["server"] as? [String: Any],
+              let id = server["id"] as? String, !id.isEmpty else {
+            return nil
+        }
+        return id
     }
 }
