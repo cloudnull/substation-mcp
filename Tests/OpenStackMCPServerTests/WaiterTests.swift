@@ -295,9 +295,10 @@ actor ProgressRecorder {
 }
 
 /// Re-arm a one-shot fake server GET failure on a cadence until the returned
-/// task is cancelled. Captures only the Sendable `FakeState`, so the closure
-/// is safe to hand to a background `Task` under strict concurrency.
-nonisolated func rearmTransientFailures(
+/// task is cancelled. A free (nonisolated) function capturing only the
+/// Sendable `FakeState`, so the closure is safe to hand to a background
+/// `Task` under strict concurrency.
+func rearmTransientFailures(
     state: FakeState,
     serverID: String = "srv-0001",
     status: Int = 500,
