@@ -235,8 +235,11 @@ pod IP) exercised `os_wait` live:
 Contract validated end-to-end: confirmed `404` = gone; non-`404` fetch errors =
 transient retry; persistent transient errors = **timeout**, never a spurious
 `itemNotFound`. **Gotcha pinned:** `os_wait`'s timeout param is **`timeout_seconds`**
-(default 120) — a `timeout` key is **silently ignored**. Optional follow-up: add
-`timeout` as an alias so accidental use is honored.
+(default 120) — a `timeout` key was **silently ignored**; `8749860` added `timeout`
+as an honored alias (when both are sent, `timeout_seconds` wins). Second gotcha:
+`os_wait`'s `id` is passed **raw to the service API — no name resolution** (unlike
+`os_get`/`os_list`), so a server *name* gets a confirmed 404 → `itemNotFound`;
+resolve the UUID first.
 
 **REMAINING / BLOCKED**: volume-lifecycle E2E is blocked on sat0 Cinder — no usable
 `cinder-volume` backend (`lvmdriver-1` / LVM) is configured, so real volume create/attach
