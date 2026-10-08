@@ -3,20 +3,30 @@
 ## Current State
 
 - **Phase 1 complete** (22 tasks + `console_url`), **three sat0 real-cloud bugs fixed**, plus
-  **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**, and
-  **P2 per-service scopes** — all validated against a real Rackspace sjc3 cloud.
+  **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**,
+  **P2 per-service scopes**, and the **full IAD3 gap-fill** (Trove, Gnocchi, ZaQar, Blazar,
+  Freezer, Heat-CFN — 11 new catalog resources, 52 → 63) — validated against live
+  Rackspace IAD3 via the local dev server.
 - **Branch**: `main` (commits land directly on main; the worktree ff-merges).
 - **Latest commits** (newest first):
+  - `1d13852` feat(iad3): cover all remaining IAD3 services (Trove/Gnocchi/ZaQar/Blazar/Freezer + CFN 501)
+  - `48daa06` docs(handoff): record clean live IAD3 compute E2E (alias rollout complete)
+  - `404e03b` fix(decode): ImageRef accepts bare-string Nova image field (Rackspace)
   - `8749860` feat(os_wait): honor `timeout` as an alias for `timeout_seconds`
-  - `daf83a8` fix(tests): rearmTransientFailures is a free func, not nonisolated
-  - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone (+ `fa9adee`
-    build(make): default all platforms to the Swift 6.4 container toolchain via `scripts/swift`)
-  - `f87be31` fix(compute): rename server via PUT /servers/{id}, not POST
-  - `541db14` fix(server-create): handle Nova 202 minimal create response (fallback getServer)
-  - `4d9624e` fix(server-create): balance braces in CreateServerSpec.body() (was invalid JSON)
-- **Tests**: **461 tests, 0 failures** across all targets — OpenStackClientTests 176,
-  OpenStackMCPServerTests 236 (incl. the waiter transient-error + `timeout`-alias
-  tests), OpenStackMCPTests 2, HummingbirdMCPTests 47.
+  - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone
+- **Tests**: **515 tests, 0 failures** across all targets — OpenStackClientTests 242,
+  OpenStackMCPServerTests 182, HummingbirdMCPTests 47, OpenStackMCPTests 42,
+  OpenStackMCPIntegrationTests 2. (Up from 502 at the IAD3 compute E2E close: +5
+  gap-fill client lifecycle tests, +6 catalog tests, +2 opt-in integration.)
+- **Catalog**: **63 resources** (52 pre-gap-fill + 11: `database_instance`,
+  `database_flavor`, `database_datastore`, `metric`, `resource_type`, `queue`,
+  `reservation`, `allocation`, `backup`, `schedule`, `cfn_stack`). `cfn_stack` is
+  501-by-design (SigV4, not Keystone tokens).
+- **Live IAD3 gap-fill status** (2026-10-08): Trove + Gnocchi fully live with real
+  data; ZaQar (525 TLS at edge), Blazar (503 backend down), Freezer (catalog points
+  at a dfw3 dev host, 401) are upstream-broken — clients are wired and fake-verified,
+  zero code change needed when the endpoints heal. Details in the
+  "IAD3 gap-fill: six remaining services (2026-10-08)" section below.
 - **os_wait transient-fetch fix deployed to sat0 and live-E2E verified 2026-10-08** —
   see the `Genestack deployment` section below (digest `ea3ae61e`, real
   ACTIVE→SHUTOFF wait observed). The E2E exposed a `timeout` vs `timeout_seconds`
@@ -637,6 +647,112 @@ public struct XRegion: Sendable {
 - SDD ledger at `.superpowers/sdd/2026-09-28-substation-mcp-phase-1/progress.md` (gitignored, local-only)
 - Plan at `docs/superpowers/plans/2026-09-28-substation-mcp-phase-1.md`
 - Spec at `specs/substation-mcp-spec.md`
+
+## IAD3 gap-fill: six remaining services (2026-10-08)
+
+Goal: cover **all** remaining IAD3-available services. Before: 52 catalog resources
+(compute/network/volume/image/object/identity/key-manager/load-balancer/placement/
+container-infra/orchestration + fake). After: **63** (+11).
+
+### What was added (new files unless noted)
+
+- **Clients** (`Sources/OpenStackClient/Services/` + `Models/`):
+  - `DatabaseService` / `DatabaseModels` (Trove, service type `database`) — instances
+    (full lifecycle L/G/C/D + actions resize/reboot/rebuild), flavors, datastores.
+  - `MetricService` / `MetricModels` (Gnocchi, `metric`) — metrics (list/get/create),
+    resource types.
+  - `MessagingService` / `MessagingModels` (ZaQar, `messaging`) — queues, name-keyed
+    (get/list/create/delete); read-only otherwise (no message-body API).
+  - `ReservationService` / `ReservationModels` (Blazar, `reservation`) — reservations
+    (L/G/C/D) + allocations.
+  - `BackupService` / `BackupModels` (Freezer, `backup`) — backups + schedules.
+- **Catalog entries** (`Sources/OpenStackMCPServer/Catalog/`): `DatabaseEntries`,
+  `MetricEntries`, `MessagingEntries`, `ReservationEntries`, `BackupEntries`,
+  `CloudFormationEntries` (+ 11 `ResourceDescriptor`s, `Service` enum cases +
+  raw-string mappings in `ResourceDescriptor.swift`).
+- **Dispatch**: `NameResolver` — get/list/create/update/delete/actions for all six
+  (CFN = 501). **Waiter**: `database_instance` + `reservation` pollable by `status`;
+  metric/messaging/backup/cfn = honest 501.
+- **Fakes** (`Sources/FakeOpenStack/`): `DatabaseFake`, `MetricFake`, `MessagingFake`,
+  `ReservationFake`, `BackupFake` + `SharedState` storage + `FakeApp`/`KeystoneFake`
+  routes and catalog endpoints, so every path is unit-tested offline.
+- **Tests**: `Tests/OpenStackClientTests/Iad3GapFillServiceTests.swift` (5 client
+  lifecycle tests against the fake cloud) + `CatalogCompletenessTests` updated
+  (63 total / 11 new).
+
+### Endpoint strategies (the per-service gotchas)
+
+- **Trove** (`database`): catalog URL already carries `/v1.0/<project>` →
+  `serviceRoot = ""`, `basePath = ""`. Project already injected by Keystone.
+- **Gnocchi** (`metric`): catalog URL is the host root (no `/v1`) →
+  `serviceRoot = "v1"`. (Same trap as Neutron: Rackspace's Gnocchi catalog entry has
+  no version path; the client must supply `/v1`.)
+- **ZaQar** (`messaging`): catalog URL is the host root → `serviceRoot = "v1"`, and
+  the path is built from scratch as `<project>/queues` — the token's project id is
+  injected by the resolver.
+- **Blazar** (`reservation`): catalog URL carries `/v1` → `serviceRoot = ""`,
+  `basePath = ""` (catalog is authoritative, like Heat).
+- **Freezer** (`backup`): catalog URL is the host root → `serviceRoot = "v1"`.
+- **Heat-CFN** (`cloudformation`): **501 by design.** IAD3's heat-cfn endpoint
+  (`https://cloudformation.api.iad3.rackspacecloud.com/v1`) authenticates with
+  **AWS SigV4** request signing, not Keystone bearer tokens — the existing token
+  transport cannot speak it. `cfn_stack` is registered in the catalog so it shows
+  up in `os_describe`/enums, but dispatch returns an honest
+  `501 "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported
+  in phase 1"`. (Same pattern as the phase-1 identity resources.)
+
+### New IAD3 quirk handled (lenient decode, same family as Nova/Cinder/Barbican)
+
+- **Trove flavor lists return `id: null`.** The real UUID lives in `str_id` (or the
+  `links[self].href` last path segment). `DatabaseFlavor.init(from:)` now derives
+  `id` in order: `str_id` → self-link href → `id` → `""`. Without this, `os_list
+  database_flavor` 500s with `keyNotFound: id`. (Verified: 17 flavors return after
+  the fix.)
+
+### Live IAD3 validation (2026-10-08, via the local dev server + curl MCP wire)
+
+| Resource | Live result | Layer |
+|---|---|---|
+| `database_instance` | `count: 0` (none in project) | ✅ reachable |
+| `database_flavor` | `count: 17` (after str_id fix) | ✅ reachable |
+| `database_datastore` | `count: 1` (mysql) | ✅ reachable |
+| `metric` | `count: 200` (real metrics) | ✅ reachable |
+| `resource_type` | `count: 24` | ✅ reachable |
+| `queue` | `525` (Cloudflare SSL handshake failed w/ origin) | ⚠️ upstream TLS |
+| `reservation` | `503` (backend down; flapped 404 earlier) | ⚠️ upstream |
+| `allocation` | `503` | ⚠️ upstream |
+| `backup` | `401` (catalog → dfw3 dev host) | ⚠️ wrong endpoint |
+| `schedule` | `401` | ⚠️ wrong endpoint |
+| `cfn_stack` | `501` (SigV4) | by design |
+
+**ZaQar 525 / Blazar 503 are NOT our bug.** Direct `curl` to the catalog endpoints
+with the subject token (no substation in the loop) reproduces them identically:
+- ZaQar: `GET https://zaqar.api.iad3.rackspacecloud.com/` with **no token** returns
+  525 — it fails independent of auth/path/project. 525 = the Rackspace edge failed
+  the TLS session with the ZaQar origin pod.
+- Blazar: `https://blazar.api.iad3.rackspacecloud.com/v1/reservations` returns a
+  stable 503 whose error page says "The **Keystone** service is temporarily
+  unavailable" — a mislabeled generic stack page meaning the Blazar API isn't up
+  behind that hostname. Earlier it 404'd (web server, no routes) — i.e. it's
+  flapping/redeploying.
+
+**When those endpoints heal, zero client code changes are needed** — the request
+shapes are standard (verified against the fakes) and the catalog URLs are already
+correct. The clients are fully wired and fake-tested today.
+
+### Rebuild + restart (Apple container gotchas re-confirmed)
+
+- `container rm` refuses a running container → `container stop` first. Note this
+  container was previously created `--rm`, so `stop` **destroys** it; recreate with
+  `container run --name substation-mcp -c 4 -m 4g -p 8080:8080 -v <worktree>:/work
+  swift:6.4-rhel-ubi10 /work/.build/debug/substation-mcp serve --config
+  /work/dist/rackspace-iad3/config.yaml`.
+- `dist/` is gitignored (clouds.yaml + config.yaml are local-only, bind-mounted at
+  `/work/dist/rackspace-iad3/`).
+- **The MCP client (Cline) session expires on server restart** — re-init or the
+  `substation__` tools 401 with "session not found or expired". Curl-based MCP
+  handshake (initialize → `mcp-session-id` → `tools/call`) works without touching the
+  client and is how the live validation above was done.
 
 ## 2026-10-08: Clean live sat0 compute E2E — blocked by sat0 Keystone endpoint-table corruption (infra, not MCP code)
 
