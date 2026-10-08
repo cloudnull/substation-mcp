@@ -7,12 +7,17 @@
   **P2 per-service scopes** — all validated against a real Rackspace sjc3 cloud.
 - **Branch**: `main` (commits land directly on main; the worktree ff-merges).
 - **Latest commits** (newest first):
-  - `e6ed9a2` chore: gitignore `.openstack-credentials.md` (keep creds local-only)
-  - `43b7b32` fix(octavia): use v2 (Rackspace) + pass token to version negotiator in stateless mode
-  - `a43f08c` feat(versioning): negotiate API versions across service types (real cloud formats)
-  - `2c74ac3` feat(auth): P2 per-service scopes (config-gated) + form-mode elicitation hardening
-  - `6bde5b4` feat(routing): per-service multi-endpoint resolution (catalog = authoritative base)
-- **Tests**: **451 tests, 0 failures** across the full suite (up from 373 at Phase 1 close).
+  - `daf83a8` fix(tests): rearmTransientFailures is a free func, not nonisolated
+  - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone (+ `fa9adee`
+    build(make): default all platforms to the Swift 6.4 container toolchain via `scripts/swift`)
+  - `f87be31` fix(compute): rename server via PUT /servers/{id}, not POST
+  - `541db14` fix(server-create): handle Nova 202 minimal create response (fallback getServer)
+  - `4d9624e` fix(server-create): balance braces in CreateServerSpec.body() (was invalid JSON)
+- **Tests**: **234 tests, 0 failures** across the full suite after the waiter +
+  Swift-6.4 toolchain commits (strict-concurrency test helper fixed in `daf83a8`).
+- **os_wait transient-fetch fix deployed to sat0 and live-E2E verified 2026-10-08** —
+  see the `Genestack deployment` section below (digest `ea3ae61e`, real
+  ACTIVE→SHUTOFF wait observed).
 - **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
 - **Native image**: `scripts/build-image.sh` → `dist/substation-mcp-aarch64-ubi10-v*.tar.gz`
@@ -213,10 +218,27 @@ created (`/proc/nent/tcp` showed no SYN ever sent, ELG threads idle). Fixed: cha
 30s connect timeout, and explicit `MultiThreadedEventLoopGroup` changes (commit `b300c14`)
 were correct hardening but NOT the cause.
 
-**REMAINING**: a live authenticated `os_whoami`/conformance against the real sat0 cloud
-needs a Keystone token (admin app-cred or password to mint) — not yet run. The in-process
-MCP data-plane is covered by the 457 green tests (`HummingbirdMCPTests` full Streamable-HTTP
-handshake incl. `os_whoami` against the fake).
+**LIVE E2E — os_wait transient-fetch fix: PASS (2026-10-08).** After the fix landed
+(`1700132` — the waiter treats only a *confirmed* `404` as "gone"; every other fetch
+error is transient and retried until `timeout_seconds`), the sat0 deployment was
+restarted and confirmed running final image digest **`ea3ae61e`** on pod
+`substation-mcp-6cfc8cfd99-46mdp`. A real authenticated Streamable-HTTP session
+(Keystone admin token minted in-cluster, client run from the sat0 host against the
+pod IP) exercised `os_wait` live:
+- **`WAIT-ACTIVE`** on an already-ACTIVE server returned **immediately** (no-op case).
+- **`WAIT-SHUTOFF`** tracked a real **ACTIVE → SHUTOFF** transition across **5 polls**
+  and returned `SHUTOFF` (a genuine state change, not a timeout artifact).
+
+Contract validated end-to-end: confirmed `404` = gone; non-`404` fetch errors =
+transient retry; persistent transient errors = **timeout**, never a spurious
+`itemNotFound`. **Gotcha pinned:** `os_wait`'s timeout param is **`timeout_seconds`**
+(default 120) — a `timeout` key is **silently ignored**. Optional follow-up: add
+`timeout` as an alias so accidental use is honored.
+
+**REMAINING / BLOCKED**: volume-lifecycle E2E is blocked on sat0 Cinder — no usable
+`cinder-volume` backend (`lvmdriver-1` / LVM) is configured, so real volume create/attach
+cannot be exercised. The in-process data-plane is covered by the full suite
+(234 tests, 0 failures after the waiter + Swift-6.4 toolchain commits).
 
 ## Task 20 Implementation Notes (new)
 
