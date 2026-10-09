@@ -178,7 +178,14 @@ struct ServeSessionTests {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
         let store = TokenStore()
-        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        // P1 profile: under the P3 `oauth` default the PRM names the server's
+        // own OAuth AS instead, so pin `keystone_token` here.
+        let p1Config = OpenStackMCPConfig(
+            serverPublicURL: "http://127.0.0.1:8080",
+            authProfile: "keystone_token",
+            authKeystoneURL: nil
+        )
+        let app = makeServeApp(handle: handle, config: p1Config, tokenStore: store)
         defer { app.shutdown() }
         // The PRM JSON escapes "/" as "\/", so match on the unescaped path
         // tail and the RFC 9728 keys rather than the full URL.

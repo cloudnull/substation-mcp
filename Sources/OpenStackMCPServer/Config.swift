@@ -26,6 +26,26 @@ public struct OpenStackMCPConfig: Sendable {
     public var authFailedAuthPerMinute: Int
     public var authLoginPageEnabled: Bool
 
+    // MARK: oauth (stateless OAuth 2.1 AS, P3)
+    /// The shared HS256 secret that signs authorization codes and `stst.at.`
+    /// access tokens. **Recommended for production** (set an operator-chosen
+    /// high-entropy value). When left unset with `auth.profile == "oauth"` the
+    /// server derives a deterministic dev secret from the resolved issuer
+    /// (see ``oauthSecretResolved``) so the OAuth experience is zero-config;
+    /// the derived secret is not a substitute for an explicit one, and it
+    /// changes whenever the issuer (public URL / host:port) changes, which
+    /// invalidates previously issued `stst.at.` tokens.
+    public var oauthServerSecret: String?
+    /// Authorization-code TTL in seconds. The code JWT's `exp` also never
+    /// exceeds the embedded Keystone token's own expiry.
+    public var oauthCodeTTL: Int
+    /// Maximum access-token TTL in seconds. The issued token's `exp` is capped
+    /// at the embedded Keystone token's remaining lifetime.
+    public var oauthTokenTTL: Int
+    /// Explicit issuer override. Defaults to `<publicURL><endpoint>/oauth`
+    /// (the RFC 8414 issuer must equal the URL the metadata is served under).
+    public var oauthIssuer: String?
+
     // MARK: clouds
     public var cloudsDefault: String?
     public var cloudsAllowed: [String]
@@ -62,12 +82,16 @@ public struct OpenStackMCPConfig: Sendable {
         serverPublicURL: String? = nil,
         serverTLSCert: String? = nil,
         serverTLSKey: String? = nil,
-        authProfile: String = "keystone_token",
+        authProfile: String = "oauth",
         authScopes: String = "coarse",
         authKeystoneURL: String? = nil,
         authTokenCacheTTL: Int = 60,
         authFailedAuthPerMinute: Int = 10,
         authLoginPageEnabled: Bool = true,
+        oauthServerSecret: String? = nil,
+        oauthCodeTTL: Int = 120,
+        oauthTokenTTL: Int = 3600,
+        oauthIssuer: String? = nil,
         cloudsDefault: String? = nil,
         cloudsAllowed: [String] = [],
         cloudsFile: String? = nil,
@@ -102,6 +126,10 @@ public struct OpenStackMCPConfig: Sendable {
         self.authTokenCacheTTL = authTokenCacheTTL
         self.authFailedAuthPerMinute = authFailedAuthPerMinute
         self.authLoginPageEnabled = authLoginPageEnabled
+        self.oauthServerSecret = oauthServerSecret
+        self.oauthCodeTTL = oauthCodeTTL
+        self.oauthTokenTTL = oauthTokenTTL
+        self.oauthIssuer = oauthIssuer
         self.cloudsDefault = cloudsDefault
         self.cloudsAllowed = cloudsAllowed
         self.cloudsFile = cloudsFile
@@ -150,5 +178,46 @@ public struct OpenStackMCPConfig: Sendable {
     /// Projects this deployment serves; empty = serve all (the phase-1 default).
     public var servedProjects: Set<String> {
         []
+    }
+
+    // MARK: OAuth AS (P3)
+
+    /// Whether the stateless OAuth 2.1 authorization server is enabled.
+    /// `auth.profile == "oauth"` is sufficient: when no explicit
+    /// `oauth.server_secret` is configured, ``oauthSecretResolved`` falls back
+    /// to a deterministic dev secret derived from the resolved issuer, so the
+    /// OAuth experience works with zero config. Deploying with an explicit
+    /// secret is required for production (see ``oauthSecretResolved``).
+    public var oauthEnabled: Bool {
+        authProfileEnum == .oauth
+    }
+
+    /// The HS256 secret the AS signs with: the operator-configured
+    /// `oauth.server_secret` when set, otherwise a deterministic dev secret
+    /// `sha256Hex("substation-oauth-dev" + issuer)` derived from the resolved
+    /// issuer. Derivation is a statelessness-friendly bootstrap, not a
+    /// production control — anyone who knows the public URL can recompute
+    /// it, so any deployment reachable by untrusted parties MUST set
+    /// `oauth.server_secret` explicitly.
+    public var oauthSecretResolved: String {
+        if let secret = oauthServerSecret, !secret.isEmpty {
+            return secret
+        }
+        return "dev-" + sha256Hex("substation-oauth-dev" + oauthIssuerResolved)
+    }
+
+    /// The issuer the AS advertises. Defaults to
+    /// `<publicURL><endpoint>/oauth` so the RFC 8414 `issuer` exactly matches
+    /// the URL under which the metadata document is served
+    /// (`<issuer>/.well-known/oauth-authorization-server`).
+    public var oauthIssuerResolved: String {
+        if let override = oauthIssuer, !override.isEmpty {
+            return override
+        }
+        let base = serverPublicURL ?? "http://\(serverHost):\(serverPort)"
+        let trimmedBase = base.hasSuffix("/") ? String(base.dropLast()) : base
+        let trimmedEndpoint = serverEndpoint.hasSuffix("/")
+            ? String(serverEndpoint.dropLast()) : serverEndpoint
+        return trimmedBase + trimmedEndpoint + "/oauth"
     }
 }

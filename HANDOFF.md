@@ -14,10 +14,47 @@
   - `404e03b` fix(decode): ImageRef accepts bare-string Nova image field (Rackspace)
   - `8749860` feat(os_wait): honor `timeout` as an alias for `timeout_seconds`
   - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone
-- **Tests**: **515 tests, 0 failures** across all targets — OpenStackClientTests 242,
-  OpenStackMCPServerTests 182, HummingbirdMCPTests 47, OpenStackMCPTests 42,
-  OpenStackMCPIntegrationTests 2. (Up from 502 at the IAD3 compute E2E close: +5
-  gap-fill client lifecycle tests, +6 catalog tests, +2 opt-in integration.)
+- **P3 OAuth re-land (this branch `p3-oauth-reland`)**: the stateless OAuth 2.1
+  authorization server is restored from the P3 checkpoint (`c36a635`, `7490bed`)
+  and lands on `main` as the **default** `auth.profile = "oauth"`. The server
+  fronts Keystone as its own RFC 8414 AS: deterministic DCR (RFC 7591),
+  authorization-code + PKCE S256, HS256-signed JWT code and `stst.at.` access
+  tokens, browser consent page, loopback-redirect enforcement, and a
+  DEBUG-only headless `dev-mint` endpoint. The MCP gate is a **composite
+  validator**: `stst.at.` JWTs are verified in-process (issuer + expiry +
+  constant-time signature compare) and their embedded Keystone token id is
+  delegated to the P1 `TokenValidator`; **any other bearer token is handled
+  exactly as P1** — existing `keystone_token` clients work unchanged. When
+  `oauth.server_secret` is unset, the AS derives a deterministic **dev** secret
+  (`"dev-" + sha256_hex("substation-oauth-dev" + issuer)`) so OAuth is
+  zero-config; **production must set `oauth.server_secret` explicitly** (full
+  details: `deploy/OAUTH.md`). Gaps closed during the port: G1 default profile
+  flipped to `oauth`, G2 zero-config secret bootstrap (`oauthSecretResolved`),
+  G3 constant-time JWT signature comparison (`constantTimeEquals`), G5 `jti`
+  extraction verified (`jtiOf` in `OAuthRoutes.swift`), G6 build + full test
+  suite green — the checkpoint test file had **never compiled or passed**
+  against `main`, so these were required: (a) Swift-6 `init`-identifier,
+  argument-order, and `headers[.location]` API fixes in `OAuthServerTests.swift`;
+  (b) every E2E test URL had a double `/v1/oauth` prefix (the helper `issuer`
+  already includes it); (c) `parseLocation` — the fragment branch
+  (`split("#").last`) was taken even for success redirects, so no test could
+  read `code` from the query string; (d) the P1 PRM test pinned to
+  `auth.profile = "keystone_token"` (the PRM names the AS under the new
+  `oauth` default); (e) **production fix**: RFC 8414 §2 requires absolute
+  endpoint URIs in the metadata, but `metadata()` emitted relative
+  `path`-based URIs — now derived from the issuer; (f) the non-loopback
+  `redirect_uri` test now expects the 400 JSON error the code actually
+  returns (an error redirect to an untrusted URI would leak state off-origin,
+  so 400 is correct). Known limitations (documented, not blocked): G4
+  `CodeReplayStore` is instance-local (single replica, or back with a shared
+  cache), G8 no per-service scope enforcement beyond the existing coarse
+  scopes, G9 dev-mint is `#if DEBUG`-gated (not compiled into release builds).
+  Docs updated: spec §6.0 + config table, README auth section + config table,
+  `deploy/OAUTH.md` (new), this file.
+- **Tests**: **550 tests, 0 failures** across all targets — OpenStackClientTests 242,
+  OpenStackMCPServerTests 217 (was 182; +35 OAuth AS unit + E2E tests),
+  HummingbirdMCPTests 47, OpenStackMCPTests 42,
+  OpenStackMCPIntegrationTests 2. (Up from 515 pre-OAuth: +35 OAuth tests.)
 - **Catalog**: **63 resources** (52 pre-gap-fill + 11: `database_instance`,
   `database_flavor`, `database_datastore`, `metric`, `resource_type`, `queue`,
   `reservation`, `allocation`, `backup`, `schedule`, `cfn_stack`). `cfn_stack` is

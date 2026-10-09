@@ -76,6 +76,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             swiftSettings: swiftSettings
         ),
@@ -136,8 +137,13 @@ let package = Package(
             name: "OpenStackMCPServerTests",
             dependencies: [
                 .target(name: "OpenStackMCPServer"),
+                .target(name: "OpenStackClient"),
+                .target(name: "HummingbirdMCP"),
                 .target(name: "FakeOpenStack"),
                 .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ],
             swiftSettings: swiftSettings
         ),

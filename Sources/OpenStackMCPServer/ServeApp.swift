@@ -35,7 +35,6 @@ public struct ServeApp: Sendable {
         self.wiring = wiring
 
         // The OpenStack-specific seams.
-        let appValidator = AppTokenValidator(validator: wiring.validator)
         let gate = WriteToolGate(toolNames: [
             "os_create", "os_update", "os_delete", "os_action", "os_attach", "os_detach",
         ])
@@ -54,16 +53,60 @@ public struct ServeApp: Sendable {
         let publicURL = config.serverPublicURL
             ?? "http://\(config.serverHost):\(config.serverPort)"
         let keystoneURL = URL(string: config.authKeystoneURL ?? cloud.authURL?.absoluteString ?? "")
+
+        // P3: the stateless OAuth 2.1 AS (the default auth profile). Built
+        // before the PRM so the PRM can point `authorization_servers` at the
+        // AS issuer. When `oauth.server_secret` is unset the server derives a
+        // deterministic dev secret from the resolved issuer (zero-config
+        // bootstrap; set an explicit secret for production).
+        let minter = LoginMinter(transport: wiring.transport, logger: logger)
+        let oauthServer: OAuthAuthorizationServer?
+        if config.oauthEnabled {
+            #if DEBUG
+            let devMintEnabled = true
+            #else
+            let devMintEnabled = false
+            #endif
+            oauthServer = OAuthAuthorizationServer(
+                secret: config.oauthSecretResolved,
+                issuer: config.oauthIssuerResolved,
+                codeTTL: config.oauthCodeTTL,
+                tokenTTL: config.oauthTokenTTL,
+                endpoint: config.serverEndpoint,
+                devMintEnabled: devMintEnabled,
+                minter: minter,
+                tokenValidator: wiring.validator,
+                logger: logger
+            )
+        } else {
+            oauthServer = nil
+        }
+
         let prmDocument = ProtectedResourceMetadata.document(
             publicURL: publicURL,
             authProfile: config.authProfileEnum,
             keystoneURL: keystoneURL,
+            authServerURL: oauthServer.flatMap { URL(string: $0.issuer) },
             scopesSupported: config.authScopesPerService
                 ? ["openstack:read", "openstack:write"] + Service.allServiceScopeNames
                 : nil
         )
 
-        let minter = LoginMinter(transport: wiring.transport, logger: logger)
+        // The MCP gate's validator: composite (OAuth + Keystone) when the AS is
+        // enabled, otherwise the plain Keystone validator (P1 unchanged).
+        let appValidator = AppTokenValidator(validator: wiring.validator)
+        let routeValidator: any TokenValidating
+        if let oauthServer {
+            routeValidator = CompositeTokenValidator(
+                oauth: oauthServer,
+                keystone: appValidator,
+                tokenValidator: wiring.validator,
+                logger: logger
+            )
+        } else {
+            routeValidator = appValidator
+        }
+
         let loginPage = LoginPage(minter: minter, logger: logger)
 
         let serverFactory = wiring.makeServerFactory(
@@ -86,7 +129,7 @@ public struct ServeApp: Sendable {
                 cleanupInterval: .seconds(60),
                 publicURL: publicURL
             ),
-            validator: appValidator,
+            validator: routeValidator,
             serverFactory: serverFactory,
             gate: gate,
             terminated: { _ in
@@ -107,6 +150,13 @@ public struct ServeApp: Sendable {
             },
             login: config.authLoginPageEnabled ? loginPage.handler() : nil
         )
+
+        // Mount the stateless OAuth AS routes when enabled (P2). These live
+        // under `<endpoint>/oauth/*` plus the RFC 8414 metadata at
+        // `<issuer>/.well-known/oauth-authorization-server`.
+        if let oauthServer {
+            oauthServer.install(on: router)
+        }
 
         // Non-MCP routes (spec §7.3).
         router.get("/healthz") { _, _ in

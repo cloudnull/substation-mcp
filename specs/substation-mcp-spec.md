@@ -161,10 +161,10 @@ The design conforms to the MCP 2025-11-25 authorization spec the way any authent
 
 Two profiles, selected by **deployment config** (`auth.profile`), with an identical server skeleton. The client never needs to know which is in use — it presents a bearer token and follows the 401 challenge; login is either client-side mint or the server's URL page.
 
-- **P1 — `keystone_token` (default).** For clouds with plain Keystone v3 and no OAuth. The client's bearer token **is** a Keystone v3 token. The server validates it with Keystone (`GET /v3/auth/tokens`), checks it is for a project this deployment serves (our audience step), and uses it upstream. The Protected Resource Metadata document's `authorization_servers` names the **Keystone** URL.
-- **P2 — `oauth`.** For clouds that front an OAuth 2.1 authorization server (Keycloak/OIDC). Same skeleton; the metadata's `authorization_servers` names that AS and the server validates via its introspection/JWKS endpoint. **Phase 1 ships the metadata indirection and config only; the AS validation path is a phase 2 build.** P2 is designed-for, not built, in phase 1.
+- **P1 — `keystone_token`.** For clouds with plain Keystone v3 and no OAuth. The client's bearer token **is** a Keystone v3 token. The server validates it with Keystone (`GET /v3/auth/tokens`), checks it is for a project this deployment serves (our audience step), and uses it upstream. The Protected Resource Metadata document's `authorization_servers` names the **Keystone** URL.
+- **P2 — `oauth` (default; built P3).** The server fronts Keystone as its **own stateless OAuth 2.1 authorization server** (RFC 8414 metadata, RFC 7591 deterministic DCR, authorization-code + PKCE S256, no server-side client/code/token store). Clients with no pre-minted credentials discover the AS from the Protected Resource Metadata, register deterministically, run the authorization-code flow against the browser consent page, and present the `stst.at.`-prefixed JWT access token on subsequent MCP requests. The MCP gate is a **composite validator**: `stst.at.` tokens are verified as HS256 JWTs (signed by the shared OAuth server secret, issuer- and expiry-checked) and their embedded Keystone token id is delegated to the existing P1 `TokenValidator`; **any other bearer token is handled exactly as P1** — so existing `keystone_token` clients keep working unchanged under the default profile.
 
-`auth.profile` defaults to `keystone_token`. Changing it is a deployment decision, not a per-client one.
+`auth.profile` defaults to `oauth` since P3. Changing it is a deployment decision, not a per-client one. When `oauth.server_secret` is unset, the AS derives a deterministic **dev** signing secret from the resolved issuer (`sha256("substation-oauth-dev" + issuer)`); this makes the OAuth experience zero-config but is **not** a production control — deployments reachable by untrusted parties must set `oauth.server_secret` explicitly (see `deploy/OAUTH.md`).
 
 ### 6.1 Layer 1: MCP client to server
 
@@ -497,7 +497,11 @@ swift-configuration with providers in priority order: command line flags, enviro
 | `server.tls.cert`, `server.tls.key` | unset | Enable HummingbirdTLS |
 | `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
 | `server.public_url` | unset | Canonical public base URL used in the Protected Resource Metadata and login URL (e.g. `https://mcp.sat0.cloudnull.dev`); defaults to the request's Host when unset |
-| `auth.profile` | `keystone_token` | `keystone_token` (P1, default) or `oauth` (P2, phase 2) — section 6.0 |
+| `auth.profile` | `oauth` | `oauth` (P2/P3, default — the server fronts Keystone as its own stateless OAuth 2.1 AS) or `keystone_token` (P1, raw Keystone bearer only) — section 6.0 |
+| `oauth.server_secret` | derived (dev) | HS256 secret for the OAuth AS (authorization codes + `stst.at.` access tokens). Deterministically derived from the issuer when unset; **must be set explicitly in production** |
+| `oauth.code_ttl` | `120s` | Authorization-code (signed JWT) lifetime |
+| `oauth.token_ttl` | `3600s` | Max access-token lifetime, capped at the embedded Keystone token's expiry |
+| `oauth.issuer` | `<public_url><endpoint>/oauth` | RFC 8414 issuer override |
 | `auth.keystone_url` | from token catalog / `clouds.yaml` | Keystone base URL named in the Protected Resource Metadata `authorization_servers` (P1) |
 | `auth.token_cache_ttl` | `60s` | Max age of a cached validated-token entry, capped at the token's own `expires_at` (section 6.1) |
 | `auth.failed_auth_per_minute` | `10` | Per source IP |
@@ -611,7 +615,7 @@ substation-mcp/
 5. `HummingbirdMCP` adapter, **de-identified sessions (token-per-request)**, **Protected Resource Metadata + `/v1/login` URL-mode elicitation page**, routes, metrics; stdio mode.
 6. CLI subcommands (incl. `register-catalog`), access-rules generator, **`deploy/register-catalog.sh`**, deployment assets, docs.
 
-**Phase 2**: object storage, key manager, load balancer, DNS; **P2 `auth.profile=oauth` (AS introspection/JWKS validation, step-up scopes)**; per-service scopes; resource subscriptions.
+**Phase 2**: object storage, key manager, load balancer, DNS; per-service scopes; resource subscriptions. (P2 `auth.profile=oauth` was built as P3 — the stateless OAuth 2.1 AS is the default profile; step-up scopes remain future work.)
 
 **Phase 3**: container infrastructure, orchestration, shared file systems; MCP Tasks once the SDK supports the 2026-07-28 revision.
 

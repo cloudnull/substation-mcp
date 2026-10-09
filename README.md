@@ -198,9 +198,12 @@ claude mcp add --transport http openstack \
 
 **OpenCode (V2):**
 
-OpenCode connects to remote MCP servers over Streamable HTTP. Add substation as
-a **remote** server with a Bearer header (`oauth: false` — the server uses a
-Keystone token, not OAuth):
+OpenCode connects to remote MCP servers over Streamable HTTP. Since P3,
+substation-mcp **is** an OAuth 2.1 authorization server (see
+`deploy/OAUTH.md`), so a client that speaks RFC 9728 discovery can just
+point at the URL and complete the browser login flow. For the quick path —
+or for clients that don't do OAuth discovery — use the P1 bearer header
+with a pre-minted Keystone token (`oauth: false`):
 
 ```sh
 # Quick add (writes to the project config; add --global for every project):
@@ -242,15 +245,24 @@ opencode mcp list          # expect: ✓ openstack  connected
 >   `openstack_os_list`, `openstack_os_whoami`).
 > - Set `"codemode": false` on the server if you want the tools on OpenCode's
 >   native tool list instead of through Code Mode.
-> - substation-mcp publishes no OAuth metadata, so `oauth: false` + the
->   `Authorization` header is the correct auth path (the Keystone token is the
->   credential, not a provider API key).
+> - The bearer path above is P1-compatible and still fully supported: the
+>   composite auth gate treats any non-`stst.at.` bearer token exactly as a
+>   raw Keystone token. If you omit the header and let the client follow the
+>   401 → Protected Resource Metadata → OAuth challenge, substation-mcp fronts
+>   Keystone as its own stateless OAuth 2.1 AS (authorization code + PKCE) —
+>   see `deploy/OAUTH.md`.
 
-**Token management:** the server supports two token-acquisition paths:
-1. **Client-side mint** — the client mints a token via Keystone and presents it
-   as a Bearer header. On `401`, the client re-mints and retries. Tokens are
-   stored at `~/.config/openstack/mcp-tokens/<cloud>.token` (mode `0600`).
-2. **URL-mode elicitation** — the client visits `/<endpoint>/login` in a
+**Token management:** the server supports three token-acquisition paths:
+1. **OAuth 2.1 flow (default, P3)** — the client follows the 401 challenge to
+   the Protected Resource Metadata, discovers substation-mcp's own stateless
+   OAuth AS (RFC 8414 metadata + deterministic DCR), runs the
+   authorization-code + PKCE flow through the browser consent page, and
+   presents the resulting `stst.at.` JWT. No pre-minted credential needed.
+   See `deploy/OAUTH.md`.
+2. **Client-side mint** — the client mints a token via Keystone and presents
+   it as a Bearer header. On `401`, the client re-mints and retries. Tokens
+   are stored at `~/.config/openstack/mcp-tokens/<cloud>.token` (mode `0600`).
+3. **URL-mode elicitation** — the client visits `/<endpoint>/login` in a
    browser, enters the application credential, and the server mints + stores
    the token in its `TokenStore`. The completion page displays the token ID.
 
@@ -279,8 +291,11 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `server.max_body_bytes` | `1048576` | Request body limit (1 MiB) |
 | `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
 | `server.public_url` | unset | Canonical public base URL (PRM, login page) |
-| `auth.profile` | `keystone_token` | `keystone_token` (P1) or `oauth` (P2) |
+| `auth.profile` | `oauth` | `oauth` (P3, default — stateless OAuth 2.1 AS in front of Keystone) or `keystone_token` (P1, raw Keystone bearer) |
 | `auth.keystone_url` | from catalog | Keystone base URL in PRM `authorization_servers` |
+| `oauth.server_secret` | derived (dev) | HS256 AS signing secret; **set explicitly in production** (see `deploy/OAUTH.md`) |
+| `oauth.code_ttl` | `120s` | Authorization-code JWT lifetime |
+| `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
 | `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
 | `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
 | `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
