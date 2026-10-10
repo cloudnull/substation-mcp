@@ -596,13 +596,20 @@ extension OAuthAuthorizationServer {
               <input type="hidden" name="code_challenge" value="\(esc(codeChallenge))">
               <input type="hidden" name="code_challenge_method" value="S256">
               <input type="hidden" name="state" value="\(esc(state))">
-              <input type="hidden" name="scope" value="\(esc(scope))">
               <div class="method-fields" id="mf" data-method="app-cred">
                 <div class="group">
                   <label for="method">Method</label>
                   <select id="method" name="method" class="field" onchange="document.getElementById('mf').dataset.method=this.value">
                     <option value="app-cred" selected>Application credential</option>
                     <option value="password">User + password</option>
+                  </select>
+                </div>
+                <div class="group">
+                  <label for="scope">Access level</label>
+                  <select id="scope" name="scope" class="field">
+                    <option value="" selected>Inherit from account (recommended)</option>
+                    <option value="openstack:read">Read-only</option>
+                    <option value="openstack:read openstack:write">Read + write</option>
                   </select>
                 </div>
                 <div class="group only-appcred">

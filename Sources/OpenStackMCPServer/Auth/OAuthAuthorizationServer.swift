@@ -208,14 +208,29 @@ public struct OAuthAuthorizationServer: Sendable {
         hmacSHA256Base64URL(key: serverSecret, message: "substation-dcr-" + clientID)
     }
 
-    /// Whether `redirectURI` is a permitted loopback redirect (RFC 8252):
-    /// http/https on localhost / 127.0.0.1 / ::1 with any port and path.
+    /// Whether `redirectURI` is a permitted loopback / local-network redirect.
+    /// RFC 8252 §7.3 allows loopback (localhost, 127.0.0.1, ::1). We also
+    /// accept private-network IPv4/IPv6 addresses (10.x, 172.16-31.x,
+    /// 192.168.x, fc00::/7) because MCP clients running in containers or VMs
+    /// (e.g. Apple `container`, Docker, Podman) have a non-loopback IP that
+    /// the user's browser can still reach on the local network.
     static func isLoopbackRedirectURI(_ redirectURI: String) -> Bool {
         guard let url = URL(string: redirectURI),
               let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased()
         else { return false }
-        let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1"]
-        return (scheme == "http" || scheme == "https") && loopbackHosts.contains(host)
+        guard scheme == "http" || scheme == "https" else { return false }
+        // Exact loopback hosts.
+        if ["localhost", "127.0.0.1", "::1"].contains(host) { return true }
+        // Private IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16.
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        if parts.count == 4 {
+            if parts[0] == 10 { return true }
+            if parts[0] == 172, (16...31).contains(parts[1]) { return true }
+            if parts[0] == 192, parts[1] == 168 { return true }
+        }
+        // Private IPv6: fc00::/7 (unique-local).
+        if host.hasPrefix("fc") || host.hasPrefix("fd") { return true }
+        return false
     }
     // MARK: - JWT mint/verify (authorization code + access token)
 
@@ -326,10 +341,18 @@ public struct OAuthAuthorizationServer: Sendable {
                 throw TokenValidationError(message: "Access token JWT missing required claims")
             }
             let vt = try await validator.validate(at.tokenID)
+            let resolvedScopes: [String]
+            if at.scopes.isEmpty {
+                resolvedScopes = vt.scopes.map { $0.rawValue }
+                logger.info("OAuth scope fallback: JWT sco empty, using Keystone-derived scopes", metadata: ["scopes": .string(resolvedScopes.joined(separator: ",")), "keystone_scopes": .string("\(vt.scopes)")])
+            } else {
+                resolvedScopes = at.scopes
+                logger.info("OAuth explicit scopes from JWT", metadata: ["scopes": .string(at.scopes.joined(separator: ","))])
+            }
             return ValidatedIdentity(
                 tokenID: vt.token.id,
                 projectID: vt.token.project.id,
-                scopes: at.scopes.isEmpty ? vt.scopes.map { $0.rawValue } : at.scopes,
+                scopes: resolvedScopes,
                 raw: AnyTokenPayload(data: try JSONEncoder().encode(vt.token))
             )
         } catch let e as OAuthJWTError {
