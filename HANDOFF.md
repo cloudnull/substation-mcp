@@ -4,15 +4,26 @@
 
 - **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to sat0 Genestack
   cluster (172.16.27.67), namespace `openstack`, image
-  `ghcr.io/cloudnull/substation-mcp:0.2.0`, helm release revision 22 (chart 0.2.0).
-  Auth profile: **oauth** (P3 stateless OAuth 2.1 AS — HS256 JWT codes/tokens,
-  deterministic DCR, memcached replay store). `keystone_token` remains as an
-  explicit opt-out. Full MCP wire E2E validated live against sat0: 401 challenge,
-  PRM, initialize (200 + session), tools/list (18 tools), os_whoami (admin/SAT0/
-  10 services), os_list servers (5 real ACTIVE servers). External FQDN
-  `https://substation.api.sat0.cloudnull.dev/v1` → 401 (auth enforced through
-  TLS→Gateway→Service→pod). 607 unit tests green. IAD3 local E2E: 15 PASS /
-  3 DENIED(expected) / 0 FAIL.
+  `ghcr.io/cloudnull/substation-mcp:latest` (tagged `0.2.0` + SHA), helm release
+  revision 23 (chart 0.2.0). Auth profile: **oauth** (P3 stateless OAuth 2.1 AS —
+  HS256 JWT codes/tokens, deterministic DCR, memcached replay store).
+  `keystone_token` remains as an explicit opt-out. Full MCP wire E2E validated
+  live against sat0: 401 challenge, PRM, initialize (200 + session), tools/list
+  (18 tools), os_whoami (admin/SAT0/10 services), os_list servers (5 real ACTIVE
+  servers). External FQDN `https://substation.api.sat0.cloudnull.dev/v1` → 401
+  (auth enforced through TLS→Gateway→Service→pod). 607 unit tests green. IAD3
+  local E2E: 15 PASS / 3 DENIED(expected) / 0 FAIL.
+- **OAuth URL composition fix** (`8711f40`): `server.public_url` could be set to
+  the full endpoint URL (`https://host/v1`) instead of the host root
+  (`https://host`), causing two broken URLs: (1) the 401 `resource_metadata`
+  pointed to `/v1/.well-known/oauth-protected-resource` (404) instead of
+  `/.well-known/oauth-protected-resource`; (2) the OAuth AS issuer was
+  `https://host/v1/v1/oauth` (double `/v1`), making all RFC 8414 metadata
+  endpoints unreachable. MCP harnesses following the 401 → PRM → AS discovery
+  chain failed with "Could not discover OAuth endpoints." Fixed by normalizing
+  `publicURL` to strip a trailing endpoint path before composing. Adversarial
+  route audit: all other routes use relative paths from the router root — no
+  additional composition bugs found.
 - **Phase 1 complete** (22 tasks + `console_url`), **three sat0 real-cloud bugs fixed**, plus
   **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**,
   **P2 per-service scopes**, and the **full IAD3 gap-fill** (Trove, Gnocchi, ZaQar, Blazar,
