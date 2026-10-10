@@ -241,10 +241,15 @@ public struct OpenStackMCPConfig: Sendable {
         if let override = oauthIssuer, !override.isEmpty {
             return override
         }
-        let base = serverPublicURL ?? "http://\(serverHost):\(serverPort)"
-        let trimmedBase = base.hasSuffix("/") ? String(base.dropLast()) : base
+        let rawBase = serverPublicURL ?? "http://\(serverHost):\(serverPort)"
+        // Normalize: strip a trailing endpoint path so `https://host/v1` +
+        // endpoint `/v1` doesn't produce `https://host/v1/v1/oauth`.
+        var base = rawBase.hasSuffix("/") ? String(rawBase.dropLast()) : rawBase
         let trimmedEndpoint = serverEndpoint.hasSuffix("/")
             ? String(serverEndpoint.dropLast()) : serverEndpoint
-        return trimmedBase + trimmedEndpoint + "/oauth"
+        if !trimmedEndpoint.isEmpty, trimmedEndpoint != "/", base.hasSuffix(trimmedEndpoint) {
+            base = String(base.dropLast(trimmedEndpoint.count))
+        }
+        return base + trimmedEndpoint + "/oauth"
     }
 }

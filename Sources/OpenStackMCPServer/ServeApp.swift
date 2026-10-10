@@ -50,8 +50,17 @@ public struct ServeApp: Sendable {
         // `server.public_url` is unset we default it to the local bind
         // (host:port) so `resource` points at this server rather than at
         // Keystone.
-        let publicURL = config.serverPublicURL
+        //
+        // `server.public_url` may be set to either the host root
+        // (`https://mcp.example.com`) or the full endpoint URL
+        // (`https://mcp.example.com/v1`). We normalize to the host root so
+        // that `resourceMetadataURL` (`<base>/.well-known/...`) and
+        // `oauthIssuerResolved` (`<base><endpoint>/oauth`) compose correctly.
+        // The PRM `resource` field gets `<base><endpoint>` (the MCP endpoint).
+        let rawPublicURL = config.serverPublicURL
             ?? "http://\(config.serverHost):\(config.serverPort)"
+        let publicURL = Self.normalizePublicURL(rawPublicURL, endpoint: config.serverEndpoint)
+        let mcpResourceURL = publicURL + config.serverEndpoint
         let keystoneURL = URL(string: config.authKeystoneURL ?? cloud.authURL?.absoluteString ?? "")
 
         // P3: the stateless OAuth 2.1 AS (the default auth profile). Built
@@ -85,7 +94,7 @@ public struct ServeApp: Sendable {
         }
 
         let prmDocument = ProtectedResourceMetadata.document(
-            publicURL: publicURL,
+            publicURL: mcpResourceURL,
             authProfile: config.authProfileEnum,
             keystoneURL: keystoneURL,
             authServerURL: oauthServer.flatMap { URL(string: $0.issuer) },
@@ -190,6 +199,19 @@ public struct ServeApp: Sendable {
             address: .hostname(config.serverHost, port: config.serverPort)
         )
         self.app = Application(router: router, configuration: appConfig)
+    }
+
+    /// Normalize a public URL to the host root by stripping a trailing
+    /// endpoint path. `https://host/v1` with endpoint `/v1` → `https://host`.
+    /// `https://host` (no endpoint suffix) is returned unchanged. This makes
+    /// the config accept both the host-root and full-endpoint-URL forms.
+    static func normalizePublicURL(_ raw: String, endpoint: String) -> String {
+        var base = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+        let trimmedEndpoint = endpoint.hasSuffix("/") ? String(endpoint.dropLast()) : endpoint
+        if !trimmedEndpoint.isEmpty, trimmedEndpoint != "/", base.hasSuffix(trimmedEndpoint) {
+            base = String(base.dropLast(trimmedEndpoint.count))
+        }
+        return base
     }
 }
 
