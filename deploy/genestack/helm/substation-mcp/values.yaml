@@ -17,7 +17,7 @@ image:
   # Cluster-registry path to the built image (operator builds from deploy/Dockerfile
   # and pushes to their registry before install).
   repository: registry.example.com/openstack/substation-mcp
-  tag: "0.1.0"
+  tag: "0.2.0"
   pullPolicy: IfNotPresent
 
 # Optional imagePullSecrets (name of a k8s Secret in the openstack namespace).
@@ -93,7 +93,13 @@ config:
     max_body_bytes: 1048576
     metrics_token: ""   # set to gate /metrics with a bearer token
   auth:
-    profile: keystone_token
+    # Default: oauth (P3 stateless OAuth 2.1 AS — the server fronts Keystone as
+    # its own RFC 8414 authorization server). Set to keystone_token for the
+    # legacy P1 bearer-only path (no browser login, no DCR).
+    profile: oauth
+    # Production MUST set this explicitly (the zero-config dev secret is
+    # derived deterministically and is NOT suitable for production).
+    server_secret: ""
     # keystone_url is derived from the Keystone catalog at runtime (empty = use catalog).
     keystone_url: ""
     token_cache_ttl: 60

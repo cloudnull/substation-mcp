@@ -14,7 +14,7 @@
 image:
   # Replace with your cluster registry path + the tag you pushed.
   repository: registry.example.com/openstack/substation-mcp
-  tag: "0.1.0"
+  tag: "0.2.0"
   pullPolicy: IfNotPresent
 
 # ── Server config (snake_case keys, rendered to /etc/substation-mcp/config.yaml) ─
@@ -30,9 +30,11 @@ config:
     # Set a strong, unique token — do NOT ship "change-me".
     metrics_token: ""
   auth:
-    # keystone_token profile (P1, default). Set keystone_url if your Keystone
-    # is not discoverable via the catalog.
-    profile: keystone_token
+    # Default: oauth (P3 stateless OAuth 2.1 AS). Set to keystone_token for
+    # the legacy P1 bearer-only path.
+    profile: oauth
+    # Production MUST set this (zero-config dev secret is not for prod).
+    server_secret: ""
     keystone_url: ""
   clouds:
     # Default cloud name (must match a key under `clouds:` in the clouds
