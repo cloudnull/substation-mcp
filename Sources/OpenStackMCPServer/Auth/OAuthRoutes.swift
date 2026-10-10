@@ -408,12 +408,15 @@ extension OAuthAuthorizationServer {
         return constantTimeEquals(secret, expected)
     }
 
-    /// The scopes to issue: the requested `scope` (whitelisted), else
-    /// `openstack:read`.
+    /// The scopes to issue: the requested `scope` (whitelisted). When no
+    /// scope is explicitly requested, returns an empty array so the access
+    /// token inherits the scopes derived from the underlying Keystone token
+    /// (role-based: admin → read+write, member → read). An explicit
+    /// `openstack:read` request still yields read-only.
     static func scopes(from raw: String) -> [String] {
         let allowed: Set<String> = ["openstack:read", "openstack:write"]
         let parts = raw.split(separator: " ").map(String.init).filter { allowed.contains($0) }
-        return parts.isEmpty ? ["openstack:read"] : parts
+        return Array(parts)
     }
 
     /// Read a `RequestBody` into at most `limit` bytes.
