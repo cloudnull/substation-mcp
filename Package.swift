@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "OpenStackMCPServer", targets: ["OpenStackMCPServer"]),
         .library(name: "HummingbirdMCP", targets: ["HummingbirdMCP"]),
         .library(name: "FakeOpenStack", targets: ["FakeOpenStack"]),
+        .library(name: "Provisioning", targets: ["Provisioning"]),
         .executable(name: "substation-mcp", targets: ["substation-mcp"]),
         .executable(name: "substation-mcp-fake", targets: ["substation-mcp-fake"]),
     ],
@@ -48,6 +49,15 @@ let package = Package(
             swiftSettings: swiftSettings
         ),
 
+        // MARK: - Provisioning: distro-aware cloud-init render + parse (pure, no MCP knowledge)
+        .target(
+            name: "Provisioning",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            swiftSettings: swiftSettings
+        ),
+
         // MARK: - Hummingbird -> MCP SDK adapter (no OpenStack knowledge)
         .target(
             name: "HummingbirdMCP",
@@ -72,6 +82,7 @@ let package = Package(
             dependencies: [
                 .target(name: "OpenStackClient"),
                 .target(name: "HummingbirdMCP"),
+                .target(name: "Provisioning"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
@@ -124,6 +135,13 @@ let package = Package(
 
         // MARK: - Tests
         .testTarget(
+            name: "ProvisioningTests",
+            dependencies: [
+                .target(name: "Provisioning"),
+            ],
+            swiftSettings: swiftSettings
+        ),
+        .testTarget(
             name: "OpenStackClientTests",
             dependencies: [
                 .target(name: "OpenStackClient"),
@@ -140,6 +158,7 @@ let package = Package(
                 .target(name: "OpenStackClient"),
                 .target(name: "HummingbirdMCP"),
                 .target(name: "FakeOpenStack"),
+                .target(name: "Provisioning"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "Hummingbird", package: "hummingbird"),

@@ -27,7 +27,7 @@ public struct MCPPrompts: Sendable {
             Prompt(
                 name: "provision_server",
                 title: "Provision a server",
-                description: "Ordered plan to provision a server, optionally with a public IP and an attached data volume.",
+                description: "Ordered plan to provision a server, optionally with a public IP, an attached data volume, and a structured provisioning block (packages, services, users, firewall ports) that is rendered to cloud-init and verified via the serial console.",
                 arguments: [
                     Prompt.Argument(name: "name", title: "Name", description: "Server name.", required: true),
                     Prompt.Argument(name: "flavor", title: "Flavor", description: "Flavor id or name.", required: true),
@@ -35,6 +35,7 @@ public struct MCPPrompts: Sendable {
                     Prompt.Argument(name: "network", title: "Network", description: "Network id or name.", required: true),
                     Prompt.Argument(name: "public", title: "Public IP", description: "true to allocate and attach a floating IP.", required: false),
                     Prompt.Argument(name: "volume_gb", title: "Volume GB", description: "Size of an attached data volume, in GB.", required: false),
+                    Prompt.Argument(name: "provision", title: "Provision", description: "true to add a structured provisioning block (packages/services/firewall) and verify it via provisioning_status.", required: false),
                 ]
             ),
             Prompt(
@@ -107,8 +108,15 @@ public struct MCPPrompts: Sendable {
         lines.append("   - image: \(arg("image"))")
         lines.append("   - network: \(arg("network"))")
         lines.append("2. Create the server with os_create(resource: server) using the resolved flavor, image, and network ids (see os_describe(resource: server) for the create schema).")
+        if (a["provision"] ?? "").lowercased() == "true" {
+            lines.append("   - To install packages / open ports, pass a `provisioning` block instead of raw `user_data` (the two are mutually exclusive). Example: {\"packages\":[\"curl\"],\"services\":[\"curl\"],\"firewall\":[{\"proto\":\"tcp\",\"port\":8080}]}. The server renders it to canonical cloud-init and returns a provisioning_sha.")
+        }
         lines.append("3. Wait for the server to become ACTIVE with os_wait(resource: server, until: [\"ACTIVE\"]).")
         var step = 4
+        if (a["provision"] ?? "").lowercased() == "true" {
+            lines.append("\(step). Verify provisioning landed with os_action(resource: server, action: provisioning_status) and confirm status is \"succeeded\" (it reads the serial console markers).")
+            step += 1
+        }
         if (a["public"] ?? "").lowercased() == "true" {
             lines.append("\(step). Create a floating IP with os_create(resource: floating_ip) and attach it to the server with os_attach(link: floating_ip).")
             step += 1

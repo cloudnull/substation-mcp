@@ -150,7 +150,7 @@ struct ResourcesPromptsTests {
 
         let provision = prompts.first { $0.name == "provision_server" }
         let argNames = Set(provision?.arguments?.map(\.name) ?? [])
-        #expect(argNames == ["name", "flavor", "image", "network", "public", "volume_gb"],
+        #expect(argNames == ["name", "flavor", "image", "network", "public", "volume_gb", "provision"],
                 "got: \(argNames.sorted())")
 
         let diag = prompts.first { $0.name == "diagnose_connectivity" }

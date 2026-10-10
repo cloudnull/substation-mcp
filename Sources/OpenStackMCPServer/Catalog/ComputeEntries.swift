@@ -29,6 +29,7 @@ enum ComputeEntries {
                 ActionSpec(name: "rebuild", destructive: true, params: [ParamSpec(name: "image", required: true, description: "Image ID or name"), ParamSpec(name: "admin_pass", description: "New admin password (never echoed)")]),
                 ActionSpec(name: "snapshot", destructive: false, params: [ParamSpec(name: "name", required: true, description: "Snapshot image name")]),
                 ActionSpec(name: "console_output", params: [ParamSpec(name: "lines", type: "integer", description: "Number of lines to return")]),
+                ActionSpec(name: "provisioning_status", params: [ParamSpec(name: "lines", type: "integer", description: "Serial console lines to scan (default 500)")]),
                 ActionSpec(name: "console_url", params: [ParamSpec(name: "type", enumValues: ["vnc", "spice", "rdp"], description: "Console type")]),
                 ActionSpec(name: "add_security_group", params: [ParamSpec(name: "name", required: true, description: "Security group name")]),
                 ActionSpec(name: "remove_security_group", params: [ParamSpec(name: "name", required: true, description: "Security group name")]),
@@ -73,7 +74,42 @@ enum ComputeEntries {
                     "image": .init(type: "string", description: "Image ID or name"),
                     "networks": .init(type: "array", items: .init(type: "object", properties: ["network": .init(type: "string")]), description: "Networks to attach"),
                     "key_name": .init(type: "string", description: "Keypair name"),
-                    "user_data": .init(type: "string", description: "Base64-encoded user data"),
+                    "user_data": .init(type: "string", description: "Base64-encoded user data. Mutually exclusive with `provisioning`."),
+                    "provisioning": .init(
+                        type: "object",
+                        properties: [
+                            "packages": .init(type: "array", items: .init(type: "string"), description: "Package names to install (resolved per-distro: apt or dnf)"),
+                            "services": .init(type: "array", items: .init(type: "string"), description: "Systemd unit names to enable and start"),
+                            "users": .init(
+                                type: "array",
+                                items: .init(
+                                    type: "object",
+                                    properties: [
+                                        "name": .init(type: "string", description: "Login name"),
+                                        "shell": .init(type: "string", description: "Login shell (default /bin/bash)"),
+                                        "sudo": .init(type: "boolean", description: "Grant passwordless sudo (adds to sudo/wheel groups)")
+                                    ],
+                                    required: ["name"]
+                                ),
+                                description: "Additional users to create via cloud-init (primary login is handled by key_name)"
+                            ),
+                            "firewall": .init(
+                                type: "array",
+                                items: .init(
+                                    type: "object",
+                                    properties: [
+                                        "proto": .init(type: "string", description: "Protocol: tcp or udp"),
+                                        "port": .init(type: "integer", description: "Port number")
+                                    ],
+                                    required: ["proto", "port"]
+                                ),
+                                description: "Ports to open (ufw on apt distros, firewalld on yum distros)"
+                            ),
+                            "extra_runcmd": .init(type: "array", items: .init(type: "string"), description: "Escape-hatch shell lines appended to runcmd (each runs via sh -c, rc is tracked)"),
+                            "final_message": .init(type: "string", description: "Message written to /etc/motd.d/99-osmcp, visible at login")
+                        ],
+                        description: "Distro-aware provisioning block. The server renders this into canonical cloud-init user_data and verifies boot-time results via the serial console (check with os_action(server, provisioning_status)). Secret-safe: no passwords or key material."
+                    ),
                     "availability_zone": .init(type: "string", description: "Availability zone"),
                     "metadata": .init(type: "object", description: "Key-value metadata", additionalProperties: false),
                     "security_groups": .init(type: "array", items: .init(type: "string"), description: "Security group names"),

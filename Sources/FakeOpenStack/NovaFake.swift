@@ -76,11 +76,27 @@ public struct NovaFake {
             }
 
             let body = try await Self.readBody(req)
-            _ = body
+            // The real client sends flavorRef/imageRef as string values and an
+            // optional user_data (base64). Parse the fields the fake needs to
+            // be faithful: name, image, keypair, and user_data. The user_data
+            // is base64 cloud-init; if it is osmcp-rendered, it carries a
+            // `# OSMCP_PROVISIONING sha=<hex>` comment that seeds the
+            // provisioning transcript on the serial console.
+            let name = Self.extractString("name", from: body) ?? "created-server"
+            let flavorID = Self.extractString("flavorRef", from: body) ?? Self.extractString("flavor", from: body) ?? "1"
+            let imageID = Self.extractString("imageRef", from: body) ?? Self.extractString("image", from: body)
+            let keyName = Self.extractString("key_name", from: body)
+            let userData = Self.extractString("user_data", from: body)
+            let provisioningSha = userData.flatMap(Self.provisioningSha(fromBase64:))
+
             let server = await state.createServer(
-                name: "created-server",
+                name: name,
                 projectID: token.projectID,
-                flavorID: "1"
+                flavorID: flavorID,
+                imageID: imageID,
+                keyName: keyName,
+                userData: userData,
+                provisioningSha: provisioningSha
             )
             return Self.jsonResponse(status: .accepted, body: Self.serverJSON(server: server))
         }
@@ -115,8 +131,14 @@ public struct NovaFake {
                 {"console":{"type":"\#(type)","url":"\#(url)"}}
                 """#)
             }
-            if body.contains("\"getConsoleOutput\"") {
-                return Self.jsonResponse(status: .ok, body: #"{"output":"fake-console-output\n"}"#)
+            if body.contains("getConsoleOutput") {
+                guard let server = await state.getServer(id: id, projectID: token.projectID) else {
+                    return Self.novaError(status: .notFound, message: "The resource could not be found.")
+                }
+                let output = Self.consoleTranscript(for: server)
+                let body = (try? JSONEncoder().encode(["output": output])) ?? Data("{}".utf8)
+                let bodyStr = String(data: body, encoding: .utf8) ?? "{}"
+                return Self.jsonResponse(status: .ok, body: bodyStr)
             }
 
             let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue","resize","confirmResize","revertResize","rebuild","createImage","evacuate","liveMigrate","os-migrate","os-start","os-stop"]
@@ -482,6 +504,63 @@ public struct NovaFake {
     /// Extract a query parameter from the request URI.
     static func queryParam(_ key: String, from req: Request) -> String? {
         req.uri.queryParameters[Substring(key)].map { String($0) }
+    }
+
+    /// Extract the osmcp provisioning correlation sha from a base64
+    /// `user_data` payload. The renderer embeds it in a `# OSMCP_PROVISIONING
+    /// sha=<hex>` comment as the second line of the cloud-config. Returns nil
+    /// for non-osmcp user_data.
+    static func provisioningSha(fromBase64 base64: String) -> String? {
+        guard let data = Data(base64Encoded: base64),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            let l = line.trimmingCharacters(in: .whitespaces)
+            guard l.hasPrefix("# OSMCP_PROVISIONING"),
+                  let range = l.range(of: "sha=") else { continue }
+            let tail = l[range.upperBound...]
+            let sha = String(tail.prefix { $0.isHexDigit })
+            if !sha.isEmpty { return sha }
+        }
+        return nil
+    }
+
+    /// Build the boot-like serial-console transcript for a server. If the
+    /// server was created with an osmcp provisioning payload (i.e. it has a
+    /// `provisioningSha`), the transcript emits the
+    /// `OSMCP_PROVISION_BEGIN <sha>` / `[osmcp-provision] ...` /
+    /// `OSMCP_PROVISION_END <sha> ok=<0|1>` markers that
+    /// `CloudInitParser` reads. `provisioningOutcome` (a test-only knob)
+    /// overrides the default "succeeded" transcript.
+    static func consoleTranscript(for server: FakeState.FakeServer) -> String {
+        var lines: [String] = [
+            "[    0.000000] Booting the kernel...",
+            "[    1.200000] cloud-init[123]: Started cloud-init",
+            "[    1.400000] Login ready.",
+        ]
+        if let sha = server.provisioningSha {
+            let outcome = server.provisioningOutcome ?? "succeeded"
+            switch outcome {
+            case "failed":
+                lines.append("[  12.000000] OSMCP_PROVISION_BEGIN \(sha)")
+                lines.append("[  12.100000] [osmcp-provision] apt-get update -> rc=1")
+                lines.append("[  12.100000] E: Could not get lock /var/lib/dpkg/lock-frontend")
+                lines.append("[  15.000000] OSMCP_PROVISION_END \(sha) ok=0")
+            case "pending":
+                lines.append("[  12.000000] OSMCP_PROVISION_BEGIN \(sha)")
+                // No END marker yet — cloud-init still running.
+            case "unknown":
+                // Server booted but was not provisioned through osmcp (no
+                // markers), so the parser cannot distinguish "never" from
+                // "truncated".
+                break
+            default: // "succeeded"
+                lines.append("[  12.000000] OSMCP_PROVISION_BEGIN \(sha)")
+                lines.append("[  12.100000] [osmcp-provision] apt-get install -y curl -> rc=0")
+                lines.append("[  12.500000] [osmcp-provision] systemctl enable curl -> rc=0")
+                lines.append("[  15.000000] OSMCP_PROVISION_END \(sha) ok=1")
+            }
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     /// Extract the `"type":"..."` value from a getVNCConsole request body

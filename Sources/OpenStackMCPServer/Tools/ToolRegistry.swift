@@ -1,6 +1,7 @@
 import Foundation
 import MCP
 import OpenStackClient
+import Provisioning
 import Logging
 
 /// Neutron port. Spelled `NetPort` because bare `Port` resolves to NIO's
@@ -868,8 +869,57 @@ public struct ToolRegistry: Sendable {
         }
 
         if dryRun {
-            let result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
+            var result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
                 "message": .string("Spec is valid. Resource would be created in \(region).")]
+            // For a server with a `provisioning` block, surface the rendered
+            // cloud-init so the caller can preview the exact user_data Nova
+            // would receive, plus the correlation sha.
+            if d.name == "server", case .object(let obj) = spec,
+               case .object(let provObj)? = obj["provisioning"] {
+                if obj["user_data"] != nil {
+                    throw OpenStackError(service: "compute", status: 400, code: "provisioningConflict",
+                        message: "Server create: `user_data` and `provisioning` are mutually exclusive. Provide exactly one.")
+                }
+                do {
+                    let specP = try ProvisioningSpec.from(dict: NameResolver.anyDictionary(provObj))
+                    guard !specP.isEmpty else {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningEmpty",
+                            message: "Provisioning spec is empty (dry run).")
+                    }
+                    let distro: Distro
+                    let imageRef = obj["image"]?.stringValue ?? obj["imageID"]?.stringValue
+                    let img: Image?
+                    if let imageRef {
+                        let ri = await client.image(region: region)
+                        if let byId = try? await ri.getImage(vt, id: imageRef) {
+                            img = byId
+                        } else {
+                            let items = (try? await ri.listImages(vt)) ?? []
+                            let lower = imageRef.lowercased()
+                            img = items.first { $0.id == imageRef || $0.name.lowercased() == lower }
+                        }
+                    } else {
+                        img = nil
+                    }
+                    if let img {
+                        distro = Distro.detect(name: img.name, tags: img.tags.isEmpty ? nil : img.tags,
+                                               properties: img.properties.isEmpty ? nil : img.properties)
+                    } else {
+                        distro = .unknown
+                    }
+                    let yaml = try CloudInitRenderer.render(spec: specP, distro: distro)
+                    result["provisioning_sha"] = .string(specP.sha)
+                    result["provisioning_distro"] = .string("\(distro.name)/\(distro.family.rawValue)")
+                    result["rendered_user_data"] = .string(yaml)
+                    result["rendered_user_data_base64"] = .string(Data(yaml.utf8).base64EncodedString())
+                } catch let e as Provisioning.CloudInitRenderer.RenderError {
+                    throw OpenStackError(service: "compute", status: 400, code: "provisioningRender",
+                        message: e.description)
+                } catch let e as Provisioning.RenderDecodingError {
+                    throw OpenStackError(service: "compute", status: 400, code: "provisioningInvalid",
+                        message: e.description)
+                }
+            }
             let (text, val) = resultText(result)
             return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
         }

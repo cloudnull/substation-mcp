@@ -175,9 +175,9 @@ struct CatalogCompletenessTests {
         let actions = catalog.actions(for: "server")
         // start, stop, reboot, pause, unpause, suspend, resume, lock, unlock,
         // shelve, unshelve, rescue, unrescue, resize, confirm_resize, revert_resize,
-        // rebuild, snapshot, console_output, console_url, add_security_group,
-        // remove_security_group, evacuate, live_migrate, migrate
-        #expect(actions.count == 25, "Expected 25 server actions, got \(actions.count)")
+        // rebuild, snapshot, console_output, provisioning_status, console_url,
+        // add_security_group, remove_security_group, evacuate, live_migrate, migrate
+        #expect(actions.count == 26, "Expected 26 server actions, got \(actions.count)")
     }
 
     // MARK: - Terminal states (§8.9)

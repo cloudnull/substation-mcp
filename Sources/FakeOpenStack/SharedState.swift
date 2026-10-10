@@ -56,6 +56,13 @@ public actor FakeState {
         public var userData: String?
         public var created: Date
         public var updated: Date?
+        /// Provisioning correlation sha (from the rendered cloud-init comment)
+        /// when the server was created with a `provisioning` block. Drives the
+        /// fake serial-console provisioning transcript.
+        public var provisioningSha: String?
+        /// Test-only knob: expected provisioning outcome for the fake console
+        /// transcript. nil = default "succeeded".
+        public var provisioningOutcome: String?
 
         public init(
             id: String,
@@ -70,7 +77,9 @@ public actor FakeState {
             keyName: String? = nil,
             securityGroups: [String: String] = [:],
             metadata: [String: String] = [:],
-            userData: String? = nil
+            userData: String? = nil,
+            provisioningSha: String? = nil,
+            provisioningOutcome: String? = nil
         ) {
             self.id = id
             self.name = name
@@ -85,6 +94,8 @@ public actor FakeState {
             self.securityGroups = securityGroups
             self.metadata = metadata
             self.userData = userData
+            self.provisioningSha = provisioningSha
+            self.provisioningOutcome = provisioningOutcome
             self.created = Date()
             self.updated = nil
         }
@@ -1040,6 +1051,26 @@ public actor FakeState {
         return armed.status
     }
 
+    /// Test-only knob: force a fake server to a given status (e.g. ACTIVE) so
+    /// provisioning round-trip tests can skip the boot wait.
+    @discardableResult
+    public func setServerStatus(serverID: String, status: String) -> Bool {
+        guard let idx = servers.firstIndex(where: { $0.id == serverID }) else { return false }
+        servers[idx].status = status
+        servers[idx].updated = Date()
+        return true
+    }
+
+    /// Test-only knob: override the provisioning console outcome for a server
+    /// ("succeeded" | "failed" | "pending" | "unknown"). Lets provisioning
+    /// status tests drive each parser branch without booting a real VM.
+    @discardableResult
+    public func setServerProvisioningOutcome(serverID: String, outcome: String?) -> Bool {
+        guard let idx = servers.firstIndex(where: { $0.id == serverID }) else { return false }
+        servers[idx].provisioningOutcome = outcome
+        return true
+    }
+
     public func removeExtension(_ alias: String) {
         extensions.remove(alias)
     }
@@ -1872,7 +1903,17 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createServer(name: String, projectID: String, flavorID: String, region: String = "RegionOne") -> FakeServer {
+    public func createServer(
+        name: String,
+        projectID: String,
+        flavorID: String,
+        region: String = "RegionOne",
+        imageID: String? = nil,
+        keyName: String? = nil,
+        userData: String? = nil,
+        provisioningSha: String? = nil,
+        provisioningOutcome: String? = nil
+    ) -> FakeServer {
         serverIDCounter += 1
         let id = String(format: "srv-%04d", serverIDCounter)
         let flavor = flavors.first { $0.id == flavorID }
@@ -1882,8 +1923,13 @@ public actor FakeState {
             status: "BUILD",
             flavorID: flavorID,
             flavorName: flavor?.name ?? "unknown",
+            imageID: imageID,
             projectID: projectID,
-            region: region
+            region: region,
+            keyName: keyName,
+            userData: userData,
+            provisioningSha: provisioningSha,
+            provisioningOutcome: provisioningOutcome
         )
         servers.append(server)
         return server

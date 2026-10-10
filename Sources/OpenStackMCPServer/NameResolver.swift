@@ -1,5 +1,6 @@
 import Foundation
 import OpenStackClient
+import Provisioning
 
 /// Thrown when an `id_or_name` value matches multiple resources.
 /// The error description lists each candidate with its ID and name
@@ -986,17 +987,79 @@ public actor NameResolver {
                 let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
                 let hostname = obj["hostname"]?.stringValue
 
+                // Distro-aware provisioning: mutually exclusive with raw
+                // user_data. The spec is rendered into canonical cloud-init
+                // (base64) for Nova, and the spec sha is surfaced in the
+                // create result so callers can correlate it with
+                // provisioning_status later.
+                var provisioningSha: String?
+                var finalUserData = userData
+                if let provValue = obj["provisioning"] {
+                    guard finalUserData == nil else {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningConflict",
+                            message: "Server create: `user_data` and `provisioning` are mutually exclusive. Provide exactly one (use `provisioning` for the structured, verifiable flow).")
+                    }
+                    guard case .object(let provObj) = provValue else {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningInvalid",
+                            message: "Server create: `provisioning` must be an object")
+                    }
+                    let spec: ProvisioningSpec
+                    do {
+                        spec = try ProvisioningSpec.from(dict: Self.anyDictionary(provObj))
+                    } catch let e as Provisioning.RenderDecodingError {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningInvalid",
+                            message: "Server create: \(e.description)")
+                    }
+                    guard !spec.isEmpty else {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningEmpty",
+                            message: "Server create: `provisioning` is empty — provide at least one of packages, services, users, firewall, extra_runcmd, final_message (or omit the block).")
+                    }
+                    // Detect the target distro from image metadata.
+                    let distro: Distro
+                    if let img = try? await ri.getImage(vt, id: imageID) {
+                        distro = Distro.detect(name: img.name, tags: img.tags.isEmpty ? nil : img.tags,
+                                               properties: img.properties.isEmpty ? nil : img.properties)
+                    } else {
+                        distro = .unknown
+                    }
+                    let encoded: String
+                    do {
+                        encoded = try CloudInitRenderer.renderBase64(spec: spec, distro: distro)
+                    } catch let e as CloudInitRenderer.RenderError {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningRender",
+                            message: "Server create: \(e.description)")
+                    }
+                    // Re-check the encoded size against Nova's 16 KiB limit at
+                    // the MCP layer (the renderer caps the *plaintext* at 12 KiB;
+                    // base64 inflates ~4/3, so the re-check is a hard guard).
+                    let encodedLen = encoded.utf8.count
+                    let novaLimit = 16 * 1024
+                    guard encodedLen <= novaLimit else {
+                        throw OpenStackError(service: "compute", status: 400, code: "provisioningOversized",
+                            message: "Rendered user_data is \(encodedLen) bytes base64, exceeding Nova's \(novaLimit)-byte limit. Trim the provisioning spec.")
+                    }
+                    finalUserData = encoded
+                    provisioningSha = spec.sha
+                }
+
                 let spec = CreateServerSpec(
                     name: name, flavorID: flavorID, imageID: imageID,
                     keyName: keyName, availabilityZone: availabilityZone,
                     configDrive: configDrive, metadata: metadata,
                     networks: networks,
-                    userData: userData,
+                    userData: finalUserData,
                     securityGroups: securityGroups,
                     serverGroup: serverGroup, hostname: hostname
                 )
                 let s = try await r.createServer(vt, spec)
-                return try Self.encodeObject(s)
+                var serverResult = try Self.encodeObject(s)
+                if let sha = provisioningSha {
+                    serverResult["provisioning_sha"] = .string(sha)
+                    serverResult["provisioning_note"] = .string(
+                        "Provisioning delivered via rendered cloud-init. Verify boot-time result with os_action(server, provisioning_status) once the server is ACTIVE."
+                    )
+                }
+                return serverResult
             case "keypair":
                 let name = obj["name"]?.stringValue
                 let publicKey = obj["public_key"]?.stringValue
@@ -1631,6 +1694,35 @@ public actor NameResolver {
                     serverAction = .snapshot(name: name)
                 case "console_output": serverAction = .consoleOutput(lines: params["lines"]?.intValue ?? 20)
                 case "console_url": serverAction = .consoleURL(type: params["type"]?.stringValue ?? "serial")
+                case "provisioning_status":
+                    let lines = params["lines"]?.intValue ?? 500
+                    let output = try await r.getConsoleOutput(vt, id, lines: lines)
+                    let parsed = CloudInitParser.parse(output)
+                    var statusResult: [String: JSONValue] = [
+                        "action": .string("provisioning_status"),
+                        "id": .string(id),
+                        "status": .string(parsed.status.rawValue),
+                        "started": .bool(parsed.started),
+                        "finished": .bool(parsed.finished),
+                    ]
+                    if let sha = parsed.sha { statusResult["sha"] = .string(sha) }
+                    if let detail = parsed.detail { statusResult["detail"] = .string(detail) }
+                    let errorLines = output
+                        .split(separator: "\n", omittingEmptySubsequences: false)
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { line in
+                            guard line.contains("[osmcp-provision]") else { return false }
+                            // A failing step line ends in a non-zero rc; a WARN
+                            // line reports a skipped capability.
+                            if line.hasSuffix("rc=0") { return false }
+                            return line.contains("rc=") || line.contains("WARN")
+                        }
+                        .prefix(20)
+                        .map { $0 }
+                    if !errorLines.isEmpty {
+                        statusResult["error_lines"] = .array(errorLines.map { .string($0) })
+                    }
+                    return statusResult
                 case "add_security_group":
                     let sgID = params["security_group_id"]?.stringValue
                     guard let sgID else { throw OpenStackError(service: "compute", status: 400, message: "add_security_group requires security_group_id") }
@@ -1866,6 +1958,19 @@ public actor NameResolver {
         case is NSNull: return .null
         default: return .string(String(describing: value))
         }
+    }
+
+    /// Reverse of `convertDict`: bridge a `[String: JSONValue]` map to a
+    /// `[String: Any]` map using JSONSerialization (the same lossless round-trip
+    /// used in `encodeList`). Used to hand the MCP layer's JSON to the
+    /// Provisioning module's `ProvisioningSpec.from(dict:)` decoder.
+    static func anyDictionary(_ object: [String: JSONValue]) -> [String: Any] {
+        let json = JSONValue.object(object)
+        let data = (try? JSONEncoder().encode(json)) ?? Data()
+        if let v = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return v
+        }
+        return [:]
     }
 
     /// Resolve a resource reference (ID or name) to its ID from a list of
