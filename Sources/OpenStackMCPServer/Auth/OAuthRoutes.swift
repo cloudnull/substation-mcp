@@ -2,6 +2,7 @@ import Crypto
 import Foundation
 import HTTPTypes
 import Hummingbird
+import HummingbirdMCP
 import Logging
 import NIOCore
 
@@ -106,7 +107,19 @@ extension OAuthAuthorizationServer {
 
     func handleAuthorize(_ context: Request, postBody: Data?) async -> Response {
         let q = context.uri.queryParameters
-        func qp(_ name: String) -> String? { q[Substring(name)].map(String.init) }
+        // Parse the POST body first so we can fall back to form fields for
+        // OAuth params that arrive as hidden inputs (the browser consent form
+        // POSTs everything — client_id, response_type, redirect_uri, etc. —
+        // in the body, not the query string).
+        var formFields: [String: String] = [:]
+        if let postBody, !postBody.isEmpty {
+            let ct = context.headers[.contentType] ?? ""
+            formFields = Self.parseFormOrJSON(postBody, contentType: ct)
+        }
+        /// Look up a param in the query string first, then the POST body.
+        func qp(_ name: String) -> String? {
+            q[Substring(name)].map(String.init) ?? formFields[name]
+        }
 
         let clientID = qp("client_id") ?? ""
         let responseType = qp("response_type") ?? ""
@@ -130,16 +143,11 @@ extension OAuthAuthorizationServer {
         }
 
         // Determine whether the caller supplied credentials in the POST body.
-        var fields: [String: String] = [:]
-        if let postBody, !postBody.isEmpty {
-            let ct = context.headers[.contentType] ?? ""
-            fields = Self.parseFormOrJSON(postBody, contentType: ct)
-        }
-        let hasCreds = !(fields["appCredId"] ?? "").isEmpty || !(fields["userName"] ?? "").isEmpty
+        let hasCreds = !(formFields["appCredId"] ?? "").isEmpty || !(formFields["userName"] ?? "").isEmpty
 
         if hasCreds {
             do {
-                guard let token = try await mintKeystone(fields: fields) else {
+                guard let token = try await mintKeystone(fields: formFields) else {
                     return Self.oauthError(.invalidRequest(description: "Missing credential fields."), state: state, redirectURI: redirectURI)
                 }
                 guard let code = mintCode(
@@ -495,34 +503,134 @@ extension OAuthAuthorizationServer {
     /// authorization query params plus the user's credentials to
     /// `<path>/authorize`, which mints a Keystone token and 302-redirects with
     /// the `code`.
+    /// The OAuth authorization consent page. Matches the `/v1/login` page
+    /// styling: Substation logo, IBM Plex Sans, centered card, gold-accented
+    /// primary button, and method-filtered form groups (app-cred vs password).
     func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String) -> String {
         func esc(_ s: String) -> String { s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;") }
         let action = "\(path)/authorize"
         return """
         <!DOCTYPE html>
         <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Substation — Authorize</title></head>
-        <body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:48px auto;padding:0 16px;color:#1f2733">
-          <h1 style="font-size:20px">Authorize <code>\(esc(clientID))</code></h1>
-          <p style="color:#5b6572;font-size:14px">Sign in to mint a Keystone token. You will be redirected to <code>\(esc(redirectURI))</code> with an authorization code.</p>
-          <form method="POST" action="\(esc(action))" style="display:grid;gap:10px">
-            <input type="hidden" name="client_id" value="\(esc(clientID))">
-            <input type="hidden" name="response_type" value="code">
-            <input type="hidden" name="redirect_uri" value="\(esc(redirectURI))">
-            <input type="hidden" name="code_challenge" value="\(esc(codeChallenge))">
-            <input type="hidden" name="code_challenge_method" value="S256">
-            <input type="hidden" name="state" value="\(esc(state))">
-            <input type="hidden" name="scope" value="\(esc(scope))">
-            <label>Method</label>
-            <select name="method"><option value="app-cred" selected>Application credential</option><option value="password">User + password</option></select>
-            <label>Application credential ID</label><input name="appCredId" type="text" autocomplete="off">
-            <label>Secret</label><input name="secret" type="password" autocomplete="off">
-            <label>User</label><input name="userName" type="text" autocomplete="off">
-            <label>Domain</label><input name="userDomain" type="text" value="default">
-            <label>Password</label><input name="password" type="password" autocomplete="current-password">
-            <label>Project <span style="color:#8b95a3">(optional)</span></label><input name="projectName" type="text">
-            <button type="submit" style="margin-top:8px;padding:10px 18px;background:#F2B01E;border:0;border-radius:8px;font-weight:600;cursor:pointer">Authorize &amp; mint</button>
-          </form>
+        <title>Substation — Authorize</title>
+        <link rel="icon" type="image/png" href="data:image/png;base64,\(substationLogoBase64)">
+        <style>
+        :root{
+          --bg-1:#f7f9fc; --bg-2:#eef2f8;
+          --card:#ffffff; --ink:#1f2733; --ink-soft:#5b6572; --ink-faint:#8b95a3;
+          --line:#e2e8f1; --line-soft:#eef2f7;
+          --gold:#F2B01E; --gold-ink:#7a5600; --gold-soft:#fdf4e0;
+          --focus:#3b6fe0; --focus-ring:rgba(59,111,224,.18);
+          --radius:16px; --radius-s:10px;
+          --shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -8px rgba(16,24,40,.12);
+          --font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+          --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+        }
+        *{box-sizing:border-box}
+        html,body{margin:0;padding:0}
+        body{
+          min-height:100vh; font-family:var(--font); color:var(--ink);
+          background:linear-gradient(160deg,var(--bg-1) 0%,var(--bg-2) 100%);
+          display:flex; align-items:center; justify-content:center;
+          padding:40px 16px; -webkit-font-smoothing:antialiased;
+        }
+        .card{
+          width:100%; max-width:440px; background:var(--card);
+          border:1px solid var(--line); border-radius:var(--radius);
+          box-shadow:var(--shadow); padding:40px 36px 34px;
+        }
+        .brand{display:flex; flex-direction:column; align-items:center; gap:12px; margin-bottom:4px}
+        .brand .mark{width:64px; height:64px; display:block; border-radius:14px}
+        .wordmark{display:flex; flex-direction:column; align-items:center; line-height:1}
+        .wordmark .name{font-size:21px; font-weight:600; letter-spacing:.2em; color:#1f2d3d}
+        .wordmark .tag{font-family:var(--mono); font-size:11px; letter-spacing:.02em; color:#8a94a3; margin-top:6px}
+        .kicker{font-family:var(--mono); font-size:12px; letter-spacing:.02em; color:var(--gold-ink); margin:26px 0 8px; text-align:center}
+        .title{font-size:22px; font-weight:600; margin:0; text-align:center; letter-spacing:-.01em}
+        .sub{font-size:13.5px; color:var(--ink-soft); margin:8px 0 0; text-align:center; line-height:1.5}
+        .sub code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft); word-break:break-all}
+        form{margin-top:24px}
+        .group{margin-bottom:16px}
+        .group label{display:block; font-size:12.5px; font-weight:500; color:var(--ink-soft); margin-bottom:6px}
+        .group label .opt{color:var(--ink-faint); font-weight:400}
+        .field{
+          width:100%; font-family:var(--font); font-size:14px; color:var(--ink);
+          background:#fff; border:1px solid var(--line); border-radius:var(--radius-s);
+          padding:11px 13px; transition:border-color .15s,box-shadow .15s;
+        }
+        .field::placeholder{color:#b3bcc8}
+        .field:focus{outline:none; border-color:var(--focus); box-shadow:0 0 0 4px var(--focus-ring)}
+        select.field{appearance:none; -webkit-appearance:none; cursor:pointer;
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' stroke='%235b6572' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+          background-repeat:no-repeat; background-position:right 13px center; padding-right:34px}
+        .btn{
+          width:100%; font-family:var(--font); font-size:14.5px; font-weight:600;
+          color:var(--gold-ink); background:var(--gold); border:none;
+          border-radius:var(--radius-s); padding:13px; cursor:pointer; margin-top:6px;
+          transition:filter .15s,transform .05s; letter-spacing:.01em;
+        }
+        .btn:hover{filter:brightness(1.04)}
+        .btn:active{transform:translateY(1px)}
+        .btn:focus-visible{outline:none; box-shadow:0 0 0 4px var(--focus-ring)}
+        .footer{text-align:center; margin-top:20px; font-size:12.5px; color:var(--ink-faint)}
+        .footer code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft)}
+        /* method-filtered groups */
+        .method-fields[data-method="app-cred"] .only-password{display:none}
+        .method-fields[data-method="password"] .only-appcred{display:none}
+        </style></head>
+        <body>
+          <div class="card">
+            <div class="brand">
+              <img src="data:image/png;base64,\(substationLogoBase64)" alt="Substation" width="64" height="64" class="mark">
+              <div class="wordmark"><span class="name">SUBSTATION</span><span class="tag">openstack mcp</span></div>
+            </div>
+            <p class="kicker">OAuth 2.1 · Authorization Code + PKCE</p>
+            <h1 class="title">Authorize client</h1>
+            <p class="sub"><code>\(esc(clientID))</code> will be redirected to<br><code>\(esc(redirectURI))</code> with an authorization code.</p>
+            <form method="POST" action="\(esc(action))">
+              <input type="hidden" name="client_id" value="\(esc(clientID))">
+              <input type="hidden" name="response_type" value="code">
+              <input type="hidden" name="redirect_uri" value="\(esc(redirectURI))">
+              <input type="hidden" name="code_challenge" value="\(esc(codeChallenge))">
+              <input type="hidden" name="code_challenge_method" value="S256">
+              <input type="hidden" name="state" value="\(esc(state))">
+              <input type="hidden" name="scope" value="\(esc(scope))">
+              <div class="method-fields" id="mf" data-method="app-cred">
+                <div class="group">
+                  <label for="method">Method</label>
+                  <select id="method" name="method" class="field" onchange="document.getElementById('mf').dataset.method=this.value">
+                    <option value="app-cred" selected>Application credential</option>
+                    <option value="password">User + password</option>
+                  </select>
+                </div>
+                <div class="group only-appcred">
+                  <label for="appCredId">Application credential ID</label>
+                  <input id="appCredId" name="appCredId" type="text" class="field" autocomplete="off">
+                </div>
+                <div class="group only-appcred">
+                  <label for="secret">Secret</label>
+                  <input id="secret" name="secret" type="password" class="field" autocomplete="off">
+                </div>
+                <div class="group only-password">
+                  <label for="userName">User</label>
+                  <input id="userName" name="userName" type="text" class="field" autocomplete="off">
+                </div>
+                <div class="group only-password">
+                  <label for="userDomain">Domain</label>
+                  <input id="userDomain" name="userDomain" type="text" class="field" value="default">
+                </div>
+                <div class="group only-password">
+                  <label for="password">Password</label>
+                  <input id="password" name="password" type="password" class="field" autocomplete="current-password">
+                </div>
+                <div class="group">
+                  <label for="projectName">Project <span class="opt">(optional)</span></label>
+                  <input id="projectName" name="projectName" type="text" class="field">
+                </div>
+              </div>
+              <button type="submit" class="btn">Authorize &amp; mint</button>
+            </form>
+            <p class="footer">Sign in to mint a Keystone token. The authorization code is single-use and expires in 30 seconds.</p>
+          </div>
         </body></html>
         """
     }

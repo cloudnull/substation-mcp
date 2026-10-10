@@ -1,7 +1,7 @@
 // Auto-generated base64 of Sources/HummingbirdMCP/Resources/substation-logo.png
 // (the Substation logomark — dark navy figure-8 + gold lightning bolt).
 // Embedded so the login page has no external asset dependency.
-let substationLogoBase64 = """
+public let substationLogoBase64 = """
 iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAAXNSR0IB2cksfwAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAA
 eiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAAAZiS0dEAMkA0ADdaK2qjAAAAAlwSFlzAAAuIwAALiMBeKU/
 dgAAAAd0SU1FB+kJHQM5Brddmw8AAA+DSURBVHja7Z1/kFTVlcc/580QYGYYMMxEBaZbZDfTvSDqErqrBH8g8mOTilZE3fxY
