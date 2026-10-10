@@ -76,6 +76,8 @@ public struct ServeApp: Sendable {
                 devMintEnabled: devMintEnabled,
                 minter: minter,
                 tokenValidator: wiring.validator,
+                sharedReplayCache: config.oauthReplayStore == "memcached",
+                sharedReplayCacheOverride: config.oauthReplayStoreEndpointParsed,
                 logger: logger
             )
         } else {

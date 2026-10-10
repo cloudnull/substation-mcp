@@ -17,28 +17,12 @@ import OpenStackClient
 // note on `CodeReplayStore`).
 
 // MARK: - Single-use authorization codes
-
-/// Short-lived, best-effort store of redeemed authorization-code `jti`s so a
-/// code cannot be exchanged for a token more than once (RFC 6749 §4.1.2: a
-/// code is single-use). Because the rest of the AS is stateless (signed
-/// JWTs), this is the *only* piece of server-side state; it is in-memory and
-/// instance-local, so it enforces replay within one process. A multi-instance
-/// deployment would back this with a shared store keyed by `jti`.
-public actor CodeReplayStore {
-    private var redeemed: [String: Int] = [:]
-    private let ttl: Int
-    public init(ttl: Int) { self.ttl = ttl }
-
-    /// Returns true if `jti` has already been redeemed (a replay), else marks
-    /// it redeemed and returns false. Expired entries are pruned opportunistically.
-    func seen(_ jti: String) -> Bool {
-        let now = Int(Date().timeIntervalSince1970)
-        redeemed = redeemed.filter { $0.value > now }
-        if redeemed[jti] != nil { return true }
-        redeemed[jti] = now + ttl
-        return false
-    }
-}
+//
+// The store itself now lives in `OAuthReplayStore.swift`: an instance-local
+// in-memory set by default (single-replica semantics, the original
+// `CodeReplayStore` behavior), optionally backed by memcached for
+// multi-replica deployments (NO_OVERWRITE `add`, endpoint discovered from
+// the token's Keystone service catalog, fail-open to local).
 
 extension OAuthAuthorizationServer {
     /// Mount the AS routes onto `router`. Call only when OAuth is enabled.
@@ -266,14 +250,26 @@ extension OAuthAuthorizationServer {
             return Self.oauthError(.invalidGrant(description: "PKCE verification failed."))
         }
 
-        // Single-use: reject replayed codes (best-effort, in-memory, instance-local).
-        if await codeReplayStore.seen(jtiOf(code)) {
+        // Re-validate the embedded Keystone token (cached). Done before the
+        // replay check so the token's catalog is available to discover the
+        // shared replay-store endpoint (spec §6.5).
+        let vt: ValidatedToken
+        do {
+            vt = try await tokenValidator.validate(grant.keystoneTokenID)
+        } catch {
+            logger.warning("OAuth token exchange failed", metadata: ["reason": "\(error)"])
+            return Self.oauthError(.invalidGrant(description: "Embedded Keystone token is invalid or expired."))
+        }
+
+        // Single-use: reject replayed codes. Instance-local by default; when
+        // `oauth.replay_store: memcached` is configured, `vt`'s catalog gives
+        // the shared endpoint and the check is cluster-wide (fail-open to
+        // local if the cache is unreachable).
+        if await codeReplayStore.seen(jtiOf(code), vt: vt) {
             return Self.oauthError(.invalidGrant(description: "Authorization code already redeemed."))
         }
 
-        // Re-validate the embedded Keystone token (cached) and mint the access token.
         do {
-            let vt = try await tokenValidator.validate(grant.keystoneTokenID)
             let scopes = Self.scopes(from: params["scope"] ?? grant.scope)
             let accessToken = mintAccessToken(
                 keystoneTokenID: vt.token.id,

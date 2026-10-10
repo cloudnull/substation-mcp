@@ -45,6 +45,17 @@ public struct OpenStackMCPConfig: Sendable {
     /// Explicit issuer override. Defaults to `<publicURL><endpoint>/oauth`
     /// (the RFC 8414 issuer must equal the URL the metadata is served under).
     public var oauthIssuer: String?
+    /// Authorization-code replay store backend: `local` (default — in-memory,
+    /// instance-local, single-replica) or `memcached` (shared across replicas;
+    /// the endpoint is discovered from each token's Keystone service catalog
+    /// — service type `memcached`, interface preference public → internal →
+    /// admin — or overridden by `oauth.replay_store_endpoint`).
+    public var oauthReplayStore: String
+    /// Explicit memcached endpoint `host:port` override for the shared replay
+    /// store. When unset, the endpoint is resolved from the token's Keystone
+    /// service catalog (the normal OpenStack endpoint-discovery mechanism).
+    /// Ignored unless `oauth.replay_store == "memcached"`.
+    public var oauthReplayStoreEndpoint: String?
 
     // MARK: clouds
     public var cloudsDefault: String?
@@ -92,6 +103,8 @@ public struct OpenStackMCPConfig: Sendable {
         oauthCodeTTL: Int = 120,
         oauthTokenTTL: Int = 3600,
         oauthIssuer: String? = nil,
+        oauthReplayStore: String = "local",
+        oauthReplayStoreEndpoint: String? = nil,
         cloudsDefault: String? = nil,
         cloudsAllowed: [String] = [],
         cloudsFile: String? = nil,
@@ -130,6 +143,8 @@ public struct OpenStackMCPConfig: Sendable {
         self.oauthCodeTTL = oauthCodeTTL
         self.oauthTokenTTL = oauthTokenTTL
         self.oauthIssuer = oauthIssuer
+        self.oauthReplayStore = oauthReplayStore
+        self.oauthReplayStoreEndpoint = oauthReplayStoreEndpoint
         self.cloudsDefault = cloudsDefault
         self.cloudsAllowed = cloudsAllowed
         self.cloudsFile = cloudsFile
@@ -204,6 +219,18 @@ public struct OpenStackMCPConfig: Sendable {
             return secret
         }
         return "dev-" + sha256Hex("substation-oauth-dev" + oauthIssuerResolved)
+    }
+
+    /// Parse `oauth.replay_store_endpoint` (`host:port`) into a tuple, or nil
+    /// when unset/malformed. Malformed values are treated as unset (the token
+    /// catalog then provides the endpoint).
+    var oauthReplayStoreEndpointParsed: (host: String, port: Int)? {
+        guard let raw = oauthReplayStoreEndpoint, !raw.isEmpty else { return nil }
+        let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, let host = parts.first, !host.isEmpty,
+              let port = Int(parts[1]), (1...65535).contains(port)
+        else { return nil }
+        return (host: String(host), port: port)
     }
 
     /// The issuer the AS advertises. Defaults to

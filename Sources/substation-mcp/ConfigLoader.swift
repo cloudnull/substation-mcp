@@ -101,6 +101,8 @@ public enum ConfigLoader {
         cfg.oauthCodeTTL = int("oauth__code_ttl") ?? cfg.oauthCodeTTL
         cfg.oauthTokenTTL = int("oauth__token_ttl") ?? cfg.oauthTokenTTL
         cfg.oauthIssuer = str("oauth__issuer")
+        if let rs = str("oauth__replay_store") { cfg.oauthReplayStore = rs }
+        cfg.oauthReplayStoreEndpoint = str("oauth__replay_store_endpoint")
         // clouds
         cfg.cloudsDefault = str("clouds__default")
         if let a = arr("clouds__allowed") { cfg.cloudsAllowed = a }

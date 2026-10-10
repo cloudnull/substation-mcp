@@ -296,6 +296,8 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `oauth.server_secret` | derived (dev) | HS256 AS signing secret; **set explicitly in production** (see `deploy/OAUTH.md`) |
 | `oauth.code_ttl` | `120s` | Authorization-code JWT lifetime |
 | `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
+| `oauth.replay_store` | `local` | Code-replay store: `local` (single replica) or `memcached` (shared; endpoint from the token's Keystone catalog, service type `memcached` — see `deploy/OAUTH.md`) |
+| `oauth.replay_store_endpoint` | unset | `host:port` override for the shared replay cache (non-catalog deployments) |
 | `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
 | `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
 | `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |

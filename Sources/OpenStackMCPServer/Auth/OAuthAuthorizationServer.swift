@@ -107,6 +107,8 @@ public struct OAuthAuthorizationServer: Sendable {
         minter: LoginMinter,
         tokenValidator: TokenValidator,
         codeReplayStore: CodeReplayStore = CodeReplayStore(ttl: 300),
+        sharedReplayCache: Bool = false,
+        sharedReplayCacheOverride: (host: String, port: Int)? = nil,
         logger: Logger = Logger(label: "oauth-as")
     ) {
         self.secret = secret
@@ -117,7 +119,27 @@ public struct OAuthAuthorizationServer: Sendable {
         self.devMintEnabled = devMintEnabled
         self.minter = minter
         self.tokenValidator = tokenValidator
-        self.codeReplayStore = codeReplayStore
+        // Shared (memcached) replay store when requested: the endpoint is
+        // discovered from each token's Keystone service catalog (spec §6.5)
+        // unless an explicit override is configured. Falls back to the local
+        // store on any cache failure (fail-open), so this never breaks the
+        // flow.
+        if sharedReplayCache {
+            let override = sharedReplayCacheOverride
+            self.codeReplayStore = CodeReplayStore(
+                shared: SharedCodeReplayStore(
+                    client: MemcachedClient(logger: Logger(label: "oauth-as.memcached")),
+                    resolver: ReplayStoreEndpointResolver(
+                        overrideHost: override?.host,
+                        overridePort: override?.port
+                    ),
+                    issuer: issuer
+                ),
+                logger: Logger(label: "oauth-as.replay")
+            )
+        } else {
+            self.codeReplayStore = codeReplayStore
+        }
         self.logger = logger
     }
 

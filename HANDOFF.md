@@ -8,6 +8,13 @@
   Freezer, Heat-CFN — 11 new catalog resources, 52 → 63) — validated against live
   Rackspace IAD3 via the local dev server.
 - **Branch**: `main` (commits land directly on main; the worktree ff-merges).
+- **WIP separation note**: the primary tree (`/Users/cloudnull/Projects/openstack-mcp`)
+  carries in-flight Provisioning WIP (untracked `wip/` dir, modified
+  `ComputeServiceTests.swift`) that is unrelated to this branch. The memcached
+  replay-store work was done in an isolated worktree
+  (`openstack-mcp-p3-memcached`) on `p3-memcached-replay`, based on `main` at
+  `cf53ed8`, and ff-merged back. The primary tree's Provisioning WIP is
+  untouched by this merge.
 - **Latest commits** (newest first):
   - `1d13852` feat(iad3): cover all remaining IAD3 services (Trove/Gnocchi/ZaQar/Blazar/Freezer + CFN 501)
   - `48daa06` docs(handoff): record clean live IAD3 compute E2E (alias rollout complete)
@@ -45,16 +52,34 @@
   `path`-based URIs — now derived from the issuer; (f) the non-loopback
   `redirect_uri` test now expects the 400 JSON error the code actually
   returns (an error redirect to an untrusted URI would leak state off-origin,
-  so 400 is correct). Known limitations (documented, not blocked): G4
-  `CodeReplayStore` is instance-local (single replica, or back with a shared
-  cache), G8 no per-service scope enforcement beyond the existing coarse
-  scopes, G9 dev-mint is `#if DEBUG`-gated (not compiled into release builds).
+  so 400 is correct). **G4 is now CLOSED**: `CodeReplayStore` was the last
+  instance-local bit of server state (single-use authorization codes). It is
+  now pluggable — `oauth.replay_store: local` (default; the original in-memory
+  store, single-replica) or `oauth.replay_store: memcached` (shared across
+  replicas). With `memcached`, a redeemed code `jti` is recorded with
+  memcached NO_OVERWRITE (`add`) so the *first* replica to redeem a code wins
+  and a replay is rejected cluster-wide. The cache endpoint is resolved the
+  **normal OpenStack way**: from each token's Keystone **service catalog**
+  (service type `memcached`, interface preference public → internal → admin),
+  exactly like Nova/Neutron — so it reaches the cloud's memcached over the
+  internal network with no extra credential; `oauth.replay_store_endpoint`
+  (`host:port`) overrides the catalog for non-catalog deployments. The shared
+  backend is **fail-open**: any discovery/cache error degrades that one
+  exchange to the instance-local store (warning log), so a memcached outage
+  never breaks the OAuth flow. Implementation is a minimal in-repo text-
+  protocol memcached client (`Auth/MemcachedClient.swift`, NIO, no new
+  dependency). Remaining documented limitations: G8 no per-service scope
+  enforcement beyond the existing coarse scopes, G9 dev-mint is `#if
+  DEBUG`-gated (not compiled into release builds).
   Docs updated: spec §6.0 + config table, README auth section + config table,
-  `deploy/OAUTH.md` (new), this file.
-- **Tests**: **550 tests, 0 failures** across all targets — OpenStackClientTests 242,
-  OpenStackMCPServerTests 217 (was 182; +35 OAuth AS unit + E2E tests),
-  HummingbirdMCPTests 47, OpenStackMCPTests 42,
-  OpenStackMCPIntegrationTests 2. (Up from 515 pre-OAuth: +35 OAuth tests.)
+  `deploy/OAUTH.md` (new + "Multi-replica deployments" section), this file.
+- **Tests**: **562 tests, 0 failures** across all targets — OpenStackClientTests 242,
+  OpenStackMCPServerTests 231 (was 217; +14 replay-store: local store, catalog
+  endpoint discovery + override + interface preference, memcached wire
+  protocol STORED/EXISTS/timeout, cross-replica single-use over one shared
+  cache, fail-open on unreachable cache / missing catalog entry, config
+  parse), HummingbirdMCPTests 47, OpenStackMCPTests 42,
+  OpenStackMCPIntegrationTests 2. (Up from 550 pre-replay-store: +14 (3 wire-protocol tests consolidated into 1 round-trip via FakeMemcached transport seam).)
 - **Catalog**: **63 resources** (52 pre-gap-fill + 11: `database_instance`,
   `database_flavor`, `database_datastore`, `metric`, `resource_type`, `queue`,
   `reservation`, `allocation`, `backup`, `schedule`, `cfn_stack`). `cfn_stack` is

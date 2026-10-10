@@ -19,13 +19,51 @@ subsequent MCP requests.
   `client_secret` is `HMAC-SHA256(server_secret, "substation-dcr-" + client_id)`.
   The same registration always yields the same credentials. No client store.
 - **User tokens**: the server holds **no** persisted or in-memory OAuth codes,
-  clients, or Keystone tokens. The only server-side state is an in-memory,
-  per-process 300s TTL `CodeReplayStore` for single-use code enforcement.
+  clients, or Keystone tokens. The only server-side state is the
+  authorization-code replay store for single-use code enforcement (RFC 6749
+  §4.1.2), keyed by the code's `jti` with a 300s TTL. It is instance-local
+  in-memory by default (`oauth.replay_store: local`); with
+  `oauth.replay_store: memcached` it is backed by memcached and shared across
+  replicas.
 
-Known limitation: the replay store is instance-local. A multi-replica
-deployment behind a load balancer would not see a code redeemed on a
-different replica. Run a single replica, or back the store with a shared
-cache if you must scale out.
+### Multi-replica deployments (shared replay store)
+
+With the default `local` replay store, a code redeemed on one replica is not
+seen by another: run a **single replica** for strict single-use, or enable the
+**shared store**:
+
+```yaml
+oauth:
+  replay_store: memcached
+  # optional — only needed when the cloud's catalog has no `memcached` service
+  replay_store_endpoint: "memcached.openstack.svc.cluster.local:11211"
+```
+
+- **Endpoint discovery**: the memcached endpoint is resolved from each token's
+  **Keystone service catalog** (service type `memcached`, interface preference
+  public → internal → admin) — the same mechanism the server uses for Nova and
+  every other upstream (spec §6.5). Register the cloud's memcached as a
+  catalog service (one line, alongside `deploy/register-catalog.sh`):
+
+  ```sh
+  openstack service create --type memcached --name memcached "Memcached"
+  openstack endpoint create --service memcached --region <R> \
+      --interface internal http://memcached.openstack.svc.cluster.local:11211
+  ```
+
+  No credential is needed for the cache — the endpoint lives on the internal
+  network. `oauth.replay_store_endpoint` (`host:port`) overrides the catalog
+  for non-catalog deployments; when it is unset **and** the catalog has no
+  `memcached` entry, the store degrades to instance-local enforcement.
+- **Semantics**: a redeemed `jti` is recorded with memcached NO_OVERWRITE
+  (`add`), so the *first* replica to redeem a code wins and a replay is
+  rejected cluster-wide. Keys are namespaced `stst:<issuer-fingerprint>:<jti>`,
+  so a memcached shared with other OpenStack services cannot collide.
+- **Fail-open**: any discovery or cache error (endpoint unreachable, timeout,
+  protocol error) degrades that one exchange to the local store with a
+  warning log — a memcached outage never breaks the OAuth flow; it only
+  narrows replay enforcement to the handling replica until the cache is
+  reachable again.
 
 ## Endpoints
 
@@ -112,7 +150,9 @@ exactly as before:
    reissuing; previously minted `stst.at.` tokens will be invalidated).
 3. Terminate TLS in front of the server (the OAuth flow redirects the user's
    browser).
-4. If scaling horizontally, back `CodeReplayStore` with a shared cache or run
-   a single replica.
+4. Multi-replica: set `oauth.replay_store: memcached` (endpoint from the
+   cloud's service catalog, or `oauth.replay_store_endpoint`) — see
+   "Multi-replica deployments" above. Single replica: the default `local`
+   store is sufficient.
 5. The DEBUG-only `POST /v1/oauth/dev-mint` endpoint is **not** compiled into
    release builds.

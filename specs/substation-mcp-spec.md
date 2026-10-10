@@ -502,6 +502,8 @@ swift-configuration with providers in priority order: command line flags, enviro
 | `oauth.code_ttl` | `120s` | Authorization-code (signed JWT) lifetime |
 | `oauth.token_ttl` | `3600s` | Max access-token lifetime, capped at the embedded Keystone token's expiry |
 | `oauth.issuer` | `<public_url><endpoint>/oauth` | RFC 8414 issuer override |
+| `oauth.replay_store` | `local` | Authorization-code replay store: `local` (in-memory, instance-local — single replica) or `memcached` (shared across replicas; endpoint from the token's Keystone service catalog, service type `memcached`, interface preference public → internal → admin — the normal catalog endpoint-discovery mechanism; fail-open to `local` on cache errors) |
+| `oauth.replay_store_endpoint` | unset | Explicit `host:port` override for the shared replay store's memcached endpoint (non-catalog deployments); ignored unless `oauth.replay_store = memcached` |
 | `auth.keystone_url` | from token catalog / `clouds.yaml` | Keystone base URL named in the Protected Resource Metadata `authorization_servers` (P1) |
 | `auth.token_cache_ttl` | `60s` | Max age of a cached validated-token entry, capped at the token's own `expires_at` (section 6.1) |
 | `auth.failed_auth_per_minute` | `10` | Per source IP |
