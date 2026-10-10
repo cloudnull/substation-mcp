@@ -77,17 +77,32 @@ public struct Volume: Sendable, Codable, Identifiable {
         case createdAt = "created_at"
     }
 
+    /// Decodes a Bool from a JSON bool, or from a `"true"`/`"false"` string
+    /// (Rackspace Cinder returns `bootable` as a string). Returns `nil` when
+    /// the key is absent or the value is neither shape.
+    private static func boolOrString(_ c: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Bool? {
+        if let b = try? c.decode(Bool.self, forKey: key) { return b }
+        if let s = try? c.decode(String.self, forKey: key) {
+            return s.lowercased() == "true"
+        }
+        return nil
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
-        status = try c.decode(String.self, forKey: .status)
-        size = try c.decode(Int.self, forKey: .size)
+        // Rackspace Cinder's volume LIST (index) rows are minimal — only
+        // `id`, `name`, `links` — with no `status`/`size`. Treat them as
+        // absent ("" / 0) instead of 500'ing, like the other Rackspace
+        // lenient-decode fixes (FlavorRef 3fb7621, ImageRef bare-string).
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        size = try c.decodeIfPresent(Int.self, forKey: .size) ?? 0
         volumeType = try c.decodeIfPresent(String.self, forKey: .volumeType) ?? ""
         availabilityZone = try c.decodeIfPresent(String.self, forKey: .availabilityZone)
-        bootable = try c.decodeIfPresent(Bool.self, forKey: .bootable) ?? false
+        bootable = Self.boolOrString(c, .bootable) ?? false
         description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
-        multiattach = try c.decodeIfPresent(Bool.self, forKey: .multiattach) ?? false
+        multiattach = Self.boolOrString(c, .multiattach) ?? false
         metadata = try c.decodeIfPresent([String: String].self, forKey: .metadata)
         sourceVolumeID = try c.decodeIfPresent(String.self, forKey: .sourceVolumeID)
         imageID = try c.decodeIfPresent(String.self, forKey: .imageID)

@@ -49,6 +49,55 @@ struct BlockStorageServiceTests {
         return (handle, vt, blockStorage, cloud, cache, transport)
     }
 
+    // MARK: - Volume decode (Rackspace lenient-decode regressions)
+
+    @Test("Volume decodes minimal Rackspace Cinder index row (id/name/links only)", .timeLimit(.minutes(2)))
+    func volumeDecodesMinimalIndexRow() throws {
+        // Rackspace Cinder's volume LIST (index) rows carry only id/name/links —
+        // no status/size. The strict decoder 500'd os_list volume on IAD3
+        // (DecodingError at volumes[0]). Decode must fall back to ""/0.
+        let json = """
+        {"volumes":[{"id":"84879da4-d18e-4462-9398-dd489b987639","name":"vtest1","links":[{"rel":"self","href":"https://cinder/v3/p/volumes/84879da4"}]}]}
+        """
+        struct VolumeList: Decodable { let volumes: [Volume] }
+        let decoded = try JSONDecoder().decode(VolumeList.self, from: json.data(using: .utf8)!)
+        let v = decoded.volumes[0]
+        #expect(v.id == "84879da4-d18e-4462-9398-dd489b987639")
+        #expect(v.name == "vtest1")
+        #expect(v.status == "")
+        #expect(v.size == 0)
+    }
+
+    @Test("Volume decodes string bootable/multiattach (Rackspace Cinder)", .timeLimit(.minutes(2)))
+    func volumeDecodesStringBools() throws {
+        // Rackspace Cinder shows detail volume bootable as the string "true"
+        // (bool in stock Cinder); the Bool-only decode 500'd with
+        // DecodingError.typeMismatch (Expected Bool, found String) at
+        // volumes[0].bootable.
+        let json = """
+        {"volume":{"id":"84879da4-d18e-4462-9398-dd489b987639","name":"vtest1","status":"in-use","size":20,"bootable":"true","multiattach":"false"}}
+        """
+        struct VolumeDetail: Decodable { let volume: Volume }
+        let decoded = try JSONDecoder().decode(VolumeDetail.self, from: json.data(using: .utf8)!)
+        let v = decoded.volume
+        #expect(v.bootable == true)
+        #expect(v.multiattach == false)
+        #expect(v.status == "in-use")
+        #expect(v.size == 20)
+    }
+
+    @Test("Volume still decodes standard bool bootable (stock Cinder)", .timeLimit(.minutes(2)))
+    func volumeDecodesBoolBootable() throws {
+        let json = """
+        {"volume":{"id":"abc","name":"v","status":"available","size":1,"bootable":true,"multiattach":true}}
+        """
+        struct VolumeDetail: Decodable { let volume: Volume }
+        let decoded = try JSONDecoder().decode(VolumeDetail.self, from: json.data(using: .utf8)!)
+        let v = decoded.volume
+        #expect(v.bootable == true)
+        #expect(v.multiattach == true)
+    }
+
     // MARK: - Volumes
 
     @Test("list volumes returns seeded volumes", .timeLimit(.minutes(2)))
