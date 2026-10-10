@@ -1,7 +1,18 @@
-# Handoff: OpenStack MCP — Phase 1 + Phase 2/3 + Multi-Endpoint + Versioning COMPLETE
+# Handoff: OpenStack MCP — v0.2.0 PRODUCTION ROLLOUT COMPLETE
 
 ## Current State
 
+- **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to sat0 Genestack
+  cluster (172.16.27.67), namespace `openstack`, image
+  `ghcr.io/cloudnull/substation-mcp:0.2.0`, helm release revision 22 (chart 0.2.0).
+  Auth profile: **oauth** (P3 stateless OAuth 2.1 AS — HS256 JWT codes/tokens,
+  deterministic DCR, memcached replay store). `keystone_token` remains as an
+  explicit opt-out. Full MCP wire E2E validated live against sat0: 401 challenge,
+  PRM, initialize (200 + session), tools/list (18 tools), os_whoami (admin/SAT0/
+  10 services), os_list servers (5 real ACTIVE servers). External FQDN
+  `https://substation.api.sat0.cloudnull.dev/v1` → 401 (auth enforced through
+  TLS→Gateway→Service→pod). 607 unit tests green. IAD3 local E2E: 15 PASS /
+  3 DENIED(expected) / 0 FAIL.
 - **Phase 1 complete** (22 tasks + `console_url`), **three sat0 real-cloud bugs fixed**, plus
   **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**,
   **P2 per-service scopes**, and the **full IAD3 gap-fill** (Trove, Gnocchi, ZaQar, Blazar,
@@ -16,11 +27,11 @@
   `cf53ed8`, and ff-merged back. The primary tree's Provisioning WIP is
   untouched by this merge.
 - **Latest commits** (newest first):
-  - `1d13852` feat(iad3): cover all remaining IAD3 services (Trove/Gnocchi/ZaQar/Blazar/Freezer + CFN 501)
-  - `48daa06` docs(handoff): record clean live IAD3 compute E2E (alias rollout complete)
-  - `404e03b` fix(decode): ImageRef accepts bare-string Nova image field (Rackspace)
-  - `8749860` feat(os_wait): honor `timeout` as an alias for `timeout_seconds`
-  - `1700132` fix(waiter): treat non-404 fetch errors as transient, not gone
+  - `deea2e5` chore(release): bump to 0.2.0 + chart default auth=oauth
+  - `9c76180` fix(blockstorage): lenient Volume decode for Rackspace Cinder (IAD3)
+  - `9f3d5a4` feat(oauth): memcached-backed shared authorization-code replay store (G4)
+  - `de6036b` feat(provisioning): distro-aware cloud-init provisioning for os_create
+  - `cf53ed8` feat(oauth): land stateless OAuth 2.1 AS as default auth profile (P3)
 - **P3 OAuth re-land (this branch `p3-oauth-reland`)**: the stateless OAuth 2.1
   authorization server is restored from the P3 checkpoint (`c36a635`, `7490bed`)
   and lands on `main` as the **default** `auth.profile = "oauth"`. The server
@@ -936,3 +947,142 @@ OpenStackMCPTests 42).
 - Clean live compute E2E on **sat0**: still **BLOCKED** (sat0 Keystone NULL service
   links — infra fix required; unrelated to MCP code).
 - Volume lifecycle E2E: still **BLOCKED** — sat0 Cinder has no usable backend.
+
+---
+
+## 2026-10-09: Rackspace IAD3 volume-decode fix — SHIPPED + E2E GREEN (handoff to next agent)
+
+**TL;DR for the next agent:** The Rackspace IAD3 E2E gap is closed. `os_list volume`
+was 500'ing because Rackspace Cinder returns non-stock JSON (minimal index rows with
+no `status`/`size`, and `bootable`/`multiattach` as `"true"`/`"false"` strings). The
+fix (commit `9c76180`, on `main`, pushed to `origin/main`) applies the same
+lenient-decode pattern already used for `FlavorRef`/`ImageRef`. Full suite green
+(607 tests), live IAD3 E2E green (15 PASS / 3 expected DENIED / 0 FAIL). **No further
+code work is required.** Below is everything the next agent needs to verify, re-run,
+or extend.
+
+### What shipped (commit `9c76180`)
+`fix(blockstorage): lenient Volume decode for Rackspace Cinder (IAD3)`
+- **`Sources/OpenStackClient/Models/BlockStorageModels.swift`** (+23/−4):
+  - `Volume.status`: `decode(String)` → `decodeIfPresent(String) ?? ""`
+  - `Volume.size`: `decode(Int)` → `decodeIfPresent(Int) ?? 0`
+  - New private helper `Volume.boolOrString(_:_)`: tries `Bool` first, then a
+    `String` lowercased-and-compared to `"true"`; returns `nil` if the key is absent
+    or neither shape. `bootable` and `multiattach` now use it (`?? false`).
+  - This is the **same polymorphic/lenient-decode family** as `FlavorRef` (`3fb7621`)
+    and the `ImageRef` bare-string fix. **Never mix `singleValueContainer` and
+    `keyedBy` on one decoder** — always try each shape in its own `try?`.
+- **`Tests/OpenStackClientTests/BlockStorageServiceTests.swift`** (+49): 3 regression
+  tests — (1) minimal Rackspace index row `{id,name,links}` only → `status==""`,
+  `size==0`; (2) string booleans `bootable:"true"`,`multiattach:"false"` → `true`/
+  `false`; (3) stock-Cinder bool form still decodes.
+
+### Root cause (why it broke — do not "fix" by re-tightening)
+Rackspace IAD3 Cinder `volume` **LIST (index)** rows carry **only** `id`, `name`,
+`links` — no `status`, no `size`. Stock Cinder (sat0) always includes them. The
+**DETAIL** rows return `bootable`/`multiattach` as **strings** (`"true"`/`"false"`),
+not JSON bools. The strict `Volume.init(from:)` threw `DecodingError`
+(`typeMismatch: Expected Bool, found String` on `.bootable`; missing-key on
+`.status`), which the MCP layer surfaced as **HTTP 500** on `os_list volume`.
+
+### Test + build status
+- **Full suite: 607 tests, 0 failures** (all targets).
+- Local image rebuilt: **`ghcr.io/cloudnull/substation-mcp:local-main-volfix`**
+  (digest `f4e4d860df2e`). (Other local tags present: `latest` `e21549e94639`,
+  `local-main-9f3d5a4` `8c8eeae19762` — ignore those, they're older.)
+
+### Live IAD3 E2E result (2026-10-09, region IAD3, local dev server)
+- **15 PASS | 3 DENIED(expected) | 0 FAIL.** `os_list volumes` works end-to-end now.
+- The **3 DENIED** are `insufficient_scope` on the write tools (`os_create`
+  keypair/security_group, `os_delete` keypair) — **expected and correct**: the IAD3
+  app credential is **user-scoped, not admin**, so scope enforcement is doing its
+  job. `config.yaml` has `policy.read_only: false` (full 9-tool surface exposed);
+  the *cloud role* is what denies writes, not the MCP policy.
+- Read/discovery all PASS: `os_whoami`, `os_clouds`, `os_describe`, `os_list`
+  (image/flavor/network/subnet/security_group/server/**volume**/keypair),
+  `os_quota compute`, `os_find`, `os_get` server, `os_wait` server ACTIVE.
+
+### Current environment state (as of 2026-10-09, all verified live)
+- **Container** `substation-mcp` **RUNNING** on `localhost:8080` (Apple `container`
+  CLI). Image `ghcr.io/cloudnull/substation-mcp:local-main-volfix`. `curl
+  http://localhost:8080/v1` → **HTTP 401** (auth required = live, healthy). 4 CPU /
+  1 GiB.
+- **Config** (gitignored, local-only, at `dist/rackspace-iad3/`):
+  - `config.yaml`: `server 0.0.0.0:8080 /v1`, `clouds.file:
+    /work/dist/rackspace-iad3/clouds.yaml`, `default: rackspace-iad3`,
+    `policy.read_only: false`, `max_calls_per_minute: 600`.
+  - `clouds.yaml`: `region_name: IAD3`, `interface: public`,
+    `auth_url: https://keystone.api.iad3.rackspacecloud.com` (BASE, no `/v3`),
+    app-cred id `d15ab4a621d24277adee7dc6bdadd1b0`. **Secrets are real — do not
+    print/commit.**
+- **Client token** at **`/tmp/iad3_token.txt`** (269 bytes, Keystone opaque token
+  `gAAAAAB...`). **Currently valid** (verified: `X-Auth-Token` → HTTP 200 from
+  Keystone). **It WILL expire** — the next agent must mint a fresh one before
+  re-running E2E (see recipe below).
+- **HEAD** = `9c76180` on `main`, in sync with `origin/main`.
+
+### ⚠️ Working-tree WIP — DO NOT COMMIT OR DISCARD
+Unrelated **Provisioning WIP** is in the working tree and must be preserved:
+- ` M Tests/OpenStackClientTests/ComputeServiceTests.swift` (modified, unstaged)
+- `?? wip/` (untracked: `ProvisioningMCPTests.swift`, `README.md`, a `.patch`, a
+  `.tar.gz` of untracked WIP)
+- `?? .omp/` (untracked)
+The `9c76180` commit contains **only** the two blockstorage files — the WIP was
+deliberately left out. Do not `git add -A` / `git stash` / checkout these.
+
+### How to re-run the E2E (recipe)
+1. **Fresh token** (the old one may have expired). Mint from the IAD3 app cred:
+   `POST https://keystone.api.iad3.rackspacecloud.com/v3/auth/tokens` with
+   `application_credential_id` + `_secret` (from `dist/rackspace-iad3/clouds.yaml`),
+   take the `X-Subject-Token` response header, write it to `/tmp/iad3_token.txt`.
+2. **Server up**: `container ls` (see gotcha below) → confirm `substation-mcp`
+   `running`. If not: start/recreate it against the `local-main-volfix` image with
+   `dist/rackspace-iad3/` mounted at `/work/dist/rackspace-iad3/`, serving
+   `--config /work/dist/rackspace-iad3/config.yaml` on port 8080. **Do NOT pass
+   `--rm`** (see gotchas).
+3. **Run**: `bash /tmp/e2e_validate.sh`. Read the summary line
+   `Pass: N | Denied(expected): N | Skip: N | Fail: N`. Expect
+   **`Fail: 0`** and **`Denied(expected): 3`**.
+
+### E2E script notes (`/tmp/e2e_validate.sh`)
+- `insufficient_scope` responses are classified as **DENIED(expected)**, not FAIL
+  (this was a fix this session — previously scope denials were counted as failures).
+- Server name/ID extraction for `os_get`/`os_wait` now uses a **full JSON parse**
+  (`extract_full` + python `json.loads` on `items[0].id`/`.name`), not truncated
+  text.
+- Phases: (1) read/discovery, (2) find/get/wait, (3) write (expects DENIED). It
+  auto-skips `os_get`/`os_wait` if no server is found.
+
+### Container-ops gotchas (Apple `container` CLI) — CONFIRMED THIS SESSION
+- **`container ps -a` FAILS** here: `Error: Plugin 'container-ps' not found.` Use
+  **`container ls`** (alias `list`) to list containers.
+- `container stop` on a `--rm` container **destroys it** (then `container start` →
+  "not found"). Recreate, and **never pass `--rm`** for stop/start to work.
+- `container copy`/`cp` is **unreliable** in this env; use
+  `cat file | container exec -i <c> sh -c 'cat > /path'` (or a bind mount).
+
+### Known limitations / still-blocked (not code issues)
+- **Write-path E2E is NOT exercisable** with the current IAD3 credential: it lacks
+  `admin`, so `os_create`/`os_update`/`os_delete`/`os_action` return
+  `insufficient_scope`. To validate writes end-to-end, obtain an **IAD3 app cred
+  with the `admin` role** and re-run the E2E. (The sat0 volume-lifecycle E2E is
+  separately blocked — no cinder-volume daemonset on that cluster.)
+- **IAD3 token is ephemeral** — any future E2E run needs a freshly minted token
+  (recipe above).
+- **sat0 compute E2E** remains blocked on sat0 Keystone infra (NULL service links);
+  unrelated to this fix.
+
+### Next-agent options (pick what's relevant)
+1. **Nothing needed** — the volume-decode fix is complete, committed, pushed, and
+   E2E-validated.
+2. **Cleanup** if the local validation container is no longer wanted:
+   `container stop substation-mcp && container rm substation-mcp`.
+3. **Write-path E2E**: get an IAD3 `admin`-scoped cred, mint a token, re-run
+   `/tmp/e2e_validate.sh`.
+4. **Resuming Provisioning WIP**: preserve the unstaged
+   `ComputeServiceTests.swift` and untracked `wip/` + `.omp/` (see ⚠️ above).
+5. **More Rackspace decode fixes**: if another service 500s on a decode error,
+   apply the lenient-decode pattern (absent field → default; string/bool polymorphic
+   via a per-shape `try?` sub-decoder) — see `BlockStorageModels.swift`
+   `Volume.boolOrString` for the reference implementation.
+
