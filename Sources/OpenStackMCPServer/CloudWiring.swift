@@ -118,7 +118,11 @@ public struct CloudWiring: Sendable {
                 let vt = ValidatedToken(
                     token: Token(
                         id: identity.tokenID,
-                        expiresAt: Date().addingTimeInterval(3600),
+                        // The real expiry is unrecoverable here (raw payload decode
+                        // failed), so use a short TTL: this identity will be
+                        // re-validated on the next request rather than assuming
+                        // an hour of validity for a token we couldn't parse.
+                        expiresAt: Date().addingTimeInterval(60),
                         project: IdentityRef(id: identity.projectID),
                         domain: IdentityRef(id: "default"),
                         user: IdentityRef(id: "unknown"),

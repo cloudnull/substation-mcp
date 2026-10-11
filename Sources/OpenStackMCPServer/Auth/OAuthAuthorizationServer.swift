@@ -358,6 +358,11 @@ public struct OAuthAuthorizationServer: Sendable {
         } catch let e as OAuthJWTError {
             logger.debug("OAuth access token verification failed", metadata: ["error": "\(e)"])
             throw TokenValidationError(message: "OAuth access token verification failed")
+        } catch {
+            // Any other error (OpenStackError from a failed Keystone whoami,
+            // network failure, etc.) means the embedded Keystone token is no
+            // longer valid — surface it as a 401, not a raw internal error.
+            throw TokenValidationError(message: "Keystone token validation failed")
         }
     }
 }
