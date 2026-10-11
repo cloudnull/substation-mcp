@@ -838,7 +838,7 @@ public enum ServerAction: Sendable, Equatable {
             return "{\"createImage\":{\"name\":\"\(name)\"}}"
 
         case .consoleOutput(let lines):
-            return "{\"getConsoleOutput\":{\"length\":\(lines)}}"
+            return "{\"os-getConsoleOutput\":{\"length\":\(lines)}}"
 
         case .consoleURL(let type):
             return "{\"getVNCConsole\":{\"type\":\"\(type)\"}}"

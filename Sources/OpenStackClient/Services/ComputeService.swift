@@ -291,11 +291,15 @@ public struct ComputeRegion: Sendable {
     }
 
     /// Fetch serial console output (last `lines` lines) for a server.
+    ///
+    /// Uses the standard Nova `POST /servers/{id}/action` endpoint with body
+    /// `{"os-getConsoleOutput": {"length": N}}`. The response body is
+    /// `{"output": "<serial log>"}`.
     public func getConsoleOutput(_ vt: ValidatedToken, _ serverID: String, lines: Int) async throws -> String {
         let region = try resolveRegion(vt)
-        let body = "{\"getConsoleOutput\":{\"length\":\(lines)}}".data(using: .utf8)!
+        let body = "{\"os-getConsoleOutput\":{\"length\":\(lines)}}"
 
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/action", body: body)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/action", body: body.data(using: .utf8))
 
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
@@ -534,7 +538,7 @@ public struct ComputeRegion: Sendable {
         if let device { parts.append("\"device\":\"\(device)\"") }
         if let deleteOnTermination { parts.append("\"delete_on_termination\":\(deleteOnTermination ? "true" : "false")") }
 
-        let body = "{\"os-attach-volume\":{\(parts.joined(separator: ","))}}"
+        let body = "{\"volumeAttachment\":{\(parts.joined(separator: ","))}}"
         let result = try await req(vt, region, method: "POST", path: "\(basePath)/servers/\(serverID)/os-volume_attachments", body: body.data(using: .utf8))
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
         await cache.invalidate(resource: "server", tokenID: vt.token.id, region: region)

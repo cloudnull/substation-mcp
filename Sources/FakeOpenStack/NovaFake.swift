@@ -113,6 +113,23 @@ public struct NovaFake {
             return Response(status: .noContent)
         }
 
+        // Legacy serial console output endpoint (kept for compat). The primary
+        // path is now POST /servers/:id/action with os-getConsoleOutput body.
+        router.get("/nova/servers/:id/console") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard let server = await state.getServer(id: id, projectID: token.projectID) else {
+                return Self.novaError(status: .notFound, message: "The resource could not be found.")
+            }
+            let output = Self.consoleTranscript(for: server)
+            let body = (try? JSONEncoder().encode(["output": output])) ?? Data("{}".utf8)
+            let bodyStr = String(data: body, encoding: .utf8) ?? "{}"
+            return Self.jsonResponse(status: .ok, body: bodyStr)
+        }
+
         router.post("/nova/servers/:id/action") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
@@ -131,7 +148,8 @@ public struct NovaFake {
                 {"console":{"type":"\#(type)","url":"\#(url)"}}
                 """#)
             }
-            if body.contains("getConsoleOutput") {
+            // Serial console output via POST /action with os-getConsoleOutput body.
+            if body.contains("\"os-getConsoleOutput\"") {
                 guard let server = await state.getServer(id: id, projectID: token.projectID) else {
                     return Self.novaError(status: .notFound, message: "The resource could not be found.")
                 }

@@ -97,18 +97,28 @@ private extension CloudInitRenderer {
         }
 
         // --- runcmd (all shell work, distro-aware) ---
+        //
+        // Each entry is a plain YAML string (NOT [sh, -c, "..."]). Cloud-init's
+        // cc_runcmd module calls util.shellify() which writes all entries as
+        // sequential lines in a single /bin/sh script. Plain strings become
+        // direct shell lines in that script, so variables and functions defined
+        // in one line are visible to subsequent lines. Using [sh, -c, "..."]
+        // would spawn a child shell per entry, losing all parent state — the
+        // provision_one() helper and PROVISION_RC variable would be invisible
+        // to later lines ("command not found").
         out.append("runcmd:")
-        out.append("- [ sh, -c, '\(beginLine(sha))' ]")
+        out.append("- \(yamlFlowScalar(beginLine(sha)))")
         for line in workBlock(spec: spec, distro: distro) {
-            out.append("- [ sh, -c, '\(line)' ]")
+            out.append("- \(yamlFlowScalar(line))")
         }
-        out.append("- [ sh, -c, '\(endLine(sha))' ]")
+        out.append("- \(yamlFlowScalar(endLine(sha)))")
 
         return out.joined(separator: "\n")
     }
 
-    /// The distro-aware "real work" runcmd lines. Each line is a single shell
-    /// string executed via `sh -c`. The block tracks its worst exit code in
+    /// The distro-aware "real work" runcmd lines. Each line is a shell command
+    /// that becomes a direct line in the single cloud-init runcmd script (all
+    /// lines share one shell process). The block tracks its worst exit code in
     /// `$PROVISION_RC` so the END marker reports a clean ok/!ok.
     static func workBlock(spec: ProvisioningSpec, distro: Distro) -> [String] {
         var lines: [String] = []
@@ -186,8 +196,32 @@ private extension CloudInitRenderer {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Minimal YAML scalar quoting: bare for simple identifiers, double-quoted
-    /// otherwise. Keeps the output readable and valid.
+    /// Emit a string as a YAML **double-quoted** scalar for use inside a flow
+    /// sequence (the `runcmd` entries). Double-quoting is used unconditionally
+    /// because shell lines routinely contain single quotes (from `shellQuote`),
+    /// which would terminate a single-quoted YAML scalar and break the flow
+    /// sequence ("expected ',' or ']'"). Inside a double-quoted scalar the only
+    /// reserved characters are `"` and `\`, so we escape those plus control
+    /// chars; everything else (single quotes, `$`, `;`, spaces) passes through.
+    static func yamlFlowScalar(_ s: String) -> String {
+        var out = "\""
+        for c in s {
+            switch c {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default: out.append(c)
+            }
+        }
+        out += "\""
+        return out
+    }
+
+    /// Minimal YAML scalar quoting for simple values (user names, shells):
+    /// bare for simple identifiers, double-quoted otherwise. Keeps the output
+    /// readable and valid.
     static func yamlScalar(_ s: String) -> String {
         func isSimpleScalar(_ c: Character) -> Bool {
             if c.isLetter || c.isNumber { return true }

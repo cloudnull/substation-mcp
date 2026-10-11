@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Provisioning
+import Yams
 
 @Suite("Distro detection")
 struct DistroTests {
@@ -112,9 +113,79 @@ struct RendererTests {
     func shellQuoting() throws {
         let spec = ProvisioningSpec(packages: ["it's-a-pkg"], services: ["we'ird"])
         let out = try CloudInitRenderer.render(spec: spec, distro: .ubuntu)
-        // 'it's-a-pkg' -> 'it'\''s-a-pkg'
+        // 'it's-a-pkg' -> shell-quoted 'it'\''s-a-pkg'. Inside the double-quoted
+        // YAML scalar no extra escaping is needed (backslash isn't present in
+        // the shell-quoted form), so the rendered bytes are 'it'\''s-a-pkg'.
         #expect(out.contains("'it'\\''s-a-pkg'"))
         #expect(out.contains("systemctl enable 'we'\\''ird'"))
+    }
+
+
+    // MARK: - YAML validity (regression: nested single quotes broke cloud-init)
+
+    @Test("extra_runcmd with shell-quoted args renders valid YAML")
+    func extraRuncmdYAMLValid() throws {
+        // Each runcmd entry is a plain double-quoted YAML string (not [sh, -c, ...]).
+        // cloud-init's shellify writes them as direct lines in one /bin/sh script,
+        // so provision_one() and PROVISION_RC persist across lines.
+        let spec = ProvisioningSpec(extraRuncmd: [
+            "dnf install -y epel-release",
+            "dnf upgrade --security -y",
+            "dnf install -y podman podman-compose",
+            "dnf clean all",
+        ])
+        let out = try CloudInitRenderer.render(spec: spec, distro: .rocky)
+        // Every extra_runcmd line appears as a plain double-quoted YAML scalar.
+        for cmd in spec.extraRuncmd {
+            let needle = "- \"provision_one sh -c '\(cmd)'\""
+            #expect(out.contains(needle), "missing runcmd line for: \(cmd)\n---\n\(out)")
+        }
+        // No [sh, -c, ...] flow sequences remain.
+        let runcmdBlock = out.components(separatedBy: "runcmd:").last!
+        #expect(!runcmdBlock.contains("[ sh, -c,"), "runcmd still uses [sh, -c, ...] form:\n\(runcmdBlock)")
+    }
+
+    @Test("runcmd entries are plain double-quoted strings")
+    func runcmdPlainStrings() throws {
+        let spec = ProvisioningSpec(packages: ["curl"])
+        let out = try CloudInitRenderer.render(spec: spec, distro: .ubuntu)
+        // BEGIN marker is a plain double-quoted string.
+        #expect(out.contains("- \"echo OSMCP_PROVISION_BEGIN \(spec.sha)\""))
+        // Package install is a plain double-quoted string with shell-quoted pkg.
+        #expect(out.contains("- \"provision_one env DEBIAN_FRONTEND=noninteractive apt-get install -y 'curl'\""))
+        // No [sh, -c, ...] anywhere.
+        #expect(!out.contains("[ sh, -c,"))
+    }
+
+    @Test("rendered cloud-init parses as valid YAML with plain string runcmd")
+    func rendersValidYAML() throws {
+        let spec = ProvisioningSpec(
+            packages: ["podman", "podman-compose"],
+            services: ["podman"],
+            users: [.init(name: "deployer", sudo: true)],
+            firewall: [.init(proto: "tcp", port: 8443)],
+            extraRuncmd: [
+                "dnf install -y epel-release",
+                "dnf upgrade --security -y",
+                "echo 'hello world' && echo \"double quoted\"",
+            ],
+            finalMessage: "provisioned\nby osmcp"
+        )
+        for distro in [Distro.ubuntu, Distro.debian, Distro.rocky, Distro.rhel, Distro.fedora, Distro.centos, Distro.alma, Distro.unknown] {
+            let out = try CloudInitRenderer.render(spec: spec, distro: distro)
+            guard let doc = try load(yaml: out) as? [String: Any] else {
+                Issue.record("\(distro): rendered cloud-init is not a YAML mapping:\n\(out)")
+                continue
+            }
+            #expect(doc["runcmd"] != nil, "\(distro): missing runcmd key")
+            let cmds = doc["runcmd"] as? [String]
+            #expect(cmds != nil, "\(distro): runcmd is not an array of strings")
+            #expect(!cmds!.isEmpty, "\(distro): runcmd empty")
+            // Each entry is a plain shell command string (no [sh, -c, ...] wrapper).
+            for cmd in cmds! {
+                #expect(!cmd.hasPrefix("sh"), "\(distro): unexpected sh prefix: \(cmd)")
+            }
+        }
     }
 
     // MARK: - Users
