@@ -1084,7 +1084,7 @@ public actor NameResolver {
                         try await rc.attachVolume(vt, serverID: serverID, volumeID: volID, device: device, deleteOnTermination: deleteOnTerm)
                         attached.append(["volume_id": .string(volID), "device": .string(device)])
                     }
-                    serverResult["volumes_attached"] = .array(attached)
+                    serverResult["volumes_attached"] = .array(attached.map { .object($0) })
                 }
                 return serverResult
             case "keypair":
