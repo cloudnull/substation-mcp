@@ -66,6 +66,22 @@ public struct OpenStackError: Error, Sendable, Equatable {
         var hint: String?
         if status == 403 && hasAccessRules {
             hint = "the application credential's access rules do not allow METHOD PATH; regenerate with `substation-mcp access-rules`"
+        } else if status == 404 {
+            hint = "Resource not found or you lack permission to see it. Use os_list to discover available resources."
+        } else if status == 403 {
+            let msgLower = message.lowercased()
+            if msgLower.contains("quota") {
+                hint = "Quota exceeded. Delete unused resources or request a quota increase from your cloud provider."
+            } else if msgLower.contains("forbidden") || msgLower.contains("not authorized") {
+                hint = "Your token lacks required permissions. Check os_whoami for available scopes."
+            }
+        } else if status == 409 {
+            hint = "Resource is in a conflicting state. Wait for it to reach a stable state, then retry."
+        } else if status == 400 {
+            let msgLower = message.lowercased()
+            if msgLower.contains("required property") || msgLower.contains("missing") {
+                hint = "Missing required field. Call os_describe(<resource>) to see the expected schema."
+            }
         }
 
         let retriable = (status == 429 || status == 502 || status == 503 || status == 504)

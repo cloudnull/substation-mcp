@@ -58,7 +58,8 @@ public actor NameResolver {
                 service: descriptor.service.rawValue,
                 status: 404,
                 code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'"
+                message: "No \(descriptor.name) found matching '\(idOrName)'",
+                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
             )
         }
 
@@ -82,7 +83,8 @@ public actor NameResolver {
                 service: descriptor.service.rawValue,
                 status: 404,
                 code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'"
+                message: "No \(descriptor.name) found matching '\(idOrName)'",
+                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
             )
         }
 
@@ -100,7 +102,8 @@ public actor NameResolver {
                 service: descriptor.service.rawValue,
                 status: 404,
                 code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'"
+                message: "No \(descriptor.name) found matching '\(idOrName)'",
+                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
             )
         case 1:
             let match = matches[0]
@@ -1040,7 +1043,8 @@ public actor NameResolver {
                                 || netObj["name"]?.stringValue?.lowercased().contains("public") == true
                             if isExternal {
                                 throw OpenStackError(service: "compute", status: 400, code: "publicNetworkRejected",
-                                    message: "Server cannot be created on external/public network '\(netID)'. A server needs a PRIVATE network with a subnet (DHCP enabled) and a router connected to an external network for internet access. To create one: (1) os_create(network, {name:'my-net'}), (2) os_create(subnet, {name:'my-subnet', network_id:'<net-id>', cidr:'192.168.0.0/24'}), (3) os_create(router, {name:'my-router', external_gateway_info:{network_id:'<PUBLICNET-id>'}}), (4) os_attach(link:router_interface, source:'<router-id>', target:'<subnet-id>'). Then create the server on 'my-net'.")
+                                    message: "Server cannot be created on external/public network '\(netID)'",
+                                    hint: "Create a private network first: (1) os_create(network, {name:'my-net'}) (2) os_create(subnet, {name:'my-subnet', network_id:'<net-id>', cidr:'192.168.0.0/24'}) (3) os_create(router, {name:'my-router', external_gateway_info:{network_id:'<PUBLICNET-id>'}}) (4) os_attach(link:router_interface, source:'<router-id>', target:'<subnet-id>'). Then create the server on 'my-net'.")
                             }
                         }
                     }

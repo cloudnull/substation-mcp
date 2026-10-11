@@ -600,4 +600,65 @@ struct InProcessMCPTests {
         #expect(errors.contains { $0.contains("imageNotFound") }, "expected imageNotFound, got: \(errors)")
         #expect(errors.contains { $0.contains("networkNotFound") }, "expected networkNotFound, got: \(errors)")
     }
+
+    // MARK: - Error hints (Task 3)
+
+    @Test("404 error includes hint listing available options")
+    func errorHint404() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("server"),
+            "id_or_name": .string("nonexistent-server"),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("Hint:"), "expected Hint in 404 response, got: \(text)")
+        #expect(text.lowercased().contains("available"), "expected 'available' in 404 hint, got: \(text)")
+    }
+
+    @Test("403 quota error includes actionable path")
+    func errorHintQuota() async throws {
+        let err = OpenStackError.normalize(
+            body: #"{"quotaExceeded":{"message":"Quota exceeded for instances: limit 10, in-use 10, requested 1"}}"#.data(using: .utf8),
+            status: 403,
+            service: "compute",
+            requestID: nil,
+            hasAccessRules: false
+        )
+        #expect(err.hint?.lowercased().contains("quota exceeded") == true, "expected quota hint, got: \(String(describing: err.hint))")
+        #expect(err.hint?.lowercased().contains("delete unused") == true || err.hint?.lowercased().contains("request a quota increase") == true,
+               "expected actionable quota guidance, got: \(String(describing: err.hint))")
+    }
+
+    @Test("publicNetworkRejected error has hint with creation sequence")
+    func errorHintPublicNetwork() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("hint-test"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "key_name": .string("test-key"),
+                "networks": .array([.object(["network": .string("ext-net")])]),
+            ]),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("publicNetworkRejected"), "expected publicNetworkRejected, got: \(text)")
+        #expect(text.contains("Hint:"), "expected Hint in publicNetworkRejected response, got: \(text)")
+        #expect(text.contains("os_create(network"), "expected network creation step in hint, got: \(text)")
+        #expect(text.contains("os_create(subnet"), "expected subnet creation step in hint, got: \(text)")
+        #expect(text.contains("os_create(router"), "expected router creation step in hint, got: \(text)")
+        #expect(text.contains("os_attach(link:router_interface"), "expected router interface attach step in hint, got: \(text)")
+    }
+
 }
