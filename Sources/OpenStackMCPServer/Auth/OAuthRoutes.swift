@@ -633,8 +633,8 @@ extension OAuthAuthorizationServer {
                   <input id="password" name="password" type="password" class="field" autocomplete="current-password">
                 </div>
                 <div class="group">
-                  <label for="projectName">Project <span class="opt">(optional)</span></label>
-                  <input id="projectName" name="projectName" type="text" class="field">
+                  <label for="projectName">Project <span class="opt">(required for write access)</span></label>
+                  <input id="projectName" name="projectName" type="text" class="field" placeholder="e.g. admin">
                 </div>
               </div>
               <button type="submit" class="btn">Authorize &amp; mint</button>
