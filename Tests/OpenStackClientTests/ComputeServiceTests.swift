@@ -434,7 +434,7 @@ struct ComputeServiceTests {
             return
         }
         #expect((server["networks"] as? [[String: Any]])?.count == 1)
-        #expect((server["security_groups"] as? [String])?.contains("default") == true)
+        #expect((server["security_groups"] as? [[String: Any]])?.contains(where: { $0["name"] as? String == "default" }) == true)
         #expect(server["min_count"] as? Int == 1)
         #expect(server["max_count"] as? Int == 2)
         #expect((server["scheduler_hints"] as? [String: Any])?["group"] as? String == "grp")

@@ -1010,7 +1010,11 @@ public struct CreateServerSpec: Sendable {
         }
 
         if !securityGroups.isEmpty {
-            let sgs = securityGroups.map { "\"\($0)\"" }.joined(separator: ",")
+            // Rackspace's Nova (and other strict-schema clouds) reject the legacy
+            // string-array form of security_groups ("'name' is not of type 'object'").
+            // The object form [{"name":"..."}] is accepted by both strict and lenient
+            // schemas, so always use it.
+            let sgs = securityGroups.map { "{\"name\":\"\($0)\"}" }.joined(separator: ",")
             body = body + ",\"security_groups\":[\(sgs)]"
         }
 
