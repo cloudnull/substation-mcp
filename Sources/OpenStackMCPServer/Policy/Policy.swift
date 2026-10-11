@@ -95,7 +95,7 @@ public struct Policy: Sendable {
     /// The set of tool names enabled for a read-only session.
     public func toolsEnabled(readOnlyList: [String] = [
         "os_list", "os_get", "os_describe", "os_topology",
-        "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness",
+        "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness", "os_recommend_flavor",
         "os_task_submit", "os_task_status", "os_task_cancel"
     ]) -> Set<String> {
         Set(readOnlyList)

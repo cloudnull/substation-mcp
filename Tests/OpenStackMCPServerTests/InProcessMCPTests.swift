@@ -226,7 +226,7 @@ struct InProcessMCPTests {
         // connect() already ran initialize; the server is ready.
     }
 
-    @Test("write-scoped token sees the 16 verb tools + 3 task tools")
+    @Test("write-scoped token sees the 17 verb tools + 3 task tools")
     func writeTokenSeesVerbAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -235,9 +235,9 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 16 verb tools (the stable, additive-only set) + 3 task-lifecycle
+        // 17 verb tools (the stable, additive-only set) + 3 task-lifecycle
         // tools (os_task_submit/status/cancel, the Path C shim).
-        #expect(names.count == 19, "Expected 19 tools, got \(names.count): \(names.sorted())")
+        #expect(names.count == 20, "Expected 20 tools, got \(names.count): \(names.sorted())")
         #expect(names.contains("os_create"))
         #expect(names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -246,7 +246,7 @@ struct InProcessMCPTests {
         #expect(names.contains("os_task_cancel"))
     }
 
-    @Test("read-only token sees the 10 read verbs + 3 task tools")
+    @Test("read-only token sees the 11 read verbs + 3 task tools")
     func readOnlyTokenSeesReadAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -255,8 +255,8 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 10 read-only verb tools + 3 read-scoped task tools = 13.
-        #expect(names.count == 13, "Expected 13 tools, got \(names.count): \(names.sorted())")
+        // 11 read-only verb tools + 3 read-scoped task tools = 14.
+        #expect(names.count == 14, "Expected 14 tools, got \(names.count): \(names.sorted())")
         #expect(!names.contains("os_create"))
         #expect(!names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -485,6 +485,81 @@ struct InProcessMCPTests {
         #expect(text.contains("\"ready_for_servers\":true"), "Expected ready, got: \(text)")
         #expect(!text.contains("No private network"))
         #expect(!text.contains("No SSH keypairs"))
+    }
+
+    // MARK: - Flavor recommendation (Task 5)
+
+    @Test("recommend_flavor matches database workload to RAM-heavy flavor")
+    func recommendFlavorDatabase() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("database"),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        // The fake seeds m1.* flavors; the top pick must be the most RAM-heavy
+        // one and the response must carry reasoning + a volume type pairing.
+        #expect(text.contains("m1.xlarge"), "Expected the highest-RAM flavor first, got: \(text)")
+        #expect(text.contains("RAM"))
+        #expect(text.contains("\"volume_type_recommendation\":\"HA-Performance\""))
+        #expect(text.contains("\"total_available\":3"))
+    }
+
+    @Test("recommend_flavor handles unknown workload gracefully")
+    func recommendFlavorUnknown() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("quantum computing"),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        // Unknown workload falls back to general-purpose scoring; reasons must
+        // say so rather than claim a family match.
+        #expect(text.contains("general-purpose") || text.contains("Balanced"), "Expected general-purpose fallback, got: \(text)")
+        #expect(text.contains("\"recommendations\""))
+        #expect(text.contains("\"volume_type_recommendation\""))
+    }
+
+    @Test("recommend_flavor min_ram_gb filter excludes small flavors")
+    func recommendFlavorMinRamFilter() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Seeded: m1.small (2 GB), m1.large (8 GB), m1.xlarge (16 GB).
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "min_ram_gb": .int(8),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(!text.contains("m1.small"), "m1.small (2 GB) should be filtered out, got: \(text)")
+        #expect(text.contains("m1.large"))
+        #expect(text.contains("m1.xlarge"))
+    }
+
+    @Test("recommend_flavor returns empty recommendations when no flavor matches")
+    func recommendFlavorNoMatch() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "min_vcpu": .int(99),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"recommendations\":[]"), "Expected empty recommendations, got: \(text)")
+        #expect(text.contains("No flavors match the specified requirements"))
     }
 
     // MARK: - Server create dry-run validation (Task 2)

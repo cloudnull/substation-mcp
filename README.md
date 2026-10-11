@@ -77,7 +77,7 @@ OpenStackClient (stateless per-identity actor)
   └── ShareService (Manila)
 ```
 
-The 15 MCP verb tools (`os_list`, `os_get`, `os_create`, …) are **stable**
+The MCP verb tools (`os_list`, `os_get`, `os_create`, …) are **stable**
 (additive-only invariant): new OpenStack services are exposed as new *resources*
 under the existing verbs, not as new tools.
 

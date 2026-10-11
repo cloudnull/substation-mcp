@@ -151,7 +151,7 @@ public struct ToolRegistry: Sendable {
         }
         return [
             "os_list", "os_get", "os_describe", "os_topology",
-            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness",
+            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness", "os_recommend_flavor",
             "os_task_submit", "os_task_status", "os_task_cancel",
             "os_create", "os_update", "os_delete", "os_action",
             "os_attach", "os_detach",
@@ -263,6 +263,7 @@ public struct ToolRegistry: Sendable {
             case "os_clouds": outcome = (try await handleClouds(params), nil)
             case "os_quota": outcome = (try await handleQuota(params), nil)
             case "os_project_readiness": outcome = (try await handleProjectReadiness(params), nil)
+            case "os_recommend_flavor": outcome = (try await handleRecommendFlavor(params), nil)
             case "os_find": outcome = (try await handleFind(params), nil)
             case "os_topology": outcome = (try await handleTopology(params), nil)
             case "os_wait": outcome = (try await handleWait(params, server: server), nil)
@@ -337,15 +338,15 @@ public struct ToolRegistry: Sendable {
 
     // MARK: - Helpers
 
-    private func arg(_ params: CallTool.Parameters, _ name: String) -> Value? { params.arguments?[name] }
+    func arg(_ params: CallTool.Parameters, _ name: String) -> Value? { params.arguments?[name] }
     private func argString(_ params: CallTool.Parameters, _ name: String) throws -> String {
         guard let v = arg(params, name), let s = v.stringValue else {
             throw OpenStackError(service: "mcp", status: 400, code: "missingParam", message: "Missing required parameter: \(name)")
         }
         return s
     }
-    private func argOptional(_ params: CallTool.Parameters, _ name: String) -> String? { arg(params, name)?.stringValue }
-    private func argInt(_ params: CallTool.Parameters, _ name: String) -> Int? { arg(params, name)?.intValue }
+    func argOptional(_ params: CallTool.Parameters, _ name: String) -> String? { arg(params, name)?.stringValue }
+    func argInt(_ params: CallTool.Parameters, _ name: String) -> Int? { arg(params, name)?.intValue }
     /// Read the wait timeout in seconds. `timeout_seconds` is the documented
     /// parameter; `timeout` is a convenience alias so a client sending the
     /// shorter name still gets an honored value instead of a silent ignore.

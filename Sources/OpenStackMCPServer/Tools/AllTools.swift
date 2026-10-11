@@ -2,9 +2,9 @@ import Foundation
 import MCP
 import OpenStackClient
 
-// MARK: - AllTools (single source for the 15 MCP tool definitions)
+// MARK: - AllTools (single source for the MCP tool definitions)
 
-/// The full set of 15 MCP tool definitions, shared by the live
+/// The full set of MCP tool definitions, shared by the live
 /// `ToolRegistry.visibleTools()` (which filters by scope) and the
 /// `tools` subcommand's dump (`ToolListFormatter`).
 ///
@@ -127,6 +127,20 @@ public enum AllTools {
                         "region": .object(["type": .string("string")]),
                     ]),
                     "required": .array([.string("service")]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
+                name: "os_recommend_flavor",
+                description: "Recommend server flavors for a workload. Pass a plain-English workload (e.g. \"database\", \"web app\", \"batch compute\") and optional min_vcpu / min_ram_gb; returns the top 3 matching flavors with reasoning plus a volume type pairing.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "workload": .object(["type": .string("string")]),
+                        "min_vcpu": .object(["type": .string("integer")]),
+                        "min_ram_gb": .object(["type": .string("integer")]),
+                        "region": .object(["type": .string("string")]),
+                    ]),
                 ]),
                 annotations: .init(readOnlyHint: true, destructiveHint: false)
             ),

@@ -69,7 +69,7 @@ struct CLIEntryTests {
             print("SKIP: no built substation-mcp binary found — CLI entry smoke not run")
             return
         }
-        // `tools --json` must print the 15-tool JSON array. This proves the
+        // `tools --json` must print the tool JSON array. This proves the
         // process entry point is actually wired (it exits 0 and prints nothing
         // when the entry is missing — the regression this test guards).
         let r = try run(["tools", "--json"], bin)
