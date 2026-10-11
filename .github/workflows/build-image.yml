@@ -71,7 +71,8 @@ jobs:
           context: .
           file: deploy/Dockerfile
           platforms: linux/amd64
-          push: true
+          build-args: |
+            BUILDER_PLATFORM=linux/amd64
           # The coordinated version tag (e.g. 0.1.0) is appended so the docs'
           # `image.tag: 0.1.0` resolves. metadata-action provides `latest`,
           # `<branch>`, and `sha-<commit>`.

@@ -23,8 +23,11 @@
 # glibc, so only libicu + glibc-langpack-en are installed. The *builder* stage
 # uses the official swift:6.4-rhel-ubi10 toolchain image.
 
-# ── Stage 1: build ──────────────────────────────────────────────────────────────
-FROM --platform=linux/amd64 swift:6.4-rhel-ubi10 AS builder
+
+# Builder platform: defaults to linux/arm64 (Apple Silicon local dev). CI
+# overrides with --build-arg BUILDER_PLATFORM=linux/amd64 for Genestack.
+ARG BUILDER_PLATFORM=linux/arm64
+FROM --platform=${BUILDER_PLATFORM} swift:6.4-rhel-ubi10 AS builder
 
 WORKDIR /src
 COPY Package.swift Package.resolved ./
