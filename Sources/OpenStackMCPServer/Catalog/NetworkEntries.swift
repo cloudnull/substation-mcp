@@ -47,7 +47,8 @@ enum NetworkEntries {
             idField: "id",
             nameField: "name",
             statusField: "status",
-            terminalStates: ["ACTIVE"]
+            terminalStates: ["ACTIVE"],
+            phase1Note: "Networks with router:external=1 (e.g. PUBLICNET on Rackspace) are EXTERNAL networks used as router gateways — they do NOT support direct server attachment. A server needs a private network (router:external=0 or absent) with a subnet and a router connected to an external network. Check os_get(network) for the 'router:external' field to identify which networks are usable for servers."
         ),
 
         // MARK: - subnet

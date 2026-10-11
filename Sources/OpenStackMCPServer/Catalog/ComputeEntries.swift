@@ -85,7 +85,7 @@ enum ComputeEntries {
                             description: "One entry per network. Use `network` (ID or name); `port` attaches an existing port; `fixed_ip` pins an address.",
                             additionalProperties: false
                         ),
-                        description: "Networks to attach"
+                        description: "Networks to attach. REQUIRED for server creation on Rackspace. The server must be attached to a PRIVATE network (not PUBLICNET) that has: (1) a subnet with DHCP enabled, and (2) a router connected to both the private subnet AND an external network (PUBLICNET) via a router interface + gateway. If no private network exists in the project, you MUST create one first: os_create(network) → os_create(subnet with CIDR e.g. 192.168.0.0/24) → os_create(router with external_gateway_info pointing to PUBLICNET) → os_attach(link:router_interface, source=router, target=subnet). Only then can you create the server on that private network."
                     ),
                     "key_name": .init(type: "string", description: "Keypair name"),
                     "user_data": .init(type: "string", description: "Base64-encoded user data. Mutually exclusive with `provisioning`."),

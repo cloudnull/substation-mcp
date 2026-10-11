@@ -988,6 +988,24 @@ public actor NameResolver {
                             message: "Server create: networks[\(idx)] has neither `network` nor `port`. Provide a network ID/name to attach; unknown keys (e.g. `net_id`) are not accepted.")
                     }
                 }
+
+                // Validate: reject server creation on external/public networks.
+                // A server attached only to PUBLICNET will get stuck in BUILD
+                // forever (no DHCP, no proper subnet for compute). The harness
+                // must create a private network + subnet + router first.
+                if !networks.isEmpty, let netItems = netItemsCache {
+                    for net in networks {
+                        guard let netID = net.network else { continue }
+                        if let netObj = netItems.first(where: { $0["id"]?.stringValue == netID }) {
+                            let isExternal = netObj["router:external"]?.intValue == 1
+                                || netObj["name"]?.stringValue?.lowercased().contains("public") == true
+                            if isExternal {
+                                throw OpenStackError(service: "compute", status: 400, code: "publicNetworkRejected",
+                                    message: "Server cannot be created on external/public network '\(netID)'. A server needs a PRIVATE network with a subnet (DHCP enabled) and a router connected to an external network for internet access. To create one: (1) os_create(network, {name:'my-net'}), (2) os_create(subnet, {name:'my-subnet', network_id:'<net-id>', cidr:'192.168.0.0/24'}), (3) os_create(router, {name:'my-router', external_gateway_info:{network_id:'<PUBLICNET-id>'}}), (4) os_attach(link:router_interface, source:'<router-id>', target:'<subnet-id>'). Then create the server on 'my-net'.")
+                            }
+                        }
+                    }
+                }
                 let userData = obj["user_data"]?.stringValue ?? obj["userData"]?.stringValue
                 let securityGroups = obj["security_groups"]?.arrayValue?.compactMap { $0.stringValue } ?? []
                 let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
