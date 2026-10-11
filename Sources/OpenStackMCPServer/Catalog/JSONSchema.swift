@@ -160,4 +160,25 @@ public final class JSONSchema: @unchecked Sendable {
         if let description { parts.append(description) }
         return parts.isEmpty ? "{}" : parts.joined(separator: "; ")
     }
+
+    /// Serialize this schema back into a JSON-Schema-shaped `JSONValue`, so
+    /// callers (e.g. `os_describe`) can surface the exact create/update field
+    /// names, types, and required keys to the harness. Mirrors the subset this
+    /// class understands: type, properties, required, items, enum, description,
+    /// additionalProperties.
+    public func jsonValue() -> JSONValue {
+        var obj: [String: JSONValue] = [:]
+        if let type { obj["type"] = .string(type) }
+        if let description { obj["description"] = .string(description) }
+        if let properties, !properties.isEmpty {
+            obj["properties"] = .object(properties.mapValues { $0.jsonValue() })
+        }
+        if let required, !required.isEmpty {
+            obj["required"] = .array(required.map { .string($0) })
+        }
+        if let items { obj["items"] = items.jsonValue() }
+        if let enumValues { obj["enum"] = .array(enumValues) }
+        if let additionalProperties { obj["additionalProperties"] = .bool(additionalProperties) }
+        return .object(obj)
+    }
 }

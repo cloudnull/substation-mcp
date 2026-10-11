@@ -452,7 +452,7 @@ struct ComputeServiceTests {
             imageID: "img-001"
         )
         let server = try await region.createServer(vt, spec)
-        #expect(server.name == "created-server")
+        #expect(server.name == "test-server")
         #expect(server.status == "BUILD")
         #expect(!server.id.isEmpty)
     }
@@ -471,7 +471,7 @@ struct ComputeServiceTests {
             maxCount: 1
         )
         let server = try await region.createServer(vt, spec)
-        #expect(server.name == "created-server")
+        #expect(server.name == "batch-server")
     }
 
     @Test("create server with hostname below microversion threshold throws", .timeLimit(.minutes(2)))
@@ -489,7 +489,7 @@ struct ComputeServiceTests {
         // The fake supports microversion 2.104, so hostname (2.90) should be allowed
         // This test verifies the gating logic doesn't throw when version is sufficient
         let server = try await region.createServer(vt, spec)
-        #expect(server.name == "created-server")
+        #expect(server.name == "hostname-test")
     }
 
     @Test("delete server", .timeLimit(.minutes(2)))

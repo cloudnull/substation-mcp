@@ -961,8 +961,11 @@ public actor NameResolver {
                 let rawNetworks = obj["networks"]?.arrayValue ?? []
                 var networks: [CreateServerSpec.NetworkSpec] = []
                 var netItemsCache: [[String: JSONValue]]?
-                for entry in rawNetworks {
-                    guard let netObj = entry.objectValue else { continue }
+                for (idx, entry) in rawNetworks.enumerated() {
+                    guard let netObj = entry.objectValue else {
+                        throw OpenStackError(service: "compute", status: 400, code: "invalidNetworkEntry",
+                            message: "Server create: networks[\(idx)] must be an object with a `network` (ID or name) or `port` key.")
+                    }
                     let netRef = netObj["network"]?.stringValue ?? netObj["uuid"]?.stringValue
                     let port = netObj["port"]?.stringValue
                     let fixedIP = netObj["fixed_ip"]?.stringValue ?? netObj["fixedIP"]?.stringValue
@@ -980,6 +983,9 @@ public actor NameResolver {
                         networks.append(CreateServerSpec.NetworkSpec(port: port, network: netID, fixedIP: fixedIP))
                     } else if let port {
                         networks.append(CreateServerSpec.NetworkSpec(port: port, network: nil, fixedIP: fixedIP))
+                    } else {
+                        throw OpenStackError(service: "compute", status: 400, code: "invalidNetworkEntry",
+                            message: "Server create: networks[\(idx)] has neither `network` nor `port`. Provide a network ID/name to attach; unknown keys (e.g. `net_id`) are not accepted.")
                     }
                 }
                 let userData = obj["user_data"]?.stringValue ?? obj["userData"]?.stringValue

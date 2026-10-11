@@ -10,3 +10,5 @@ xcuserdata/
 .openstack-credentials.md
 dist/
 .validation-plan.md
+.omp/
+

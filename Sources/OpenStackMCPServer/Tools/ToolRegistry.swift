@@ -511,6 +511,12 @@ public struct ToolRegistry: Sendable {
             "default_list_fields": .array(d.defaultListFields.map { .string($0) }),
             "list_filters": .array(d.listFilters.sorted().map { .string($0) }),
         ]
+        if let cs = d.createSchema {
+            result["create_schema"] = cs.jsonValue()
+        }
+        if let us = d.updateSchema {
+            result["update_schema"] = us.jsonValue()
+        }
         if let note = d.phase1Note {
             result["note"] = .string(note)
         }

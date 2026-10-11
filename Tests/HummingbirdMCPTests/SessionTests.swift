@@ -378,9 +378,9 @@ struct ServeSessionTests {
             let listResp = try await sc.toolsList()
             #expect(listResp.status == .ok, "tools/list failed: \(listResp.status) \(bodyString(listResp))")
             let body = bodyString(listResp)
-            #expect(body.contains("os_create"), "write token should see os_create: \(body)")
-            #expect(body.contains("os_delete"), "write token should see os_delete: \(body)")
-            #expect(body.contains("os_task_submit"), "write token should see os_task_submit: \(body)")
+            #expect(body.contains("\"name\":\"os_create\""), "write token should see os_create: \(body)")
+            #expect(body.contains("\"name\":\"os_delete\""), "write token should see os_delete: \(body)")
+            #expect(body.contains("\"name\":\"os_task_submit\""), "write token should see os_task_submit: \(body)")
         }
     }
 
@@ -404,8 +404,8 @@ struct ServeSessionTests {
             #expect(listResp.status == .ok, "tools/list failed: \(listResp.status)")
             let body = bodyString(listResp)
             #expect(body.contains("os_list"), "read token should see os_list: \(body)")
-            #expect(!body.contains("os_create"), "read token must NOT see os_create: \(body)")
-            #expect(!body.contains("os_delete"), "read token must NOT see os_delete: \(body)")
+            #expect(!body.contains("\"name\":\"os_create\""), "read token must NOT see os_create: \(body)")
+            #expect(!body.contains("\"name\":\"os_delete\""), "read token must NOT see os_delete: \(body)")
         }
     }
 

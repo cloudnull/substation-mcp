@@ -265,6 +265,35 @@ struct NameResolverTests {
         #expect(resolved.raw["name"]?.stringValue == "test-ag")
     }
 
+    @Test("server create: networks[] entry with neither network nor port fails fast", .timeLimit(.minutes(2)))
+    func serverCreateNetworkEntryFailsFast() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // Regression: an unresolvable networks[] entry used to be silently
+        // dropped, so the request went out with no `networks` key and Nova
+        // returned a cryptic "'networks' is a required property". It must now
+        // throw a clear 400 before anything is sent.
+        let descriptor = ResourceCatalog.phase1().descriptor("server")!
+        do {
+            _ = try await resolver.createPublic(
+                vt,
+                descriptor: descriptor,
+                body: .object([
+                    "name": .string("net-fail"),
+                    "flavor": .string("m1.small"),
+                    "image": .string("ubuntu-24.04"),
+                    "networks": .array([.object(["net_id": .string("int-net")])]),
+                ]),
+                region: "RegionOne"
+            )
+            #expect(false, "Expected createPublic to throw for a bad networks[] entry")
+        } catch let e as OpenStackError {
+            #expect(e.status == 400, "Expected 400, got \(e.status)")
+            #expect(e.message.contains("networks[0]"), "Error should name the offending entry, got: \(e.message)")
+        }
+    }
+
     // MARK: - Placement (resource provider inventory)
 
     @Test("os_list placement returns the seeded providers via the resolver", .timeLimit(.minutes(2)))

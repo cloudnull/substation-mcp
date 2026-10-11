@@ -73,6 +73,48 @@ struct SchemaValidationTests {
         #expect(issues.contains { $0.path == "$.visibility" && $0.expected.contains("one of") }, "Expected enum issue")
     }
 
+    // MARK: - Server create: networks[] shape (regression for net_id guesswork)
+
+    @Test("server create: networks[].network is accepted")
+    func serverNetworksValid() {
+        let schema = catalog.descriptor("server")!.createSchema!
+        let good = JSONValue.object([
+            "name": .string("web-1"),
+            "flavor": .string("m1.small"),
+            "image": .string("ubuntu-24.04"),
+            "networks": .array([.object(["network": .string("int-net")])])
+        ])
+        let issues = schema.validate(good)
+        #expect(issues.isEmpty, "Expected no issues, got: \(issues.map(\.path))")
+    }
+
+    @Test("server create: unknown network key (net_id) is rejected naming the allowed keys")
+    func serverNetworksUnknownKeyRejected() {
+        let schema = catalog.descriptor("server")!.createSchema!
+        let bad = JSONValue.object([
+            "name": .string("web-1"),
+            "flavor": .string("m1.small"),
+            "image": .string("ubuntu-24.04"),
+            "networks": .array([.object(["net_id": .string("int-net")])])
+        ])
+        let issues = schema.validate(bad)
+        #expect(issues.contains { $0.path == "$.networks[0].net_id" }, "Expected unknown-property issue at networks[0].net_id, got: \(issues.map(\.path))")
+        #expect(issues.contains { $0.fragment.contains("network") }, "Issue fragment should name the allowed keys")
+    }
+
+    @Test("server create: networks[] entry missing required network key is rejected")
+    func serverNetworksMissingRequired() {
+        let schema = catalog.descriptor("server")!.createSchema!
+        let bad = JSONValue.object([
+            "name": .string("web-1"),
+            "flavor": .string("m1.small"),
+            "image": .string("ubuntu-24.04"),
+            "networks": .array([.object([:])])
+        ])
+        let issues = schema.validate(bad)
+        #expect(issues.contains { $0.path == "$.networks[0].network" && $0.found == "missing" }, "Expected missing-required issue, got: \(issues.map(\.path))")
+    }
+
     // MARK: - Filter validation
 
     @Test("unknown list filter rejected with known list")

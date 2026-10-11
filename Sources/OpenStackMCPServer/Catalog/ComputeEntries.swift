@@ -72,7 +72,21 @@ enum ComputeEntries {
                     "name": .init(type: "string", description: "Server name"),
                     "flavor": .init(type: "string", description: "Flavor ID or name"),
                     "image": .init(type: "string", description: "Image ID or name"),
-                    "networks": .init(type: "array", items: .init(type: "object", properties: ["network": .init(type: "string")]), description: "Networks to attach"),
+                    "networks": .init(
+                        type: "array",
+                        items: .init(
+                            type: "object",
+                            properties: [
+                                "network": .init(type: "string", description: "Network ID or name to attach"),
+                                "port": .init(type: "string", description: "Existing port ID to attach (alternative to network)"),
+                                "fixed_ip": .init(type: "string", description: "Specific fixed IP to request on the network")
+                            ],
+                            required: ["network"],
+                            description: "One entry per network. Use `network` (ID or name); `port` attaches an existing port; `fixed_ip` pins an address.",
+                            additionalProperties: false
+                        ),
+                        description: "Networks to attach"
+                    ),
                     "key_name": .init(type: "string", description: "Keypair name"),
                     "user_data": .init(type: "string", description: "Base64-encoded user data. Mutually exclusive with `provisioning`."),
                     "provisioning": .init(
@@ -105,10 +119,10 @@ enum ComputeEntries {
                                 ),
                                 description: "Ports to open (ufw on apt distros, firewalld on yum distros)"
                             ),
-                            "extra_runcmd": .init(type: "array", items: .init(type: "string"), description: "Escape-hatch shell lines appended to runcmd (each runs via sh -c, rc is tracked)"),
+                            "extra_runcmd": .init(type: "array", items: .init(type: "string"), description: "Escape-hatch shell lines appended to runcmd (each runs via sh -c, rc is tracked). Use for anything the primitives don't cover — e.g. enabling a repo (dnf install -y epel-release), applying security patches (dnf upgrade --security -y), or installing packages that live outside the base repos."),
                             "final_message": .init(type: "string", description: "Message written to /etc/motd.d/99-osmcp, visible at login")
                         ],
-                        description: "Distro-aware provisioning block. The server renders this into canonical cloud-init user_data and verifies boot-time results via the serial console (check with os_action(server, provisioning_status)). Secret-safe: no passwords or key material."
+                        description: "Distro-aware provisioning block delivered as cloud-init user_data at boot. This is the mechanism for patching the OS and installing/configuring software (container runtimes, agents, etc.) on a fresh server: `packages` installs from the distro's default repos, `extra_runcmd` handles repo setup and patching. Boot-time results are verified via the serial console (check with os_action(server, provisioning_status)). Secret-safe: no passwords or key material."
                     ),
                     "availability_zone": .init(type: "string", description: "Availability zone"),
                     "metadata": .init(type: "object", description: "Key-value metadata", additionalProperties: false),

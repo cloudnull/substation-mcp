@@ -293,6 +293,11 @@ struct InProcessMCPTests {
         let text = firstText(result.content)
         #expect(text?.contains("server") == true)
         #expect(text?.contains("reboot") == true, "Should mention reboot action")
+        // The create schema must be surfaced so the harness learns the exact
+        // spec shape (regression: it was documented in the tool description but
+        // never returned, forcing callers to guess field names like networks).
+        #expect(text?.contains("create_schema") == true, "os_describe should return create_schema, got: \(text ?? "nil")")
+        #expect(text?.contains("\"network\"") == true, "create_schema should expose the networks[].network field, got: \(text ?? "nil")")
     }
 
     @Test("os_describe surfaces phase-1 note on by-design 501 identity resources")

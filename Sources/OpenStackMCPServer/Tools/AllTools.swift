@@ -50,7 +50,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_describe",
-                description: "Describe a resource type: verbs, actions, links, create/update schemas, list filters, terminal states.",
+                description: "Describe a resource type: verbs, actions, links, list filters, terminal states, and the create_schema / update_schema (exact spec field names, types, required keys). Call this before os_create/os_update to learn the exact spec shape.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -188,7 +188,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_create",
-                description: "Create an OpenStack resource. Call os_describe(resource:) first for the create schema. dry_run validates without creating.",
+                description: "Create an OpenStack resource. Call os_describe(resource:) first for the create schema (it returns the exact spec fields). dry_run validates without creating. For servers, pass a `provisioning` block (packages/services/users/firewall/extra_runcmd) to install software and configure the OS at boot via cloud-init — this is how you apply patches or install runtimes; verify the result later with os_action(server, provisioning_status).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -234,7 +234,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_action",
-                description: "Perform a resource action (reboot, extend, set_bootable, etc). Per-action details in os_describe.",
+                description: "Perform a resource action (reboot, extend, set_bootable, etc). Per-action details in os_describe. For servers, `provisioning_status` reads the serial console to confirm a create-time `provisioning` block (cloud-init) succeeded; `console_output` returns raw boot logs.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
