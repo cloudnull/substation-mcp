@@ -1048,14 +1048,46 @@ public actor NameResolver {
                     provisioningSha = spec.sha
                 }
 
+                // Parse volumes: split into boot volume (BDM v2) and data volumes (post-boot attach).
+                var bdmEntries: [CreateServerSpec.BlockDeviceMapping] = []
+                var postBootVolumes: [[String: JSONValue]] = []
+                var effectiveImageID = imageID
+
+                if let volArr = obj["volumes"]?.arrayValue {
+                    for volEntry in volArr {
+                        guard case .object(let volObj) = volEntry else { continue }
+                        guard let volID = volObj["volume_id"]?.stringValue else { continue }
+                        let isBoot = volObj["boot"]?.boolValue ?? false
+                        let deleteOnTerm = volObj["delete_on_termination"]?.boolValue
+
+                        if isBoot {
+                            // Boot-from-volume: set imageRef to the volume ID and
+                            // add a BDM entry with boot_index=0. Nova requires
+                            // imageRef to be the boot volume's UUID when using
+                            // a pre-existing volume as root.
+                            effectiveImageID = volID
+                            bdmEntries.append(.init(
+                                uuid: volID,
+                                bootIndex: 0,
+                                deleteOnTermination: deleteOnTerm
+                            ))
+                        } else {
+                            // Data volume: attach post-boot.
+                            let device = volObj["device"]?.stringValue ?? "/dev/vdb"
+                            postBootVolumes.append(["volume_id": .string(volID), "device": .string(device)])
+                        }
+                    }
+                }
+
                 let spec = CreateServerSpec(
-                    name: name, flavorID: flavorID, imageID: imageID,
+                    name: name, flavorID: flavorID, imageID: effectiveImageID,
                     keyName: keyName, availabilityZone: availabilityZone,
                     configDrive: configDrive, metadata: metadata,
                     networks: networks,
                     userData: finalUserData,
                     securityGroups: securityGroups,
-                    serverGroup: serverGroup, hostname: hostname
+                    serverGroup: serverGroup, hostname: hostname,
+                    blockDeviceMapping: bdmEntries
                 )
                 let s = try await r.createServer(vt, spec)
                 var serverResult = try Self.encodeObject(s)
@@ -1065,23 +1097,21 @@ public actor NameResolver {
                         "Provisioning delivered via rendered cloud-init. Verify boot-time result with os_action(server, provisioning_status) once the server is ACTIVE."
                     )
                 }
+                if !bdmEntries.isEmpty {
+                    serverResult["boot_volume"] = .string(bdmEntries[0].uuid)
+                    serverResult["boot_from_volume"] = .bool(true)
+                }
 
-                // Post-boot volume attachment: wait for ACTIVE, then attach each
-                // pre-created volume. This is the supported path for "boot from
-                // volume" until BDM v2 is implemented — the volume is attached
-                // as an additional disk the OS can use (LVM root, data, etc.).
-                if let volArr = obj["volumes"]?.arrayValue, !volArr.isEmpty {
+                // Post-boot data volume attachment: wait for ACTIVE, then attach.
+                if !postBootVolumes.isEmpty {
                     let serverID = s.id
                     let waiter = Waiter(client: client, catalog: catalog)
-                    // Wait for the server to reach ACTIVE before attaching.
                     _ = try await waiter.wait(vt, resource: "server", id: serverID, region: region, until: ["ACTIVE"], timeout: 300)
                     var attached: [[String: JSONValue]] = []
-                    for volEntry in volArr {
-                        guard case .object(let volObj) = volEntry else { continue }
-                        guard let volID = volObj["volume_id"]?.stringValue,
-                              let device = volObj["device"]?.stringValue else { continue }
-                        let deleteOnTerm = volObj["delete_on_termination"]?.boolValue
-                        try await rc.attachVolume(vt, serverID: serverID, volumeID: volID, device: device, deleteOnTermination: deleteOnTerm)
+                    for vol in postBootVolumes {
+                        guard let volID = vol["volume_id"]?.stringValue,
+                              let device = vol["device"]?.stringValue else { continue }
+                        try await rc.attachVolume(vt, serverID: serverID, volumeID: volID, device: device, deleteOnTermination: nil)
                         attached.append(["volume_id": .string(volID), "device": .string(device)])
                     }
                     serverResult["volumes_attached"] = .array(attached.map { .object($0) })

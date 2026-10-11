@@ -871,6 +871,36 @@ public struct CreateServerSpec: Sendable {
     public var serverGroup: String?
     public var hostname: String?  // requires microversion 2.90
     public var pinnedAvailabilityZone: String?  // requires microversion 2.96
+    public var blockDeviceMapping: [BlockDeviceMapping]
+
+    /// A single block device mapping entry for boot-from-volume or additional disks.
+    public struct BlockDeviceMapping: Sendable {
+        public var uuid: String          // volume ID
+        public var bootIndex: Int?       // 0 = root/boot device
+        public var deleteOnTermination: Bool?
+        public var sourceType: String?   // "volume", "image", "blank"
+        public var destinationType: String?  // "volume", "local"
+        public var volumeSize: Int?      // GB (for image→volume)
+        public var volumeType: String?   // e.g. "HA-Performance"
+
+        public init(
+            uuid: String,
+            bootIndex: Int? = nil,
+            deleteOnTermination: Bool? = nil,
+            sourceType: String? = nil,
+            destinationType: String? = nil,
+            volumeSize: Int? = nil,
+            volumeType: String? = nil
+        ) {
+            self.uuid = uuid
+            self.bootIndex = bootIndex
+            self.deleteOnTermination = deleteOnTermination
+            self.sourceType = sourceType
+            self.destinationType = destinationType
+            self.volumeSize = volumeSize
+            self.volumeType = volumeType
+        }
+    }
 
     public struct NetworkSpec: Sendable {
         public var port: String?
@@ -901,7 +931,8 @@ public struct CreateServerSpec: Sendable {
         securityGroups: [String] = [],
         serverGroup: String? = nil,
         hostname: String? = nil,
-        pinnedAvailabilityZone: String? = nil
+        pinnedAvailabilityZone: String? = nil,
+        blockDeviceMapping: [BlockDeviceMapping] = []
     ) {
         self.name = name
         self.flavorID = flavorID
@@ -920,7 +951,9 @@ public struct CreateServerSpec: Sendable {
         self.serverGroup = serverGroup
         self.hostname = hostname
         self.pinnedAvailabilityZone = pinnedAvailabilityZone
+        self.blockDeviceMapping = blockDeviceMapping
     }
+
 
     /// Build the JSON body for the create request.
     public func body() -> String {
@@ -989,6 +1022,26 @@ public struct CreateServerSpec: Sendable {
             body = body + ",\"scheduler_hints\":{\"group\":\"\(serverGroup)\"}"
         }
 
+        // block_device_mapping_v2: boot-from-volume and additional disks.
+        // When a BDM entry has boot_index=0, the server boots from that volume.
+        // The imageRef in the request must be set to the boot volume's ID (Nova
+        // requirement for boot-from-volume with pre-existing volumes).
+        if !blockDeviceMapping.isEmpty {
+            let bdms = blockDeviceMapping.map { bdm -> String in
+                var parts: [String] = []
+                parts.append("\"uuid\":\"\(bdm.uuid)\"")
+                if let bi = bdm.bootIndex { parts.append("\"boot_index\":\(bi)") }
+                if let dot = bdm.deleteOnTermination { parts.append("\"delete_on_termination\":\(dot ? "true" : "false")") }
+                if let st = bdm.sourceType { parts.append("\"source_type\":\"\(st)\"") }
+                if let dt = bdm.destinationType { parts.append("\"destination_type\":\"\(dt)\"") }
+                if let vs = bdm.volumeSize { parts.append("\"volume_size\":\(vs)") }
+                if let vt = bdm.volumeType { parts.append("\"volume_type\":\"\(vt)\"") }
+                return "{\(parts.joined(separator: ","))}"
+            }.joined(separator: ",")
+            body = body + ",\"block_device_mapping_v2\":[\(bdms)]"
+        }
+
         return body + "}}"
     }
 }
+

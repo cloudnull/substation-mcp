@@ -133,14 +133,15 @@ enum ComputeEntries {
                         items: .init(
                             type: "object",
                             properties: [
-                                "volume_id": .init(type: "string", description: "Pre-created volume ID to attach after boot"),
-                                "device": .init(type: "string", description: "Target device (e.g. /dev/vdb, /dev/vdc)"),
+                                "volume_id": .init(type: "string", description: "Pre-created volume ID"),
+                                "boot": .init(type: "boolean", description: "Set true for the root/boot volume. The server boots from this volume (block_device_mapping_v2 with boot_index=0). The volume must have been created from the desired image (os_create volume with imageRef). Only one volume may have boot=true."),
+                                "device": .init(type: "string", description: "Target device for data volumes (e.g. /dev/vdb, /dev/vdc). Ignored for boot volumes (Nova assigns /dev/vda)."),
                                 "delete_on_termination": .init(type: "boolean", description: "Delete volume when server is terminated")
                             ],
-                            required: ["volume_id", "device"],
+                            required: ["volume_id"],
                             additionalProperties: false
                         ),
-                        description: "Volumes to attach after the server reaches ACTIVE. Each volume must be pre-created (os_create resource:volume) and in 'available' state before server creation. The server boots from the image (flavor ephemeral disk); these volumes are attached post-boot via os_attach. For an HA root: create a bootable volume from the image (os_create volume with imageRef + set_bootable), then reference it here — the OS will see it as an additional disk you can use as root via LVM or re-install."
+                        description: "Volumes for the server. A volume with boot=true becomes the root disk (server boots from it via BDM v2 — the 'image' field in the request is overridden by the boot volume's ID). Other volumes are attached post-boot as data disks at the specified device. All volumes must be pre-created (os_create resource:volume) and in 'available' state. For an HA performance root: create a volume with volume_type='HA-Performance' and imageRef=<rocky10-image-id>, then reference it here with boot=true."
                     )
                 ],
                 required: ["name", "flavor", "image"]
