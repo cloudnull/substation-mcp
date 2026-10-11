@@ -107,6 +107,17 @@ public enum AllTools {
                 annotations: .init(readOnlyHint: true, destructiveHint: false)
             ),
             Tool(
+                name: "os_project_readiness",
+                description: "Check what infrastructure exists in this project and what's needed before deploying servers. Returns: available networks (private/public), routers, volume quotas and types, flavors by AZ, keypairs, security groups, and a blockers list of missing prerequisites.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "region": .object(["type": .string("string")]),
+                    ]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
                 name: "os_quota",
                 description: "Show resource quotas for the current project.",
                 inputSchema: .object([

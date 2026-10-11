@@ -226,7 +226,7 @@ struct InProcessMCPTests {
         // connect() already ran initialize; the server is ready.
     }
 
-    @Test("write-scoped token sees the 15 verb tools + 3 task tools")
+    @Test("write-scoped token sees the 16 verb tools + 3 task tools")
     func writeTokenSeesVerbAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -235,9 +235,9 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 15 verb tools (the stable, additive-only set) + 3 task-lifecycle
+        // 16 verb tools (the stable, additive-only set) + 3 task-lifecycle
         // tools (os_task_submit/status/cancel, the Path C shim).
-        #expect(names.count == 18, "Expected 18 tools, got \(names.count): \(names.sorted())")
+        #expect(names.count == 19, "Expected 19 tools, got \(names.count): \(names.sorted())")
         #expect(names.contains("os_create"))
         #expect(names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -246,7 +246,7 @@ struct InProcessMCPTests {
         #expect(names.contains("os_task_cancel"))
     }
 
-    @Test("read-only token sees the 9 read verbs + 3 task tools")
+    @Test("read-only token sees the 10 read verbs + 3 task tools")
     func readOnlyTokenSeesReadAndTaskTools() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -255,8 +255,8 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 9 read-only verb tools + 3 read-scoped task tools = 12.
-        #expect(names.count == 12, "Expected 12 tools, got \(names.count): \(names.sorted())")
+        // 10 read-only verb tools + 3 read-scoped task tools = 13.
+        #expect(names.count == 13, "Expected 13 tools, got \(names.count): \(names.sorted())")
         #expect(!names.contains("os_create"))
         #expect(!names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -408,5 +408,68 @@ struct InProcessMCPTests {
 
         let result = try await bundle.mcpClient.callTool(name: "os_clouds", arguments: [:])
         #expect(result.isError != true)
+    }
+
+    @Test("os_project_readiness returns valid JSON with all sections")
+    func projectReadinessValidJSON() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_project_readiness", arguments: [:])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"networks\""))
+        #expect(text.contains("\"routers\""))
+        #expect(text.contains("\"volumes\"") || text.contains("quota_volumes"), "Expected volume quota section, got: \(text)")
+        #expect(text.contains("\"flavors\""))
+        #expect(text.contains("\"keypairs\""))
+        #expect(text.contains("\"security_groups\""))
+        #expect(text.contains("\"ready_for_servers\""))
+        #expect(text.contains("\"blockers\""))
+    }
+
+    @Test("project_readiness reports missing private network when none exists")
+    func projectReadinessMissingNetwork() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // proj-one is seeded with int-net (private) plus ext-net (public); a
+        // prior test may have created net-001. Delete every private network so
+        // the blocker must appear.
+        for name in ["net-int", "net-001"] {
+            let del = try await bundle.mcpClient.callTool(name: "os_delete", arguments: [
+                "resource": .string("network"),
+                "id_or_name": .string(name),
+            ])
+            #expect(del.isError != true, "Delete \(name) failed: \(firstText(del.content) ?? "")")
+        }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_project_readiness", arguments: [:])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"ready_for_servers\":false"), "Expected not ready, got: \(text)")
+        #expect(text.contains("No private network"), "Expected private-network blocker, got: \(text)")
+    }
+
+    @Test("project_readiness reports ready when infra exists")
+    func projectReadinessComplete() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // proj-one is seeded with int-net (private), ext-net (public),
+        // router-1 (gateway to ext-net, interface on subnet-int), and a
+        // test-key keypair — everything needed to deploy servers.
+        let result = try await bundle.mcpClient.callTool(name: "os_project_readiness", arguments: [:])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"ready_for_servers\":true"), "Expected ready, got: \(text)")
+        #expect(!text.contains("No private network"))
+        #expect(!text.contains("No SSH keypairs"))
     }
 }

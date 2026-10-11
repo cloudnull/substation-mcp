@@ -151,7 +151,7 @@ public struct ToolRegistry: Sendable {
         }
         return [
             "os_list", "os_get", "os_describe", "os_topology",
-            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait",
+            "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness",
             "os_task_submit", "os_task_status", "os_task_cancel",
             "os_create", "os_update", "os_delete", "os_action",
             "os_attach", "os_detach",
@@ -262,6 +262,7 @@ public struct ToolRegistry: Sendable {
             case "os_whoami": outcome = (try await handleWhoami(params), nil)
             case "os_clouds": outcome = (try await handleClouds(params), nil)
             case "os_quota": outcome = (try await handleQuota(params), nil)
+            case "os_project_readiness": outcome = (try await handleProjectReadiness(params), nil)
             case "os_find": outcome = (try await handleFind(params), nil)
             case "os_topology": outcome = (try await handleTopology(params), nil)
             case "os_wait": outcome = (try await handleWait(params, server: server), nil)
@@ -357,7 +358,7 @@ public struct ToolRegistry: Sendable {
         arg(params, name)?.arrayValue?.compactMap { $0.stringValue }
     }
 
-    private func resolveRegion(_ params: CallTool.Parameters) async throws -> String {
+    func resolveRegion(_ params: CallTool.Parameters) async throws -> String {
         if let region = argOptional(params, "region"), !region.isEmpty { return region }
         return await client.defaultRegion(identity.vt)
     }
@@ -405,7 +406,7 @@ public struct ToolRegistry: Sendable {
         }
     }
 
-    private func resultText(_ obj: [String: JSONValue]) -> (String, Value) {
+    func resultText(_ obj: [String: JSONValue]) -> (String, Value) {
         let val = toValue(.object(obj))
         let data = (try? JSONEncoder().encode(val)) ?? Data()
         let text = String(data: data, encoding: .utf8) ?? val.description
