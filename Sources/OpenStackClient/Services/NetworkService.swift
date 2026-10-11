@@ -1092,6 +1092,21 @@ public struct NetworkRegion: Sendable {
         return decoded.quota
     }
 
+    // MARK: - Router interfaces
+
+    /// Add a router interface (attach subnet to router).
+    public func addRouterInterface(_ vt: ValidatedToken, _ region: String, routerID: String, subnetID: String) async throws -> (status: Int, body: Data, requestID: String?) {
+        let r = try resolveRegion(vt)
+        let body = "{\"subnet_id\":\"\(subnetID)\"}".data(using: .utf8)
+        return try await req(vt, r, method: "PUT", path: "\(basePath)/routers/\(routerID)/add_router_interface", body: body)
+    }
+
+    /// Remove a router interface (detach subnet from router).
+    public func removeRouterInterface(_ vt: ValidatedToken, _ region: String, routerID: String, subnetID: String) async throws -> (status: Int, body: Data, requestID: String?) {
+        let r = try resolveRegion(vt)
+        return try await req(vt, r, method: "DELETE", path: "\(basePath)/routers/\(routerID)/remove_router_interface")
+    }
+
     // MARK: - Private helpers
 
     private func resolveRegion(_ vt: ValidatedToken) throws -> String {

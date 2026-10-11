@@ -453,7 +453,7 @@ public struct LinkExecutor: Sendable {
             throw OpenStackError(service: "mcp", status: 400, message: "The router_interface link target must be a subnet or a port (got: \(targetType))")
         }
 
-        let (status, body, requestID) = try await client.routerInterface(vt, method: "PUT", routerID: routerID, subnetID: subnetID, region: region)
+        let (status, body, requestID) = try await ns.addRouterInterface(vt, region, routerID: routerID, subnetID: subnetID)
         guard (200...299).contains(status) else {
             throw OpenStackError.normalize(body: body, status: status, service: "network", requestID: requestID, hasAccessRules: false)
         }
@@ -479,7 +479,7 @@ public struct LinkExecutor: Sendable {
         } else {
             throw OpenStackError(service: "mcp", status: 404, code: "itemNotFound", message: "No subnet or port found matching '\(target)'")
         }
-        let (status, body, requestID) = try await client.routerInterface(vt, method: "DELETE", routerID: routerID, subnetID: subnetID, region: region)
+        let (status, body, requestID) = try await ns.removeRouterInterface(vt, region, routerID: routerID, subnetID: subnetID)
         guard (200...299).contains(status) else {
             throw OpenStackError.normalize(body: body, status: status, service: "network", requestID: requestID, hasAccessRules: false)
         }
