@@ -1118,7 +1118,7 @@ public struct ToolRegistry: Sendable {
             return nil
         case "floating_ip":
             return [
-                "Associate with server: os_attach(link:floating_ip, source=<server>, target=<fip-id>)"
+                "Associate with server: os_attach(link:floating_ip, source=<fip-id>, target=<server>)"
             ]
         case "keypair":
             let name = data["name"]?.stringValue ?? "<name>"
@@ -1140,7 +1140,7 @@ public struct ToolRegistry: Sendable {
         switch link {
         case "router_interface":
             return [
-                "Your network is now routable. Create a server on this network: os_create(server, {networks: [{network: <name>}]})"
+                "Router interface attached. If this connects a private network, you can now create servers on it: os_create(server, {networks: [{network: <name>}]})"
             ]
         case "floating_ip":
             return [
