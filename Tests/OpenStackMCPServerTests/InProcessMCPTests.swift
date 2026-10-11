@@ -913,4 +913,78 @@ struct InProcessMCPTests {
         #expect(healthy?["diagnostic"] == nil, "healthy volume must not have diagnostic in list")
     }
 
+    // MARK: - Auto security group (Task 6)
+
+    @Test("server create without security_groups auto-creates an SSH SG")
+    func autoSGCreatedWhenOmitted() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("auto-sg-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError != true, "create should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        let inner = data["data"] as? [String: Any] ?? [:]
+        #expect(inner["security_group_created"] as? String == "auto-sg-server-sg",
+               "expected security_group_created=auto-sg-server-sg, got: \(data)")
+
+        // The created SG must exist and carry an SSH ingress rule (tcp/22).
+        let rn = await bundle.client.network(region: nil)
+        let vt = bundle.identity.vt
+        let sgs = try await rn.listSecurityGroups(vt)
+        guard let sg = sgs.first(where: { $0.name == "auto-sg-server-sg" }) else {
+            Issue.record("auto-created SG missing from list: \(sgs.map(\.name))")
+            return
+        }
+        let rules = try await rn.listSecurityGroupRules(vt, securityGroupID: sg.id)
+        let sshRule = rules.first {
+            $0.direction == "ingress" && $0.ipProtocol == "tcp"
+                && $0.portRangeMin == 22 && $0.portRangeMax == 22
+                && $0.remoteIPPrefix == "0.0.0.0/0"
+        }
+        #expect(sshRule != nil, "expected tcp/22 ingress rule on auto SG, got: \(rules)")
+    }
+
+    @Test("server create with explicit security_groups does not auto-create")
+    func autoSGBypassedWhenExplicit() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Pre-create the SG the server will reference by name.
+        let rn = await bundle.client.network(region: nil)
+        let vt = bundle.identity.vt
+        _ = try await rn.createSecurityGroup(vt, CreateSecurityGroupSpec(name: "explicit-sg", description: "test"))
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("explicit-sg-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "security_groups": .array([.string("explicit-sg")]),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError != true, "create should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        let inner = data["data"] as? [String: Any] ?? [:]
+        #expect(inner["security_group_created"] == nil,
+               "no security_group_created expected when SGs are explicit, got: \(data)")
+
+        // No auto-named SG may have been created.
+        let sgs = try await rn.listSecurityGroups(vt)
+        #expect(sgs.first { $0.name == "explicit-sg-server-sg" } == nil,
+               "auto SG must not be created when explicit SGs are given: \(sgs.map(\.name))")
+    }
 }

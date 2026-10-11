@@ -126,7 +126,7 @@ enum ComputeEntries {
                     ),
                     "availability_zone": .init(type: "string", description: "Availability zone"),
                     "metadata": .init(type: "object", description: "Key-value metadata", additionalProperties: false),
-                    "security_groups": .init(type: "array", items: .init(type: "string"), description: "Security group names"),
+                    "security_groups": .init(type: "array", items: .init(type: "string"), description: "Security group names. If omitted, a per-server security group is auto-created with SSH (port 22)."),
                     "config_drive": .init(type: "string", description: "config_drive setting"),
                     "volumes": .init(
                         type: "array",

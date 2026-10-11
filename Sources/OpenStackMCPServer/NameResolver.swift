@@ -1061,7 +1061,7 @@ public actor NameResolver {
                     }
                 }
                 let userData = obj["user_data"]?.stringValue ?? obj["userData"]?.stringValue
-                let securityGroups = obj["security_groups"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                var securityGroups = obj["security_groups"]?.arrayValue?.compactMap { $0.stringValue } ?? []
                 let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
                 let hostname = obj["hostname"]?.stringValue
                 // Parse volumes (needed by the dry-run quota check below and by
@@ -1168,7 +1168,7 @@ public actor NameResolver {
                     }
                     // Warnings (non-blocking).
                     if securityGroups.isEmpty {
-                        warnings.append("No security groups specified — the default SG will apply; it allows all inbound traffic from the same SG only. Add explicit rules for SSH/HTTP if needed.")
+                        warnings.append("No security groups specified — auto-created SG will only allow SSH")
                     }
                     return ["valid": .bool(errors.isEmpty),
                             "errors": .array(errors.map { .string($0) }),
@@ -1181,6 +1181,7 @@ public actor NameResolver {
                 // create result so callers can correlate it with
                 // provisioning_status later.
                 var provisioningSha: String?
+                var provisioningFirewallPorts: [Provisioning.ProvisioningSpec.FirewallRule] = []
                 var finalUserData = userData
                 if let provValue = obj["provisioning"] {
                     guard finalUserData == nil else {
@@ -1228,8 +1229,49 @@ public actor NameResolver {
                     }
                     finalUserData = encoded
                     provisioningSha = spec.sha
+                    provisioningFirewallPorts = spec.firewall
                 }
 
+                // Auto-create a per-server security group with SSH when the
+                // caller did not specify one. Without an SG, a fresh server
+                // has no inbound access (no SSH), which is confusing for
+                // non-experts. The SG is named <server-name>-sg and opens
+                // TCP/22 plus any `provisioning.firewall` ports; errors from
+                // SG creation propagate so we never silently create a server
+                // without its intended ingress rules.
+                var autoSGName: String?
+                if securityGroups.isEmpty {
+                    let sgName = "\(name)-sg"
+                    let rn = await client.network(region: region)
+                    let newSG = try await rn.createSecurityGroup(
+                        vt,
+                        CreateSecurityGroupSpec(name: sgName, description: "Auto-created by openstack-mcp for SSH access")
+                    )
+                    _ = try await rn.createSecurityGroupRule(
+                        vt,
+                        securityGroupID: newSG.id,
+                        direction: "ingress",
+                        ethertype: "IPv4",
+                        ipProtocol: "tcp",
+                        portRangeMin: 22,
+                        portRangeMax: 22,
+                        remoteIPPrefix: "0.0.0.0/0"
+                    )
+                    for fw in provisioningFirewallPorts {
+                        _ = try await rn.createSecurityGroupRule(
+                            vt,
+                            securityGroupID: newSG.id,
+                            direction: "ingress",
+                            ethertype: "IPv4",
+                            ipProtocol: fw.proto,
+                            portRangeMin: fw.port,
+                            portRangeMax: fw.port,
+                            remoteIPPrefix: "0.0.0.0/0"
+                        )
+                    }
+                    securityGroups = [newSG.name]
+                    autoSGName = newSG.name
+                }
 
                 let spec = CreateServerSpec(
                     name: name, flavorID: flavorID, imageID: imageID,
@@ -1243,6 +1285,9 @@ public actor NameResolver {
                 )
                 let s = try await r.createServer(vt, spec)
                 var serverResult = try Self.encodeObject(s)
+                if let autoSGName {
+                    serverResult["security_group_created"] = .string(autoSGName)
+                }
                 if let sha = provisioningSha {
                     serverResult["provisioning_sha"] = .string(sha)
                     serverResult["provisioning_note"] = .string(
