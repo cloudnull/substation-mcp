@@ -1168,7 +1168,7 @@ public actor NameResolver {
                     }
                     // Warnings (non-blocking).
                     if securityGroups.isEmpty {
-                        warnings.append("No security groups specified — auto-created SG will only allow SSH")
+                        warnings.append("No security groups specified — an SG will be auto-created with SSH (port 22) and any provisioning firewall ports")
                     }
                     return ["valid": .bool(errors.isEmpty),
                             "errors": .array(errors.map { .string($0) }),
