@@ -410,6 +410,20 @@ struct InProcessMCPTests {
         #expect(result.isError != true)
     }
 
+    @Test("os_clouds includes per-region capability matrix")
+    func cloudsCapability() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_clouds", arguments: [:])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("capabilities"))
+        #expect(text.contains("volume_types"))
+    }
+
     @Test("os_project_readiness returns valid JSON with all sections")
     func projectReadinessValidJSON() async throws {
         let handle = try await FakeApp.start()

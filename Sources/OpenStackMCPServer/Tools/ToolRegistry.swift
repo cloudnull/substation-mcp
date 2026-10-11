@@ -542,9 +542,47 @@ public struct ToolRegistry: Sendable {
     private func handleClouds(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let vt = identity.vt
         let regions = await client.regions(vt)
+
+        // Per-region capability matrix: volume types, AZs, flavor count, public
+        // networks. Each query is best-effort (try?) — a missing service endpoint
+        // in a region omits that field rather than failing the whole call.
+        var capabilities: [[String: JSONValue]] = []
+        for region in regions {
+            async let csTask = client.compute(region: region)
+            async let bsTask = client.blockStorage(region: region)
+            async let nsTask = client.network(region: region)
+            let cs = await csTask
+            let bs = await bsTask
+            let ns = await nsTask
+
+            let vts = try? await bs.listVolumeTypes(vt)
+            let azs = try? await cs.listAvailabilityZones(vt)
+            let flavors = try? await cs.listFlavors(vt)
+            let nets = try? await ns.listNetworks(vt, filters: [:], limit: 200)
+
+            var entry: [String: JSONValue] = ["region": .string(region)]
+            if let vts, !vts.isEmpty {
+                entry["volume_types"] = .array(vts.map { .string($0.name) })
+            }
+            if let azs, !azs.isEmpty {
+                entry["availability_zones"] = .array(azs.map { .string($0.zoneName) })
+            }
+            if let flavors {
+                entry["flavor_count"] = .integer(flavors.count)
+            }
+            if let nets {
+                let publicNames = nets.filter { $0.routerExternal }.map { $0.name }
+                if !publicNames.isEmpty {
+                    entry["public_networks"] = .array(publicNames.map { .string($0) })
+                }
+            }
+            capabilities.append(entry)
+        }
+
         let result: [String: JSONValue] = [
             "regions": .array(regions.map { .string($0) }),
             "services": .object(identity.whoami.services.mapValues { .array($0.map { .string($0) }) }),
+            "capabilities": .array(capabilities.map { .object($0) }),
         ]
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
