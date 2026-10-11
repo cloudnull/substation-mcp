@@ -2491,6 +2491,23 @@ public actor FakeState {
         return volumes[idx]
     }
 
+    /// Test-only hook: seed a volume in an arbitrary state (e.g. `reserved`
+    /// with no attachments, or `error`) to exercise stuck-state diagnostics.
+    @discardableResult
+    public func seedVolume(id: String, projectID: String, name: String, status: String, size: Int = 1, attachments: [FakeVolumeAttachment] = []) -> FakeVolume {
+        let vol = FakeVolume(
+            id: id,
+            projectID: projectID,
+            name: name,
+            status: status,
+            size: size,
+            attachments: attachments,
+            created: "2026-01-01T00:00:00.000"
+        )
+        volumes.append(vol)
+        return vol
+    }
+
     public func deleteVolume(id: String, projectID: String) -> Bool {
         let idx = volumes.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }

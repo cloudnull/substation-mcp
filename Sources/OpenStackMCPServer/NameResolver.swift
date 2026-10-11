@@ -242,7 +242,7 @@ public actor NameResolver {
             switch descriptor.name {
             case "volume":
                 let v = try await r.getVolume(vt, id: id)
-                return try Self.encodeObject(v)
+                return Self.withVolumeDiagnostic(try Self.encodeObject(v))
             case "volume_type":
                 let vt = try await r.getVolumeType(vt, id: id)
                 return try Self.encodeObject(vt)
@@ -632,6 +632,17 @@ public actor NameResolver {
             case "volume":
                 let vols = try await r.listVolumes(vt, filters: filters, limit: limit)
                 var result: [String: JSONValue] = try Self.encodeList(vols)
+                if let items = result["items"]?.arrayValue {
+                    var annotated: [JSONValue] = []
+                    for item in items {
+                        if let obj = item.objectValue {
+                            annotated.append(.object(Self.withVolumeDiagnostic(obj)))
+                        } else {
+                            annotated.append(item)
+                        }
+                    }
+                    result["items"] = .array(annotated)
+                }
                 result["resource"] = .string("volume")
                 result["region"] = .string(region)
                 return result
@@ -1347,7 +1358,7 @@ public actor NameResolver {
                 let volType = obj["volume_type"]?.stringValue ?? ""
                 let spec = CreateVolumeSpec(name: name, size: size, volumeType: volType)
                 let v = try await r.createVolume(vt, spec)
-                return try Self.encodeObject(v)
+                return Self.withVolumeDiagnostic(try Self.encodeObject(v))
             default:
                 throw OpenStackError(service: "volumev3", status: 400, message: "Unknown volume create: \(descriptor.name)")
             }
@@ -1973,15 +1984,15 @@ public actor NameResolver {
                     let newSize = params["new_size"]?.intValue ?? params["size"]?.intValue
                     guard let newSize else { throw OpenStackError(service: "volumev3", status: 400, message: "Extend requires new_size") }
                     let vol = try await r.extendVolume(vt, id: id, size: newSize)
-                    return try Self.encodeObject(vol)
+                    return Self.withVolumeDiagnostic(try Self.encodeObject(vol))
                 case "retype":
                     let newType = params["new_volume_type"]?.stringValue
                     guard let newType else { throw OpenStackError(service: "volumev3", status: 400, message: "Retype requires new_volume_type") }
                     let vol = try await r.retypeVolume(vt, id: id, volumeType: newType)
-                    return try Self.encodeObject(vol)
+                    return Self.withVolumeDiagnostic(try Self.encodeObject(vol))
                 case "set_bootable":
                     let vol = try await r.setBootable(vt, id: id, bootable: params["bootable"]?.boolValue ?? true)
-                    return try Self.encodeObject(vol)
+                    return Self.withVolumeDiagnostic(try Self.encodeObject(vol))
                 case "upload_to_image":
                     let imageRef = try await r.uploadToImage(vt, id: id)
                     return ["action": .string("upload_to_image"), "id": .string(id), "image_ref": .string(imageRef)]
@@ -2121,6 +2132,27 @@ public actor NameResolver {
             throw OpenStackError(service: "internal", status: 500, message: "Failed to encode resource to JSON object")
         }
         return convertDict(dict)
+    }
+
+    /// Adds a `diagnostic` hint to an encoded volume object when its status
+    /// indicates a stuck state (reserved with no attachment, or error).
+    /// Healthy volumes are returned unchanged.
+    static func withVolumeDiagnostic(_ obj: [String: JSONValue]) -> [String: JSONValue] {
+        var result = obj
+        let status = obj["status"]?.stringValue ?? ""
+        if status == "reserved" {
+            let attachments = obj["attachments"]?.arrayValue ?? []
+            if attachments.isEmpty {
+                result["diagnostic"] = .string(
+                    "Volume is reserved with no active attachment. This typically occurs after server deletion when Cinder hasn't released a boot volume. Wait up to 30 minutes for Cinder periodic tasks, or contact support to force-release."
+                )
+            }
+        } else if status == "error" {
+            result["diagnostic"] = .string(
+                "Volume is in error state. Check the 'os-vol-host' field for the backend. Contact support if persistent."
+            )
+        }
+        return result
     }
 
     static func encodeList<T: Encodable>(_ values: [T]) throws -> [String: JSONValue] {

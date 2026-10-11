@@ -739,4 +739,89 @@ struct InProcessMCPTests {
         #expect(text.contains("os_wait"), "expected os_wait hint in server create response, got: \(text)")
     }
 
+    // MARK: - Volume stuck-state diagnostics (Task 7)
+
+    @Test("reserved volume with no attachments shows diagnostic")
+    func reservedVolumeDiagnostic() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        _ = await handle.state.seedVolume(id: "stuck-vol", projectID: "proj-one", name: "stuck-vol", status: "reserved")
+
+        let result = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("volume"),
+            "id_or_name": .string("stuck-vol"),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("diagnostic"), "expected diagnostic field, got: \(text)")
+        #expect(text.contains("Cinder"), "expected Cinder mention, got: \(text)")
+        #expect(text.contains("force-release"), "expected force-release hint, got: \(text)")
+    }
+
+    @Test("error volume shows diagnostic")
+    func errorVolumeDiagnostic() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        _ = await handle.state.seedVolume(id: "broken-vol", projectID: "proj-one", name: "broken-vol", status: "error")
+
+        let result = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("volume"),
+            "id_or_name": .string("broken-vol"),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("diagnostic"), "expected diagnostic field, got: \(text)")
+        #expect(text.contains("error state"), "expected error-state message, got: \(text)")
+        #expect(text.contains("os-vol-host"), "expected os-vol-host hint, got: \(text)")
+    }
+
+    @Test("healthy volume has no diagnostic field")
+    func healthyVolumeNoDiagnostic() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("volume"),
+            "id_or_name": .string("seed-vol"),
+        ])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(!text.contains("diagnostic"), "healthy volume must not carry a diagnostic, got: \(text)")
+    }
+
+    @Test("volume list annotates stuck volumes only")
+    func volumeListDiagnostic() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        _ = await handle.state.seedVolume(id: "stuck-list-vol", projectID: "proj-one", name: "stuck-list-vol", status: "reserved")
+
+        let result = try await bundle.mcpClient.callTool(name: "os_list", arguments: [
+            "resource": .string("volume"),
+            "fields": .array([.string("id"), .string("status"), .string("diagnostic")]),
+        ])
+        #expect(result.isError != true)
+        let data = try parseResult(result)
+        guard let items = data["items"] as? [[String: Any]] else {
+            Issue.record("expected items array in list response, got: \(data)")
+            return
+        }
+        let stuck = items.first { $0["id"] as? String == "stuck-list-vol" }
+        #expect(stuck != nil, "stuck volume missing from list: \(data)")
+        #expect(stuck?["diagnostic"] as? String != nil, "expected diagnostic on stuck volume in list")
+        let healthy = items.first { $0["id"] as? String == "seed-vol" }
+        #expect(healthy != nil, "seed-vol missing from list: \(data)")
+        #expect(healthy?["diagnostic"] == nil, "healthy volume must not have diagnostic in list")
+    }
+
 }
