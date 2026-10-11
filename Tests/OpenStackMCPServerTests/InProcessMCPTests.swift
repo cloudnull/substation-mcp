@@ -575,4 +575,29 @@ struct InProcessMCPTests {
         #expect(errors.contains { $0.contains("imageNotFound") }, "expected imageNotFound, got: \(errors)")
         #expect(errors.contains { $0.contains("keypairNotFound") }, "expected keypairNotFound, got: \(errors)")
     }
+
+    @Test("server dry_run reports unknown image AND unknown network in one pass")
+    func serverDryRunMissingImageAndNetwork() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("dry-bad2"),
+                "flavor": .string("m1.small"),
+                "image": .string("no-such-image"),
+                "networks": .array([.object(["network": .string("no-such-net")])]),
+            ]),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true, "dry run should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        #expect(data["valid"] as? Bool == false, "expected valid:false, got: \(data)")
+        let errors = data["errors"] as? [String] ?? []
+        #expect(errors.contains { $0.contains("imageNotFound") }, "expected imageNotFound, got: \(errors)")
+        #expect(errors.contains { $0.contains("networkNotFound") }, "expected networkNotFound, got: \(errors)")
+    }
 }

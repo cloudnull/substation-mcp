@@ -1010,9 +1010,11 @@ public actor NameResolver {
                             do {
                                 netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
                             } catch {
-                                return ["valid": .bool(false),
-                                        "errors": .array([.string("networkNotFound: \(error.localizedDescription)")]),
-                                        "warnings": .array([])]
+                                // Collect instead of returning early so earlier
+                                // errors (e.g. imageNotFound) are not dropped;
+                                // the final dry-run return surfaces all problems.
+                                dryRunErrors.append("networkNotFound: \(error.localizedDescription)")
+                                netID = netRef
                             }
                         } else {
                             netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
@@ -1108,10 +1110,13 @@ public actor NameResolver {
                             }
                         }
                     }
-                    // 2. Flavor exists (resolution already succeeded; re-check
-                    //    against the fetched list by resolved ID).
-                    if !flavors.contains(where: { $0.id == flavorID }) {
-                        errors.append("flavorNotFound: flavor '\(flavorRef)' did not resolve to an existing flavor")
+                    // 2. Flavor exists in the fetched list by resolved ID.
+                    //    resolveRef passes canonical UUIDs through without
+                    //    checking them against the list, so verify membership
+                    //    explicitly here.
+                    let flavorExists = flavorItems.contains { ($0["id"]?.stringValue) == flavorID }
+                    if !flavorExists {
+                        errors.append("flavorNotFound: flavor '\(flavorRef)' does not exist or is not visible to this project")
                     }
                     // 3. Image is visible and active.
                     if let img = images.first(where: { $0.id == imageID }) {
