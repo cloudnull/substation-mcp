@@ -1061,15 +1061,16 @@ public actor NameResolver {
                         let deleteOnTerm = volObj["delete_on_termination"]?.boolValue
 
                         if isBoot {
-                            // Boot-from-volume: set imageRef to the volume ID and
-                            // add a BDM entry with boot_index=0. Nova requires
-                            // imageRef to be the boot volume's UUID when using
-                            // a pre-existing volume as root.
-                            effectiveImageID = volID
+                            // Boot-from-volume: keep imageRef as the actual image,
+                            // add BDM entry with source_type=volume, destination_type=local.
+                            // This tells Nova to boot from the pre-existing volume
+                            // (which was created from that image) as the root disk.
                             bdmEntries.append(.init(
                                 uuid: volID,
                                 bootIndex: 0,
-                                deleteOnTermination: deleteOnTerm
+                                deleteOnTermination: deleteOnTerm,
+                                sourceType: "volume",
+                                destinationType: "local"
                             ))
                         } else {
                             // Data volume: attach post-boot.
