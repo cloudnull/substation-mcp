@@ -695,6 +695,7 @@ extension OAuthAuthorizationServer {
                 opts += '<option value="' + p.name.replace(/"/g, '&quot;') + '">' + label.replace(/</g, '&lt;') + '</option>';
               }
               if (sel) { sel.innerHTML = opts; sel.hidden = false; }
+              if (sel && projects.length > 0) { sel.selectedIndex = 1; oauthPickProject(sel); }
               if (status) { status.textContent = projects.length + ' project(s) found'; status.className = 'detect-status ok'; }
             }).catch(function(e) {
               if (status) { status.textContent = e.message || 'detection failed'; status.className = 'detect-status err'; }
