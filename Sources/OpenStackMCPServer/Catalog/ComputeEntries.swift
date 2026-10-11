@@ -127,7 +127,21 @@ enum ComputeEntries {
                     "availability_zone": .init(type: "string", description: "Availability zone"),
                     "metadata": .init(type: "object", description: "Key-value metadata", additionalProperties: false),
                     "security_groups": .init(type: "array", items: .init(type: "string"), description: "Security group names"),
-                    "config_drive": .init(type: "string", description: "config_drive setting")
+                    "config_drive": .init(type: "string", description: "config_drive setting"),
+                    "volumes": .init(
+                        type: "array",
+                        items: .init(
+                            type: "object",
+                            properties: [
+                                "volume_id": .init(type: "string", description: "Pre-created volume ID to attach after boot"),
+                                "device": .init(type: "string", description: "Target device (e.g. /dev/vdb, /dev/vdc)"),
+                                "delete_on_termination": .init(type: "boolean", description: "Delete volume when server is terminated")
+                            ],
+                            required: ["volume_id", "device"],
+                            additionalProperties: false
+                        ),
+                        description: "Volumes to attach after the server reaches ACTIVE. Each volume must be pre-created (os_create resource:volume) and in 'available' state before server creation. The server boots from the image (flavor ephemeral disk); these volumes are attached post-boot via os_attach. For an HA root: create a bootable volume from the image (os_create volume with imageRef + set_bootable), then reference it here — the OS will see it as an additional disk you can use as root via LVM or re-install."
+                    )
                 ],
                 required: ["name", "flavor", "image"]
             ),

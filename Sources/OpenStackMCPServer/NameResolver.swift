@@ -1065,6 +1065,27 @@ public actor NameResolver {
                         "Provisioning delivered via rendered cloud-init. Verify boot-time result with os_action(server, provisioning_status) once the server is ACTIVE."
                     )
                 }
+
+                // Post-boot volume attachment: wait for ACTIVE, then attach each
+                // pre-created volume. This is the supported path for "boot from
+                // volume" until BDM v2 is implemented — the volume is attached
+                // as an additional disk the OS can use (LVM root, data, etc.).
+                if let volArr = obj["volumes"]?.arrayValue, !volArr.isEmpty {
+                    let serverID = s.id
+                    let waiter = Waiter(client: client, catalog: catalog)
+                    // Wait for the server to reach ACTIVE before attaching.
+                    _ = try await waiter.wait(vt, resource: "server", id: serverID, region: region, until: ["ACTIVE"], timeout: 300)
+                    var attached: [[String: JSONValue]] = []
+                    for volEntry in volArr {
+                        guard case .object(let volObj) = volEntry else { continue }
+                        guard let volID = volObj["volume_id"]?.stringValue,
+                              let device = volObj["device"]?.stringValue else { continue }
+                        let deleteOnTerm = volObj["delete_on_termination"]?.boolValue
+                        try await rc.attachVolume(vt, serverID: serverID, volumeID: volID, device: device, deleteOnTermination: deleteOnTerm)
+                        attached.append(["volume_id": .string(volID), "device": .string(device)])
+                    }
+                    serverResult["volumes_attached"] = .array(attached)
+                }
                 return serverResult
             case "keypair":
                 let name = obj["name"]?.stringValue
