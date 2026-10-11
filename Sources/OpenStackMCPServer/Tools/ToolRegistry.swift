@@ -944,7 +944,10 @@ public struct ToolRegistry: Sendable {
         }
         let resolver = NameResolver(catalog: catalog, client: client)
         let raw = try await resolver.createPublic(vt, descriptor: d, body: spec, region: region, dryRun: dryRun)
-        let result: [String: JSONValue] = ["resource": .string(d.name), "region": .string(region), "data": .object(raw)]
+        var result: [String: JSONValue] = ["resource": .string(d.name), "region": .string(region), "data": .object(raw)]
+        if let nextSteps = Self.nextStepsForCreate(resource: d.name, spec: spec, data: raw) {
+            result["next_steps"] = .array(nextSteps.map { .string($0) })
+        }
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
@@ -1071,7 +1074,84 @@ public struct ToolRegistry: Sendable {
             result = try await executor.detach(vt, link: link, sourceType: sourceType, source: source, targetType: targetType, target: target, region: region, wait: wait)
         }
 
-        let (text, val) = resultText(result)
+        var out = result
+        if attach, let nextSteps = Self.nextStepsForAttach(link: link) {
+            out["next_steps"] = .array(nextSteps.map { .string($0) })
+        }
+
+        let (text, val) = resultText(out)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    }
+
+    // MARK: - Next-step hints
+
+    /// Contextual follow-up instructions for a successful `os_create`, keyed by
+    /// resource type. Returns `nil` when the resource has no known next steps so
+    /// the field is omitted entirely from the response. Placeholders like
+    /// `<id>` are filled from the create result where available; the LLM harness
+    /// substitutes them with the values in `data`.
+    private static func nextStepsForCreate(resource: String, spec: JSONValue, data: [String: JSONValue]) -> [String]? {
+        switch resource {
+        case "network":
+            return [
+                "Create a subnet on this network: os_create(subnet, {name, network_id: <this network's id>, cidr})",
+                "Create a router: os_create(router, {name, external_gateway_info})"
+            ]
+        case "subnet":
+            return [
+                "Attach to router: os_attach(link:router_interface, source=<router>, target=<subnet-id>)"
+            ]
+        case "router":
+            return [
+                "Attach private subnet: os_attach(link:router_interface, source=<router-id>, target=<subnet>)"
+            ]
+        case "server":
+            var steps = ["Wait for ACTIVE: os_wait(server, <id>)"]
+            if case .object(let obj) = spec, case .object(let provObj)? = obj["provisioning"], !provObj.isEmpty {
+                steps.append("Verify provisioning: os_action(server, <name>, provisioning_status)")
+            }
+            return steps
+        case "volume":
+            if case .object(let obj) = spec, obj["imageRef"] != nil {
+                return ["Use as boot volume: os_create(server, {volumes: [{volume_id: <id>, boot: true}]})"]
+            }
+            return nil
+        case "floating_ip":
+            return [
+                "Associate with server: os_attach(link:floating_ip, source=<server>, target=<fip-id>)"
+            ]
+        case "keypair":
+            let name = data["name"]?.stringValue ?? "<name>"
+            return [
+                "Reference in server create: os_create(server, {key_name: \"\(name)\"})"
+            ]
+        case "security_group":
+            return [
+                "Add rules: os_create(security_group_rule, {security_group_id: <id>, direction: ingress, ...})"
+            ]
+        default:
+            return nil
+        }
+    }
+
+    /// Contextual follow-up instructions for a successful `os_attach`, keyed by
+    /// link kind. Returns `nil` when the link has no known next step.
+    private static func nextStepsForAttach(link: String) -> [String]? {
+        switch link {
+        case "router_interface":
+            return [
+                "Your network is now routable. Create a server on this network: os_create(server, {networks: [{network: <name>}]})"
+            ]
+        case "floating_ip":
+            return [
+                "Server now has public IP. Connect via SSH if needed."
+            ]
+        case "volume":
+            return [
+                "Volume is available inside the server."
+            ]
+        default:
+            return nil
+        }
     }
 }

@@ -22,10 +22,15 @@ public struct ListResult: Codable, Sendable {
 public struct MutationResult: Codable, Sendable {
     public let resource: [String: JSONValue]
     public let requestID: String?
+    /// Contextual next-step hints for the calling LLM harness. Only present
+    /// when the resource type + action have known follow-up steps; omitted
+    /// entirely otherwise so the field never appears as an empty array.
+    public let nextSteps: [String]?
 
-    public init(resource: [String: JSONValue], requestID: String? = nil) {
+    public init(resource: [String: JSONValue], requestID: String? = nil, nextSteps: [String]? = nil) {
         self.resource = resource
         self.requestID = requestID
+        self.nextSteps = nextSteps
     }
 }
 

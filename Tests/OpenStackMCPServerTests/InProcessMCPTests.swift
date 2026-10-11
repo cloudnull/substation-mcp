@@ -661,4 +661,82 @@ struct InProcessMCPTests {
         #expect(text.contains("os_attach(link:router_interface"), "expected router interface attach step in hint, got: \(text)")
     }
 
+    // MARK: - Next-step hints on mutation results (Task 4)
+
+    @Test("network create returns next_steps for subnet")
+    func networkCreateNextSteps() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("network"),
+            "spec": .object(["name": .string("next-steps-net")]),
+        ])
+        #expect(result.isError != true, "network create should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        #expect(data["next_steps"] != nil, "expected next_steps in network create response, got: \(data)")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("next_steps"), "expected next_steps in response text, got: \(text)")
+        #expect(text.contains("subnet"), "expected subnet hint in network create response, got: \(text)")
+        #expect(text.contains("router"), "expected router hint in network create response, got: \(text)")
+    }
+
+    @Test("subnet create returns next_steps for router")
+    func subnetCreateNextSteps() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let netResult = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("network"),
+            "spec": .object(["name": .string("next-steps-subnet-net")]),
+        ])
+        #expect(netResult.isError != true, "network create should not error: \(firstText(netResult.content) ?? "nil")")
+        let netData = try parseResult(netResult)
+        guard let dataObj = netData["data"] as? [String: Any],
+              let netID = dataObj["id"] as? String else {
+            throw OpenStackError(service: "test", status: 500, message: "could not extract network id from: \(netData)")
+        }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("subnet"),
+            "spec": .object([
+                "name": .string("next-steps-subnet"),
+                "network_id": .string(netID),
+                "cidr": .string("192.168.100.0/24"),
+            ]),
+        ])
+        #expect(result.isError != true, "subnet create should not error: \(firstText(result.content) ?? "nil")")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("next_steps"), "expected next_steps in subnet create response, got: \(text)")
+        #expect(text.contains("router"), "expected router hint in subnet create response, got: \(text)")
+        #expect(text.contains("router_interface"), "expected router_interface hint in subnet create response, got: \(text)")
+    }
+
+    @Test("server create returns next_steps with os_wait")
+    func serverCreateNextSteps() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("next-steps-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "key_name": .string("test-key"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError != true, "server create should not error: \(firstText(result.content) ?? "nil")")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("next_steps"), "expected next_steps in server create response, got: \(text)")
+        #expect(text.contains("os_wait"), "expected os_wait hint in server create response, got: \(text)")
+    }
+
 }
