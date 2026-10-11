@@ -133,15 +133,16 @@ enum ComputeEntries {
                         items: .init(
                             type: "object",
                             properties: [
-                                "volume_id": .init(type: "string", description: "Pre-created volume ID"),
-                                "boot": .init(type: "boolean", description: "Set true for the root/boot volume. The server boots from this volume (block_device_mapping_v2 with boot_index=0). The volume must have been created from the desired image (os_create volume with imageRef). Only one volume may have boot=true."),
-                                "device": .init(type: "string", description: "Target device for data volumes (e.g. /dev/vdb, /dev/vdc). Ignored for boot volumes (Nova assigns /dev/vda)."),
-                                "delete_on_termination": .init(type: "boolean", description: "Delete volume when server is terminated")
+                                "boot": .init(type: "boolean", description: "Set true for the root/boot volume. Nova creates a NEW volume from the server's image at creation time (block_device_mapping_v2 source_type=image, destination_type=volume). The server boots from this new volume as /dev/vda. Only one entry may have boot=true."),
+                                "size": .init(type: "integer", description: "Root volume size in GB (boot entries only). Defaults to 40. Must be >= flavor disk size."),
+                                "volume_type": .init(type: "string", description: "Volume type for the boot volume (e.g. 'HA-Performance', 'Performance', 'Standard'). Defaults to 'HA-Performance'."),
+                                "volume_id": .init(type: "string", description: "Pre-created volume ID (data entries only). The volume must exist and be in 'available' state."),
+                                "device": .init(type: "string", description: "Target device for data volumes (e.g. /dev/vdb, /dev/vdc). Ignored for boot volumes."),
+                                "delete_on_termination": .init(type: "boolean", description: "Delete volume when server is terminated. Defaults to true for boot volumes.")
                             ],
-                            required: ["volume_id"],
                             additionalProperties: false
                         ),
-                        description: "Volumes for the server. A volume with boot=true becomes the root disk (server boots from it via BDM v2 — the 'image' field in the request is overridden by the boot volume's ID). Other volumes are attached post-boot as data disks at the specified device. All volumes must be pre-created (os_create resource:volume) and in 'available' state. For an HA performance root: create a volume with volume_type='HA-Performance' and imageRef=<rocky10-image-id>, then reference it here with boot=true."
+                        description: "Volumes for the server. An entry with boot=true tells Nova to create a new root volume from the image (BDM v2: source_type=image, destination_type=volume) — no pre-created volume needed; specify size and volume_type instead. Entries without boot are pre-existing data volumes attached post-boot at the specified device (require volume_id)."
                     )
                 ],
                 required: ["name", "flavor", "image"]

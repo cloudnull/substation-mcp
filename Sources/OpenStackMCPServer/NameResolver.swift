@@ -1048,32 +1048,39 @@ public actor NameResolver {
                     provisioningSha = spec.sha
                 }
 
-                // Parse volumes: split into boot volume (BDM v2) and data volumes (post-boot attach).
+                // Parse volumes: split into boot volume (BDM v2, creates new volume
+                // from image) and data volumes (post-boot attach of pre-existing).
                 var bdmEntries: [CreateServerSpec.BlockDeviceMapping] = []
                 var postBootVolumes: [[String: JSONValue]] = []
-                var effectiveImageID = imageID
 
                 if let volArr = obj["volumes"]?.arrayValue {
                     for volEntry in volArr {
                         guard case .object(let volObj) = volEntry else { continue }
-                        guard let volID = volObj["volume_id"]?.stringValue else { continue }
                         let isBoot = volObj["boot"]?.boolValue ?? false
-                        let deleteOnTerm = volObj["delete_on_termination"]?.boolValue
 
                         if isBoot {
-                            // Boot-from-volume: keep imageRef as the actual image,
-                            // add BDM entry with source_type=volume, destination_type=local.
-                            // This tells Nova to boot from the pre-existing volume
-                            // (which was created from that image) as the root disk.
+                            // Boot-from-volume: Nova creates a NEW volume from the
+                            // image at server creation time. The BDM entry uses
+                            // source_type=image, destination_type=volume, with the
+                            // image ID as uuid. This is confirmed by the reference
+                            // server ca67f6f0: its boot volume was auto-created by
+                            // Nova (no name, created same timestamp as server), has
+                            // bootable=1, status=in-use, device=/dev/vda.
+                            let volSize = volObj["size"]?.intValue ?? 40
+                            let volType = volObj["volume_type"]?.stringValue ?? "HA-Performance"
+                            let deleteOnTerm = volObj["delete_on_termination"]?.boolValue ?? true
                             bdmEntries.append(.init(
-                                uuid: volID,
+                                uuid: imageID,
                                 bootIndex: 0,
                                 deleteOnTermination: deleteOnTerm,
-                                sourceType: "volume",
-                                destinationType: "local"
+                                sourceType: "image",
+                                destinationType: "volume",
+                                volumeSize: volSize,
+                                volumeType: volType
                             ))
                         } else {
-                            // Data volume: attach post-boot.
+                            // Data volume: attach pre-existing volume post-boot.
+                            guard let volID = volObj["volume_id"]?.stringValue else { continue }
                             let device = volObj["device"]?.stringValue ?? "/dev/vdb"
                             postBootVolumes.append(["volume_id": .string(volID), "device": .string(device)])
                         }
@@ -1081,7 +1088,7 @@ public actor NameResolver {
                 }
 
                 let spec = CreateServerSpec(
-                    name: name, flavorID: flavorID, imageID: effectiveImageID,
+                    name: name, flavorID: flavorID, imageID: imageID,
                     keyName: keyName, availabilityZone: availabilityZone,
                     configDrive: configDrive, metadata: metadata,
                     networks: networks,
