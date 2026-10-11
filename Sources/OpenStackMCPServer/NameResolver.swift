@@ -927,7 +927,7 @@ public actor NameResolver {
 
     // MARK: - Public mutation methods (for ToolRegistry)
 
-    public func createPublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, body: JSONValue, region: String) async throws -> [String: JSONValue] {
+    public func createPublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, body: JSONValue, region: String, dryRun: Bool = false) async throws -> [String: JSONValue] {
         guard let obj = body.objectValue else {
             throw OpenStackError(service: "mcp", status: 400, message: "Create body must be an object")
         }
@@ -942,16 +942,42 @@ public actor NameResolver {
                 guard let name, let flavorRef, let imageRef else {
                     throw OpenStackError(service: "compute", status: 400, message: "Server create requires name, flavor, image")
                 }
-                // Resolve flavor name to UUID
+                // Resolve flavor name to UUID. In dry-run mode a missing flavor
+                // is reported in the validation result instead of thrown, so the
+                // caller sees every problem in one pass.
                 let rc = await client.compute(region: region)
                 let flavors = try await rc.listFlavors(vt)
                 let flavorItems = try flavors.map { try Self.encodeObject($0) as [String: JSONValue] }
-                let flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
-                // Resolve image name to UUID
+                let flavorID: String
+                if dryRun {
+                    do {
+                        flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
+                    } catch {
+                        return ["valid": .bool(false),
+                                "errors": .array([.string("flavorNotFound: \(error.localizedDescription)")]),
+                                "warnings": .array([])]
+                    }
+                } else {
+                    flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
+                }
+                // Resolve image name to UUID. In dry-run mode a missing image is
+                // reported in the validation result instead of thrown; the
+                // original ref is kept as a placeholder so later checks still run.
                 let ri = await client.image(region: region)
                 let images = try await ri.listImages(vt)
                 let imageItems = try images.map { try Self.encodeObject($0) as [String: JSONValue] }
-                let imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
+                var dryRunErrors: [String] = []
+                let imageID: String
+                if dryRun {
+                    do {
+                        imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
+                    } catch {
+                        dryRunErrors.append("imageNotFound: \(error.localizedDescription)")
+                        imageID = imageRef
+                    }
+                } else {
+                    imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
+                }
                 // Optional fields from the create schema
                 let keyName = obj["key_name"]?.stringValue ?? obj["keyName"]?.stringValue
                 let availabilityZone = obj["availability_zone"]?.stringValue ?? obj["availabilityZone"]?.stringValue
@@ -979,7 +1005,18 @@ public actor NameResolver {
                             items = try nws.map { try Self.encodeObject($0) as [String: JSONValue] }
                             netItemsCache = items
                         }
-                        let netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
+                        let netID: String
+                        if dryRun {
+                            do {
+                                netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
+                            } catch {
+                                return ["valid": .bool(false),
+                                        "errors": .array([.string("networkNotFound: \(error.localizedDescription)")]),
+                                        "warnings": .array([])]
+                            }
+                        } else {
+                            netID = try Self.resolveRef(value: netRef, resource: "network", items: items, service: "network")
+                        }
                         networks.append(CreateServerSpec.NetworkSpec(port: port, network: netID, fixedIP: fixedIP))
                     } else if let port {
                         networks.append(CreateServerSpec.NetworkSpec(port: port, network: nil, fixedIP: fixedIP))
@@ -993,7 +1030,7 @@ public actor NameResolver {
                 // A server attached only to PUBLICNET will get stuck in BUILD
                 // forever (no DHCP, no proper subnet for compute). The harness
                 // must create a private network + subnet + router first.
-                if !networks.isEmpty, let netItems = netItemsCache {
+                if !dryRun, !networks.isEmpty, let netItems = netItemsCache {
                     for net in networks {
                         guard let netID = net.network else { continue }
                         if let netObj = netItems.first(where: { $0["id"]?.stringValue == netID }) {
@@ -1010,6 +1047,113 @@ public actor NameResolver {
                 let securityGroups = obj["security_groups"]?.arrayValue?.compactMap { $0.stringValue } ?? []
                 let serverGroup = obj["server_group"]?.stringValue ?? obj["serverGroup"]?.stringValue
                 let hostname = obj["hostname"]?.stringValue
+                // Parse volumes (needed by the dry-run quota check below and by
+                // the real create path): split into boot volume (BDM v2, creates
+                // new volume from image) and data volumes (post-boot attach).
+                var bdmEntries: [CreateServerSpec.BlockDeviceMapping] = []
+                var postBootVolumes: [[String: JSONValue]] = []
+
+                if let volArr = obj["volumes"]?.arrayValue {
+                    for volEntry in volArr {
+                        guard case .object(let volObj) = volEntry else { continue }
+                        let isBoot = volObj["boot"]?.boolValue ?? false
+
+                        if isBoot {
+                            // Boot-from-volume: Nova creates a NEW volume from the
+                            // image at server creation time. The BDM entry uses
+                            // source_type=image, destination_type=volume, with the
+                            // image ID as uuid. This is confirmed by the reference
+                            // server ca67f6f0: its boot volume was auto-created by
+                            // Nova (no name, created same timestamp as server), has
+                            // bootable=1, status=in-use, device=/dev/vda.
+                            let volSize = volObj["size"]?.intValue ?? 40
+                            let volType = volObj["volume_type"]?.stringValue ?? "HA-Performance"
+                            let deleteOnTerm = volObj["delete_on_termination"]?.boolValue ?? true
+                            bdmEntries.append(.init(
+                                uuid: imageID,
+                                bootIndex: 0,
+                                deleteOnTermination: deleteOnTerm,
+                                sourceType: "image",
+                                destinationType: "volume",
+                                volumeSize: volSize,
+                                volumeType: volType
+                            ))
+                        } else {
+                            // Data volume: attach pre-existing volume post-boot.
+                            guard let volID = volObj["volume_id"]?.stringValue else { continue }
+                            let device = volObj["device"]?.stringValue ?? "/dev/vdb"
+                            postBootVolumes.append(["volume_id": .string(volID), "device": .string(device)])
+                        }
+                    }
+                }
+                // Dry run: validate every prerequisite and report the outcome
+                // without calling Nova. Errors are collected (not thrown) so a
+                // single call surfaces ALL problems at once.
+                if dryRun {
+                    var errors = dryRunErrors
+                    var warnings: [String] = []
+                    // 1. Network must not be external/public (same rule as the
+                    //    hard check above, but reported instead of thrown).
+                    //    Re-fetch via the typed client so `router:external`
+                    //    decodes as a real Bool (the JSON-encoded item cache
+                    //    may carry it as int or bool depending on the source).
+                    let rn = await client.network(region: region)
+                    let netList = (try? await rn.listNetworks(vt)) ?? []
+                    for net in networks {
+                        guard let netID = net.network else { continue }
+                        if let n = netList.first(where: { $0.id == netID }) {
+                            let isExternal = n.routerExternal || n.name.lowercased().contains("public")
+                            if isExternal {
+                                errors.append("publicNetworkRejected: server cannot be created on external/public network '\(n.name)' (\(netID)). Use a private network with a subnet and a router connected to an external network.")
+                            }
+                        }
+                    }
+                    // 2. Flavor exists (resolution already succeeded; re-check
+                    //    against the fetched list by resolved ID).
+                    if !flavors.contains(where: { $0.id == flavorID }) {
+                        errors.append("flavorNotFound: flavor '\(flavorRef)' did not resolve to an existing flavor")
+                    }
+                    // 3. Image is visible and active.
+                    if let img = images.first(where: { $0.id == imageID }) {
+                        if img.status != "active" {
+                            errors.append("imageNotActive: image '\(imageRef)' (\(img.name)) has status '\(img.status)', expected 'active'")
+                        }
+                    } else {
+                        errors.append("imageNotFound: image '\(imageRef)' was not found or is not visible to this project")
+                    }
+                    // 4. Keypair exists (if specified).
+                    if let keyName {
+                        let kps = try await rc.listKeypairs(vt)
+                        if !kps.contains(where: { $0.name == keyName }) {
+                            errors.append("keypairNotFound: keypair '\(keyName)' does not exist. Create it first with os_create(resource:keypair, spec:{name:'\(keyName)'}).")
+                        }
+                    }
+                    // 5. Volume quota has room for requested volumes.
+                    let rb = await client.blockStorage(region: region)
+                    do {
+                        let quota = try await rb.getQuota(vt)
+                        let vols = try await rb.listVolumes(vt, limit: 1000)
+                        let usedCount = vols.count
+                        let usedGB = vols.reduce(0) { $0 + $1.size }
+                        let requestedVolCount = bdmEntries.count
+                        let requestedGB = bdmEntries.reduce(0) { $0 + ($1.volumeSize ?? 0) }
+                        if usedCount + requestedVolCount > quota.volumes {
+                            errors.append("volumeQuotaExceeded: volume count \(usedCount) + requested \(requestedVolCount) exceeds quota of \(quota.volumes)")
+                        }
+                        if usedGB + requestedGB > quota.gigabytes {
+                            errors.append("volumeQuotaExceeded: volume gigabytes \(usedGB) + requested \(requestedGB) exceeds quota of \(quota.gigabytes)")
+                        }
+                    } catch {
+                        warnings.append("volumeQuotaUnknown: could not fetch volume quota (\(error.localizedDescription)) — skipping quota check")
+                    }
+                    // Warnings (non-blocking).
+                    if securityGroups.isEmpty {
+                        warnings.append("No security groups specified — the default SG will apply; it allows all inbound traffic from the same SG only. Add explicit rules for SSH/HTTP if needed.")
+                    }
+                    return ["valid": .bool(errors.isEmpty),
+                            "errors": .array(errors.map { .string($0) }),
+                            "warnings": .array(warnings.map { .string($0) })]
+                }
 
                 // Distro-aware provisioning: mutually exclusive with raw
                 // user_data. The spec is rendered into canonical cloud-init
@@ -1066,44 +1210,6 @@ public actor NameResolver {
                     provisioningSha = spec.sha
                 }
 
-                // Parse volumes: split into boot volume (BDM v2, creates new volume
-                // from image) and data volumes (post-boot attach of pre-existing).
-                var bdmEntries: [CreateServerSpec.BlockDeviceMapping] = []
-                var postBootVolumes: [[String: JSONValue]] = []
-
-                if let volArr = obj["volumes"]?.arrayValue {
-                    for volEntry in volArr {
-                        guard case .object(let volObj) = volEntry else { continue }
-                        let isBoot = volObj["boot"]?.boolValue ?? false
-
-                        if isBoot {
-                            // Boot-from-volume: Nova creates a NEW volume from the
-                            // image at server creation time. The BDM entry uses
-                            // source_type=image, destination_type=volume, with the
-                            // image ID as uuid. This is confirmed by the reference
-                            // server ca67f6f0: its boot volume was auto-created by
-                            // Nova (no name, created same timestamp as server), has
-                            // bootable=1, status=in-use, device=/dev/vda.
-                            let volSize = volObj["size"]?.intValue ?? 40
-                            let volType = volObj["volume_type"]?.stringValue ?? "HA-Performance"
-                            let deleteOnTerm = volObj["delete_on_termination"]?.boolValue ?? true
-                            bdmEntries.append(.init(
-                                uuid: imageID,
-                                bootIndex: 0,
-                                deleteOnTermination: deleteOnTerm,
-                                sourceType: "image",
-                                destinationType: "volume",
-                                volumeSize: volSize,
-                                volumeType: volType
-                            ))
-                        } else {
-                            // Data volume: attach pre-existing volume post-boot.
-                            guard let volID = volObj["volume_id"]?.stringValue else { continue }
-                            let device = volObj["device"]?.stringValue ?? "/dev/vdb"
-                            postBootVolumes.append(["volume_id": .string(volID), "device": .string(device)])
-                        }
-                    }
-                }
 
                 let spec = CreateServerSpec(
                     name: name, flavorID: flavorID, imageID: imageID,

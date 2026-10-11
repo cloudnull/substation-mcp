@@ -472,4 +472,107 @@ struct InProcessMCPTests {
         #expect(!text.contains("No private network"))
         #expect(!text.contains("No SSH keypairs"))
     }
+
+    // MARK: - Server create dry-run validation (Task 2)
+
+    /// Parse the first text content of a callTool result into a JSON dict.
+    private func parseResult(_ result: (content: [Tool.Content], isError: Bool?)) throws -> [String: Any] {
+        guard let text = firstText(result.content),
+              let data = text.data(using: .utf8),
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw OpenStackError(service: "test", status: 500, message: "unparseable result: \(firstText(result.content) ?? "nil")")
+        }
+        return obj
+    }
+
+    @Test("server dry_run rejects public network without creating")
+    func serverDryRunPublicNetwork() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let serversBefore = await handle.state.listServers(projectID: "proj-one").count
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("dry-test"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "networks": .array([.object(["network": .string("ext-net")])]),
+            ]),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true, "dry run should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        #expect(data["dry_run"] as? Bool == true, "expected dry_run flag, got: \(data)")
+        #expect(data["valid"] as? Bool == false, "expected valid:false, got: \(data)")
+        let errors = data["errors"] as? [String] ?? []
+        #expect(errors.contains { $0.contains("publicNetworkRejected") }, "expected publicNetworkRejected in errors, got: \(errors)")
+
+        // No server must have been created.
+        let serversAfter = await handle.state.listServers(projectID: "proj-one").count
+        #expect(serversAfter == serversBefore, "dry run must not create a server (\(serversBefore) -> \(serversAfter))")
+    }
+
+    @Test("server dry_run passes with valid private network and keypair")
+    func serverDryRunValid() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let serversBefore = await handle.state.listServers(projectID: "proj-one").count
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("dry-ok"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "key_name": .string("test-key"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true, "dry run should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        #expect(data["dry_run"] as? Bool == true, "expected dry_run flag, got: \(data)")
+        #expect(data["valid"] as? Bool == true, "expected valid:true, got: \(data)")
+        let errors = data["errors"] as? [String] ?? []
+        #expect(errors.isEmpty, "expected no errors, got: \(errors)")
+        let warnings = data["warnings"] as? [String] ?? []
+        #expect(warnings.contains { $0.contains("security groups") }, "expected SG warning, got: \(warnings)")
+
+        // No server must have been created.
+        let serversAfter = await handle.state.listServers(projectID: "proj-one").count
+        #expect(serversAfter == serversBefore, "dry run must not create a server (\(serversBefore) -> \(serversAfter))")
+    }
+
+    @Test("server dry_run reports missing keypair and unknown image")
+    func serverDryRunMissingKeypairAndImage() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("dry-bad"),
+                "flavor": .string("m1.small"),
+                "image": .string("no-such-image"),
+                "key_name": .string("no-such-key"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true, "dry run should not error: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        #expect(data["valid"] as? Bool == false, "expected valid:false, got: \(data)")
+        let errors = data["errors"] as? [String] ?? []
+        #expect(errors.contains { $0.contains("imageNotFound") }, "expected imageNotFound, got: \(errors)")
+        #expect(errors.contains { $0.contains("keypairNotFound") }, "expected keypairNotFound, got: \(errors)")
+    }
 }

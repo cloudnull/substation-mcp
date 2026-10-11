@@ -875,14 +875,19 @@ public struct ToolRegistry: Sendable {
                 message: "Spec validation failed:\n" + desc.joined(separator: "\n"))
         }
 
-        if dryRun {
-            var result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
-                "message": .string("Spec is valid. Resource would be created in \(region).")]
+        if dryRun && d.name == "server" {
+            // Server dry run: validate all prerequisites (network, flavor,
+            // image, keypair, volume quota) without calling Nova. Returns a
+            // structured {valid, errors, warnings} result so the caller can
+            // fix every problem in one pass.
+            let resolver = NameResolver(catalog: catalog, client: client)
+            let validation = try await resolver.createPublic(vt, descriptor: d, body: spec, region: region, dryRun: true)
+            var result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region)]
+            for (k, v) in validation { result[k] = v }
             // For a server with a `provisioning` block, surface the rendered
             // cloud-init so the caller can preview the exact user_data Nova
             // would receive, plus the correlation sha.
-            if d.name == "server", case .object(let obj) = spec,
-               case .object(let provObj)? = obj["provisioning"] {
+            if case .object(let obj) = spec, case .object(let provObj)? = obj["provisioning"] {
                 if obj["user_data"] != nil {
                     throw OpenStackError(service: "compute", status: 400, code: "provisioningConflict",
                         message: "Server create: `user_data` and `provisioning` are mutually exclusive. Provide exactly one.")
@@ -931,8 +936,14 @@ public struct ToolRegistry: Sendable {
             return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
         }
 
+        if dryRun {
+            var result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
+                "message": .string("Spec is valid. Resource would be created in \(region).")]
+            let (text, val) = resultText(result)
+            return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+        }
         let resolver = NameResolver(catalog: catalog, client: client)
-        let raw = try await resolver.createPublic(vt, descriptor: d, body: spec, region: region)
+        let raw = try await resolver.createPublic(vt, descriptor: d, body: spec, region: region, dryRun: dryRun)
         let result: [String: JSONValue] = ["resource": .string(d.name), "region": .string(region), "data": .object(raw)]
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
