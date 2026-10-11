@@ -90,7 +90,7 @@ public actor LoginMinter {
     }
 
     /// Mint a token using the given method.
-    public func mint(method: MintMethod) async throws -> Token {
+    public func mint(method: MintMethod, domainScoped: Bool = false) async throws -> Token {
         let body: Data
 
         let id = method.appCredID
@@ -117,7 +117,8 @@ public actor LoginMinter {
                     userID: uid,
                     domain: method.domain,
                     password: pw,
-                    projectName: method.projectName
+                    projectName: method.projectName,
+                    domainScoped: domainScoped
                 )
             } else {
                 throw OpenStackError(
@@ -184,6 +185,135 @@ public actor LoginMinter {
         return token
     }
 
+    /// A project returned by `detectProjects`.
+    public struct DetectedProject: Sendable {
+        public let id: String
+        public let name: String
+        public let domainName: String?
+    }
+
+    /// Detect the projects a user can access, using their username + password.
+    ///
+    /// Mints a **domain-scoped** (unscoped-project) token — no project in the
+    /// auth body — then lists the caller's projects via `GET /v3/projects`.
+    /// This is what the login/OAuth "Detect" button calls so the operator can
+    /// pick a project from what the account actually reaches, instead of
+    /// typing it blind. Application credentials are NOT supported here: they
+    /// are already bound to a single project at creation time, so there is
+    /// nothing to detect.
+    ///
+    /// - Returns: the list of accessible projects (may be empty).
+    /// - Throws: `OpenStackError` if the credentials are invalid or Keystone
+    ///   rejects the mint/list. The thrown message is intentionally not echoed
+    ///   to the browser (it may quote credential material).
+    public func detectProjects(user: String, domain: String?, password: String) async throws -> [DetectedProject] {
+        // Mint an UNSCOPED token — exactly the same shape the working login
+        // uses (verified: Rackspace accepts unscoped for this account but the
+        // domain-scope variant is rejected). The user's own domain is passed
+        // through when supplied; otherwise it is omitted from the body entirely
+        // (matching a login where the operator left Domain blank).
+        let effectiveDomain = (domain?.isEmpty == false) ? domain! : nil
+        // 1. Mint an unscoped token. The mint RESPONSE BODY carries
+        //    `token.user.id` — that is the Keystone user id we need for the
+        //    project-listing call below. (whoami / identity:validate_token is
+        //    denied for these accounts, so the mint body is the only reliable
+        //    source of the user id.)
+        let token: Token
+        do {
+            token = try await mint(method: .password(userID: user, domain: effectiveDomain, password: password, projectName: nil))
+        } catch {
+            // Re-throw with a clear stage marker so the caller can distinguish
+            // "bad credentials" (mint failed) from "no permission to list"
+            // (list failed). The underlying message may quote credential
+            // material, so we wrap it.
+            throw OpenStackError(service: "keystone", status: 401,
+                                  message: "mint_failed: \(error)")
+        }
+
+        // 2. List the user's projects. Different clouds expose this differently:
+        //    - GET /v3/users/{id}/projects works for regular member accounts on
+        //      Rackspace (and similar) where the broader endpoint is admin-only.
+        //    - GET /v3/projects works on clouds where the token carries the
+        //      identity:list_projects role (e.g. many community OpenStacks).
+        //    We try the member-friendly per-user endpoint first, then fall back
+        //    to the global listing, so detection works across clouds without
+        //    cloud-specific branching.
+        let userID = token.user.id
+        guard !userID.isEmpty, userID != "unknown" else {
+            throw OpenStackError(service: "keystone", status: 500,
+                                  message: "could not determine user id from mint response")
+        }
+        let candidatePaths = ["/v3/users/\(userID)/projects", "/v3/projects"]
+        var lastError: Error? = nil
+        for path in candidatePaths {
+            do {
+                return try await self.listProjects(token: token, path: path)
+            } catch {
+                // Only fall through to the next endpoint when this one was
+                // rejected (403/404). A transport-level failure (network, 5xx)
+                // is not a reason to retry a different path — surface it.
+                let isOpenStackErr = error is OpenStackError
+                let code = (error as? OpenStackError)?.status ?? 0
+                if isOpenStackErr && (code == 403 || code == 404) {
+                    lastError = error
+                    continue
+                }
+                throw error
+            }
+        }
+        // Both endpoints were rejected. Surface the most informative error.
+        if let lastError {
+            let msg = "\(lastError)"
+            if msg.contains("list_forbidden") || msg.contains("not authorized") || msg.contains("403") {
+                throw OpenStackError(service: "keystone", status: 403,
+                                      message: "list_forbidden: user lacks permission to list their projects")
+            }
+            throw lastError
+        }
+        throw OpenStackError(service: "keystone", status: 500,
+                              message: "no project-listing endpoint available")
+    }
+
+    /// Page through a Keystone project-listing endpoint and decode the results.
+    private func listProjects(token: Token, path: String) async throws -> [DetectedProject] {
+        var projects: [DetectedProject] = []
+        var marker: String? = nil
+        let limit = 100
+        for _ in 0..<10 { // hard cap: 1000 projects
+            var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+            if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
+            let (status, body, _) = try await transport.request(
+                method: "GET",
+                service: "keystone",
+                path: path,
+                query: query,
+                tokenOverride: token.id
+            )
+            guard status == 200 else {
+                let normalized = OpenStackError.normalize(body: body, status: status, service: "keystone", requestID: nil, hasAccessRules: false)
+                if status == 403 {
+                    throw OpenStackError(service: "keystone", status: 403,
+                                          message: "list_forbidden: user lacks permission to list their projects")
+                }
+                throw normalized
+            }
+            guard let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let arr = obj["projects"] as? [[String: Any]] else {
+                break
+            }
+            for p in arr {
+                guard let id = p["id"] as? String, let name = p["name"] as? String else { continue }
+                let dom = (p["domain"] as? [String: Any])?["name"] as? String
+                projects.append(DetectedProject(id: id, name: name, domainName: dom))
+            }
+            // Next-page marker: last project id (Keystone's default sort).
+            if arr.count < limit { break }
+            marker = arr.last?["id"] as? String
+            if marker == nil { break }
+        }
+        return projects
+    }
+
     // MARK: - JSON body builders
 
     /// Build a Keystone app-credential mint body. JSON-serialized so a secret
@@ -227,7 +357,7 @@ public actor LoginMinter {
     ///     in project". keystoneauth1 sends `project_domain_name` from the
     ///     clouds.yaml; we default the project domain to the user's domain
     ///     (the common case, e.g. both `default`).
-    private static func passwordBody(userID: String, domain: String?, password: String, projectName: String?) -> Data {
+    private static func passwordBody(userID: String, domain: String?, password: String, projectName: String?, domainScoped: Bool = false) -> Data {
         var user: [String: Any] = ["name": userID]
         if let d = domain, !d.isEmpty {
             user["domain"] = ["name": d]
@@ -248,6 +378,12 @@ public actor LoginMinter {
                 project["domain"] = ["name": d]
             }
             auth["scope"] = ["project": project]
+        } else if domainScoped, let d = domain, !d.isEmpty {
+            // Domain-scoped token: no project, but scoped to a domain. This is
+            // what project-detection needs — an unscoped token is rejected by
+            // some clouds (e.g. Rackspace), while a domain-scoped token carries
+            // enough context to list the caller's accessible projects.
+            auth["scope"] = ["domain": ["name": d]]
         }
         let body: [String: Any] = ["auth": auth]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)

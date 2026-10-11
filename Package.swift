@@ -141,6 +141,7 @@ let package = Package(
             name: "ProvisioningTests",
             dependencies: [
                 .target(name: "Provisioning"),
+                .product(name: "Yams", package: "Yams"),
             ],
             swiftSettings: swiftSettings
         ),

@@ -297,6 +297,18 @@ public struct MCPRoute: Sendable {
     .btn:focus-visible{outline:none; box-shadow:0 0 0 4px var(--focus-ring)}
     .divider{height:1px; background:var(--line); margin:18px 0; border:none}
     .hint{font-size:12px; color:var(--ink-faint); margin:2px 0 0; line-height:1.5}
+    .detect-row{display:flex; align-items:center; gap:10px; margin-top:8px}
+    .btn-detect{
+      font-family:var(--font); font-size:12.5px; font-weight:500; color:var(--ink-soft);
+      background:#fff; border:1px solid var(--line); border-radius:8px;
+      padding:7px 12px; cursor:pointer; transition:border-color .15s,background .15s;
+    }
+    .btn-detect:hover{border-color:var(--focus); background:var(--focus-ring)}
+    .btn-detect:disabled{opacity:.6; cursor:default}
+    .detect-status{font-size:12px; color:var(--ink-faint)}
+    .detect-status.ok{color:var(--ok,#1a7f37)}
+    .detect-status.err{color:#b3360c}
+    .project-select{margin-top:8px}
     .form-error{
       margin:0 0 14px; padding:10px 12px; border-radius:10px;
       background:rgba(191,54,12,.08); border:1px solid rgba(191,54,12,.28);
@@ -404,6 +416,13 @@ public struct MCPRoute: Sendable {
                   <input class="field" id="projectName" name="projectName" type="text"
                          placeholder="e.g. admin" autocomplete="off" spellcheck="false">
                   <p class="hint">Omit for a domain-scoped token; set the cloud's admin project for cross-domain privileges.</p>
+                  <div class="detect-row">
+                    <button type="button" class="btn-detect" id="detectBtn" onclick="substationDetectProjects()">Detect projects</button>
+                    <span id="detectStatus" class="detect-status"></span>
+                  </div>
+                  <select id="projectSelect" class="field project-select" hidden onchange="substationPickProject(this)">
+                    <option value="">— choose a detected project —</option>
+                  </select>
                 </div>
               </div>
 
@@ -420,42 +439,97 @@ public struct MCPRoute: Sendable {
             // hidden with display:none so the browser's form validation does
             // NOT treat hidden required fields as blockers (previously the
             // hidden 'required' password inputs blocked app-cred submission).
-            function substationFilter(method) {{
+            function substationFilter(method) {
               var fields = document.getElementById('methodFields');
-              if (fields) {{ fields.setAttribute('data-method', method); }}
-            }}
+              if (fields) { fields.setAttribute('data-method', method); }
+            }
             // Validate the VISIBLE fields for the selected method on submit.
             // Required fields carry data-required="<method>"; we check only the
             // ones whose method matches the select. Returns false to block the
             // submit and shows an inline message.
-            function substationValidate(form) {{
+            function substationValidate(form) {
               var sel = document.getElementById('method');
               var method = sel ? sel.value : 'app-cred';
               var err = document.getElementById('formError');
-              if (err) {{ err.hidden = true; err.textContent = ''; }}
+              if (err) { err.hidden = true; err.textContent = ''; }
               var inputs = form.querySelectorAll('[data-required]');
-              for (var i = 0; i < inputs.length; i++) {{
+              for (var i = 0; i < inputs.length; i++) {
                 var inp = inputs[i];
-                if (inp.getAttribute('data-required') !== method) {{ continue; }}
+                if (inp.getAttribute('data-required') !== method) { continue; }
                 // Skip fields that are hidden for the other method.
-                if (inp.offsetParent === null) {{ continue; }}
+                if (inp.offsetParent === null) { continue; }
                 var v = (inp.value || '').trim();
-                if (v === '') {{
-                  if (err) {{
+                if (v === '') {
+                  if (err) {
                     err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id) + ' field.';
                     err.hidden = false;
-                  }}
+                  }
                   inp.focus();
                   return false;
-                }}
-              }}
+                }
+              }
               return true;
-            }}
+            }
+            // Detect the projects the entered user can reach. POSTs to the
+            // server-side detect endpoint (user + password only — application
+            // credentials are bound to a single project and never offer this).
+            // On success, populates #projectSelect with the detected projects;
+            // picking one fills #projectName. The text field stays editable so
+            // the operator can still type a project by hand.
+            function substationDetectProjects() {
+              var btn = document.getElementById('detectBtn');
+              var status = document.getElementById('detectStatus');
+              var sel = document.getElementById('projectSelect');
+              var user = (document.getElementById('userName').value || '').trim();
+              var domain = (document.getElementById('userDomain').value || '').trim();
+              var pw = document.getElementById('password').value || '';
+              if (!user || !pw) {
+                if (status) { status.textContent = 'Enter user and password first'; status.className = 'detect-status err'; }
+                return;
+              }
+              if (btn) { btn.disabled = true; }
+              if (status) { status.textContent = 'Detecting…'; status.className = 'detect-status'; }
+              if (sel) { sel.hidden = true; sel.innerHTML = '<option value="">— choose a detected project —</option>'; }
+              fetch('\(endpoint)/login/detect-projects', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user: user, domain: domain, password: pw })
+              }).then(function(r) {
+                return r.json().then(function(j) { return { ok: r.ok, j: j }; });
+              }).then(function(res) {
+                if (!res.ok) {
+                  throw new Error((res.j && res.j.error) || 'detection failed');
+                }
+                var projects = res.j.projects || [];
+                if (!projects.length) {
+                  if (status) { status.textContent = 'No accessible projects found'; status.className = 'detect-status'; }
+                  if (btn) { btn.disabled = false; }
+                  return;
+                }
+                var opts = '<option value="">— choose a detected project —</option>';
+                for (var i = 0; i < projects.length; i++) {
+                  var p = projects[i];
+                  var label = p.name + (p.domain ? ' (' + p.domain + ')' : '');
+                  opts += '<option value="' + p.name.replace(/"/g, '&quot;') + '">' + label.replace(/</g, '&lt;') + '</option>';
+                }
+                if (sel) { sel.innerHTML = opts; sel.hidden = false; }
+                if (status) { status.textContent = projects.length + ' project(s) found'; status.className = 'detect-status ok'; }
+              }).catch(function(e) {
+                if (status) { status.textContent = e.message || 'detection failed'; status.className = 'detect-status err'; }
+              }).finally(function() {
+                if (btn) { btn.disabled = false; }
+              });
+            }
+            // When the operator picks a detected project, fill the text field.
+            function substationPickProject(selectEl) {
+              var target = document.getElementById('projectName');
+              if (target && selectEl.value) { target.value = selectEl.value; }
+            }
             // initialise the field filter on load (defaults to app-cred)
-            document.addEventListener('DOMContentLoaded', function() {{
+            document.addEventListener('DOMContentLoaded', function() {
               var sel = document.getElementById('method');
-              if (sel) {{ substationFilter(sel.value); }}
-            }});
+              if (sel) { substationFilter(sel.value); }
+            });
           </script>
         </body>
         </html>

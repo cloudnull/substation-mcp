@@ -162,6 +162,73 @@ public struct ServeApp: Sendable {
             login: config.authLoginPageEnabled ? loginPage.handler() : nil
         )
 
+        // Project-detection endpoint for the login/OAuth "Detect" button.
+        // Only reachable when the login page is enabled (it is the form that
+        // calls it). Accepts JSON {user, domain, password} and returns the
+        // projects the account can reach. Application credentials are not
+        // accepted here — they are bound to a single project at creation.
+        if config.authLoginPageEnabled {
+            let detectPath = "\(config.serverEndpoint)/login/detect-projects"
+            router.post(RouterPath(detectPath)) { [maxBodyBytes = config.serverMaxBodyBytes, minter, logger] request, _ in
+                var consumed = 0
+                var buf = Data()
+                do {
+                    for try await chunk in request.body {
+                        consumed += chunk.readableBytes
+                        if consumed > maxBodyBytes {
+                            return Response(status: .contentTooLarge, headers: [.contentType: "application/json"],
+                                             body: .init(byteBuffer: ByteBuffer(string: #"{"error":"request body too large"}"#)))
+                        }
+                        buf.append(contentsOf: chunk.readableBytesView)
+                    }
+                } catch {
+                    return Response(status: .badRequest, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(string: #"{"error":"malformed request"}"#)))
+                }
+                guard let obj = try? JSONSerialization.jsonObject(with: buf) as? [String: Any],
+                      let user = obj["user"] as? String, !user.isEmpty,
+                      let password = obj["password"] as? String, !password.isEmpty else {
+                    return Response(status: .badRequest, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(string: #"{"error":"missing user or password"}"#)))
+                }
+                let domain = (obj["domain"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                do {
+                    let projects = try await minter.detectProjects(user: user, domain: domain, password: password)
+                    let payload: [[String: Any]] = projects.map { p in
+                        var o: [String: Any] = ["id": p.id, "name": p.name]
+                        if let d = p.domainName { o["domain"] = d }
+                        return o
+                    }
+                    let resp = try JSONSerialization.data(withJSONObject: ["projects": payload])
+                    return Response(status: .ok, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(data: resp)))
+                } catch {
+                    logger.info("detect-projects failed for user \(user): \(error)")
+                    // Surface the failure stage so the operator knows whether
+                    // it's bad credentials (mint_failed) or a permission gap
+                    // (list_forbidden). The underlying message is not echoed
+                    // verbatim (it may quote credential material).
+                    let msg = "\(error)"
+                    // Classify the failure. Check the underlying markers in
+                    // priority order: mint_failed (bad creds) > list_projects
+                    // permission gap > generic. We match on substrings that
+                    // survive string interpolation of the OpenStackError.
+                    let isListForbidden = msg.contains("list_forbidden") || msg.contains("identity:list_projects") || msg.contains("not authorized to perform")
+                    let userMsg: String
+                    if msg.contains("mint_failed") {
+                        userMsg = "authentication failed — check username, domain, and password"
+                    } else if isListForbidden {
+                        userMsg = "authenticated, but this account cannot list its projects (missing identity:list_projects role) — enter the project name manually"
+                    } else {
+                        userMsg = "could not detect projects: \(msg)"
+                    }
+                    let status = isListForbidden ? HTTPResponse.Status.forbidden : HTTPResponse.Status.unauthorized
+                    return Response(status: status, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(string: "{\"error\":\"\(userMsg.replacingOccurrences(of: "\"", with: "\\\""))}\"")))
+                }
+            }
+        }
+
         // Mount the stateless OAuth AS routes when enabled (P2). These live
         // under `<endpoint>/oauth/*` plus the RFC 8414 metadata at
         // `<issuer>/.well-known/oauth-authorization-server`.
@@ -200,6 +267,7 @@ public struct ServeApp: Sendable {
         )
         self.app = Application(router: router, configuration: appConfig)
     }
+
 
     /// Normalize a public URL to the host root by stripping a trailing
     /// endpoint path. `https://host/v1` with endpoint `/v1` → `https://host`.

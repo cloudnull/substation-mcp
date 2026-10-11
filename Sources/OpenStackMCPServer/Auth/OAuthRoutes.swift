@@ -579,6 +579,14 @@ extension OAuthAuthorizationServer {
         /* method-filtered groups */
         .method-fields[data-method="app-cred"] .only-password{display:none}
         .method-fields[data-method="password"] .only-appcred{display:none}
+        .detect-row{display:flex; align-items:center; gap:10px; margin-top:8px}
+        .btn-detect{font-family:var(--font); font-size:12.5px; font-weight:500; color:var(--ink-soft); background:#fff; border:1px solid var(--line); border-radius:8px; padding:7px 12px; cursor:pointer; transition:border-color .15s,background .15s}
+        .btn-detect:hover{border-color:var(--focus); background:var(--focus-ring)}
+        .btn-detect:disabled{opacity:.6; cursor:default}
+        .detect-status{font-size:12px; color:var(--ink-faint)}
+        .detect-status.ok{color:#1a7f37}
+        .detect-status.err{color:#b3360c}
+        .project-select{margin-top:8px}
         </style></head>
         <body>
           <div class="card">
@@ -632,15 +640,73 @@ extension OAuthAuthorizationServer {
                   <label for="password">Password</label>
                   <input id="password" name="password" type="password" class="field" autocomplete="current-password">
                 </div>
-                <div class="group">
+                <div class="group only-password">
                   <label for="projectName">Project <span class="opt">(required for write access)</span></label>
                   <input id="projectName" name="projectName" type="text" class="field" placeholder="e.g. admin">
+                  <div class="detect-row">
+                    <button type="button" class="btn-detect" id="detectBtn" onclick="oauthDetectProjects()">Detect projects</button>
+                    <span id="detectStatus" class="detect-status"></span>
+                  </div>
+                  <select id="projectSelect" class="field project-select" hidden onchange="oauthPickProject(this)">
+                    <option value="">— choose a detected project —</option>
+                  </select>
                 </div>
               </div>
               <button type="submit" class="btn">Authorize &amp; mint</button>
             </form>
             <p class="footer">Sign in to mint a Keystone token. The authorization code is single-use and expires in 30 seconds.</p>
           </div>
+        <script>
+          // Detect projects for the entered user (password method only). The
+          // project field is hidden for application credentials — they are
+          // bound to a single project at creation, so there is nothing to detect.
+          function oauthDetectProjects() {
+            var btn = document.getElementById('detectBtn');
+            var status = document.getElementById('detectStatus');
+            var sel = document.getElementById('projectSelect');
+            var user = (document.getElementById('userName').value || '').trim();
+            var domain = (document.getElementById('userDomain').value || '').trim();
+            var pw = (document.getElementById('password') ? document.getElementById('password').value : '') || '';
+            if (!user || !pw) {
+              if (status) { status.textContent = 'Enter user and password first'; status.className = 'detect-status err'; }
+              return;
+            }
+            if (btn) { btn.disabled = true; }
+            if (status) { status.textContent = 'Detecting…'; status.className = 'detect-status'; }
+            if (sel) { sel.hidden = true; sel.innerHTML = '<option value="">— choose a detected project —</option>'; }
+            fetch('\(endpoint)/login/detect-projects', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user: user, domain: domain, password: pw })
+            }).then(function(r) {
+              return r.json().then(function(j) { return { ok: r.ok, j: j }; });
+            }).then(function(res) {
+              if (!res.ok) { throw new Error((res.j && res.j.error) || 'detection failed'); }
+              var projects = res.j.projects || [];
+              if (!projects.length) {
+                if (status) { status.textContent = 'No accessible projects found'; status.className = 'detect-status'; }
+                if (btn) { btn.disabled = false; }
+                return;
+              }
+              var opts = '<option value="">— choose a detected project —</option>';
+              for (var i = 0; i < projects.length; i++) {
+                var p = projects[i];
+                var label = p.name + (p.domain ? ' (' + p.domain + ')' : '');
+                opts += '<option value="' + p.name.replace(/"/g, '&quot;') + '">' + label.replace(/</g, '&lt;') + '</option>';
+              }
+              if (sel) { sel.innerHTML = opts; sel.hidden = false; }
+              if (status) { status.textContent = projects.length + ' project(s) found'; status.className = 'detect-status ok'; }
+            }).catch(function(e) {
+              if (status) { status.textContent = e.message || 'detection failed'; status.className = 'detect-status err'; }
+            }).finally(function() {
+              if (btn) { btn.disabled = false; }
+            });
+          }
+          function oauthPickProject(selectEl) {
+            var target = document.getElementById('projectName');
+            if (target && selectEl.value) { target.value = selectEl.value; }
+          }
+        </script>
         </body></html>
         """
     }
