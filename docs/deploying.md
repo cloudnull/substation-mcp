@@ -80,16 +80,14 @@ docker push <registry>/openstack/substation-mcp:<tag>
   --set image.repository=<registry>/openstack/substation-mcp \
   --set image.tag=<tag>
 
-# 3. Register the MCP service in Keystone (one-time, as admin):
-OS_CLOUD=mycloud REGION=RegionOne \
-PUBLIC_URL=https://substation-mcp.<domain.tld> \
-./deploy/register-catalog.sh
-
-# 4. Connect a client:
+# 3. Connect a client:
 claude mcp add --transport http openstack \
   https://substation-mcp.<domain.tld>/v1 \
   --header "Authorization: Bearer <keystone-token>"
 ```
+
+(The old manual `register-catalog.sh` step is now done automatically by the
+provisioner Job when `serviceUser.enabled=true`; see the reference below.)
 
 The chart includes an optional **provisioner Job** (`serviceUser.enabled`) that
 auto-creates the deployment's standing service user + application credential in
@@ -97,9 +95,12 @@ the OpenStack `service` domain and registers the `mcp` catalog entry, using a
 bootstrap operator admin credential (only to mint a short-lived admin token;
 never stored in any Secret).
 
-The full walkthrough — image build, chart configuration, Gateway API exposure,
-`register-catalog`, verification (`check` + `conformance`), upgrading, and
-troubleshooting — lives in [`deploy/genestack/README.md`](../deploy/genestack/README.md).
+**The detailed, step-by-step reference lives in**
+[`deploy/genestack/README.md`](../deploy/genestack/README.md) — prerequisites,
+GHCR image tags, chart configuration, the full `serviceUser` block (both
+k8s-Secret and plaintext auth), Gateway API exposure, verifying the provisioner
+ran, a manual `openstack` CLI fallback for identity/catalog, upgrading, and
+troubleshooting. This page only summarizes the shape; go there for the details.
 
 > The Docker and systemd paths above are for non-Kubernetes hosts. Genestack is
 > Kubernetes and consumes the container image, not the native UBI10 rootfs
