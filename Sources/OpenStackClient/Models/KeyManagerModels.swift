@@ -45,23 +45,78 @@ public struct Secret: Sendable, Codable, Identifiable {
         self.visibility = visibility
     }
 
+    /// Canonical (fake) coding keys — used for *encoding* so round-trips stay
+    /// stable in the FakeOpenStack rig.
     enum CodingKeys: String, CodingKey {
         case id, name, type, status, algorithm
         case bit_size, mode, created_at, updated_at
         case is_secret, visibility
     }
 
+    /// Real-Barbican alias keys, used only for *decoding*. Live Rackspace IAD3
+    /// v1 `/secrets` items have NO `id`/`uuid` key — the identifier is embedded
+    /// as the last path segment of `secret_ref` (`.../v1/secrets/{uuid}`), and
+    /// `secret_type` / `bit_length` are the field names. The fake rig uses the
+    /// canonical `id` / `type` / `bit_size`, so decode accepts both shapes.
+    private enum BarbicanKeys: String, CodingKey {
+        case uuid
+        case secretRef = "secret_ref"
+        case secretType = "secret_type"
+        case bitLength = "bit_length"
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
+        // Identifier, in priority order: fake's `id`, then a bare `uuid` key, then
+        // the UUID embedded in live barbican's `secret_ref` URL. Falls back to ""
+        // so a missing id never hard-fails the whole list decode.
+        let b = try? decoder.container(keyedBy: BarbicanKeys.self)
+        if let v = try? c.decode(String.self, forKey: .id) {
+            id = v
+        } else if let u = try? b?.decode(String.self, forKey: .uuid) {
+            id = u
+        } else if let ref = try? b?.decode(String.self, forKey: .secretRef) {
+            id = Self.uuidFromSecretRef(ref)
+        } else {
+            id = ""
+        }
         name = try c.decodeIfPresent(String.self, forKey: .name)
-        type = try c.decodeIfPresent(String.self, forKey: .type) ?? "opaque"
+        // Type: real Barbican calls it `secret_type`; the fake calls it `type`.
+        if let t = try c.decodeIfPresent(String.self, forKey: .type) {
+            type = t
+        } else if let st = try? b?.decode(String.self, forKey: .secretType) {
+            type = st
+        } else {
+            type = "opaque"
+        }
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "inactive"
         algorithm = try c.decodeIfPresent(String.self, forKey: .algorithm)
-        bit_size = try c.decodeIfPresent(Int.self, forKey: .bit_size)
+        // Bit size: real Barbican calls it `bit_length`; the fake calls it `bit_size`.
+        if let bs = try c.decodeIfPresent(Int.self, forKey: .bit_size) {
+            bit_size = bs
+        } else if let bl = try? b?.decode(Int.self, forKey: .bitLength) {
+            bit_size = bl
+        } else {
+            bit_size = nil
+        }
         mode = try c.decodeIfPresent(String.self, forKey: .mode)
-        created_at = try c.decodeIfPresent(String.self, forKey: .created_at)
-        updated_at = try c.decodeIfPresent(String.self, forKey: .updated_at)
+        // Live barbican uses `created`/`updated`; the fake/canonical shape uses
+        // `created_at`/`updated_at`. Accept both.
+        let bc = try? decoder.container(keyedBy: BarbicanTimestamps.self)
+        if let ca = try c.decodeIfPresent(String.self, forKey: .created_at) {
+            created_at = ca
+        } else if let cr = try? bc?.decode(String.self, forKey: .created) {
+            created_at = cr
+        } else {
+            created_at = nil
+        }
+        if let ua = try c.decodeIfPresent(String.self, forKey: .updated_at) {
+            updated_at = ua
+        } else if let up = try? bc?.decode(String.self, forKey: .updated) {
+            updated_at = up
+        } else {
+            updated_at = nil
+        }
         is_secret = try c.decodeIfPresent(Bool.self, forKey: .is_secret)
         visibility = try c.decodeIfPresent(String.self, forKey: .visibility)
     }
@@ -80,6 +135,23 @@ public struct Secret: Sendable, Codable, Identifiable {
         try c.encodeIfPresent(is_secret, forKey: .is_secret)
         try c.encodeIfPresent(visibility, forKey: .visibility)
     }
+
+    /// Live barbican timestamp keys (`created`/`updated`) for decoding.
+    private enum BarbicanTimestamps: String, CodingKey {
+        case created
+        case updated
+    }
+
+    /// Extract the secret UUID from a barbican `secret_ref` URL of the form
+    /// `.../v1/secrets/{uuid}`. Returns "" when no path segment is present.
+    private static func uuidFromSecretRef(_ ref: String) -> String {
+        let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        // Last non-empty path segment.
+        var parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+        if parts.isEmpty { return "" }
+        return String(parts.last ?? "")
+    }
 }
 
 public struct SecretContainer: Sendable, Codable, Identifiable {
@@ -97,9 +169,20 @@ public struct SecretContainer: Sendable, Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey { case id, name, type; case secret_refs }
 
+    /// Real-Barbican container identifier key (uses `uuid`, not `id`) for decoding.
+    private enum BarbicanKeys: String, CodingKey { case uuid }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
+        // Identifier: real Barbican uses `uuid`; the fake uses `id`. Accept either.
+        let b = try? decoder.container(keyedBy: BarbicanKeys.self)
+        if let v = try? c.decode(String.self, forKey: .id) {
+            id = v
+        } else if let u = try? b?.decode(String.self, forKey: .uuid) {
+            id = u
+        } else {
+            id = ""
+        }
         name = try c.decodeIfPresent(String.self, forKey: .name)
         type = try c.decodeIfPresent(String.self, forKey: .type)
         secret_refs = try c.decodeIfPresent([String].self, forKey: .secret_refs)

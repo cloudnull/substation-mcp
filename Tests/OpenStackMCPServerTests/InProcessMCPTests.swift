@@ -388,6 +388,67 @@ struct InProcessMCPTests {
         #expect(text?.contains("server-1") == true)
     }
 
+    @Test("ISSUE 20: os_find resolves network names (not just servers)")
+    func findResolvesNetworkNames() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // The old handleFind was hardcoded to server-name + port-IP only, so a
+        // network like int-net never resolved. The catalog-driven rewrite must
+        // find it via its name field and report the resource type.
+        let result = try await bundle.mcpClient.callTool(name: "os_find", arguments: ["value": .string("int-net")])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("int-net"), "os_find should return the seeded network, got: \(text)")
+        #expect(text.contains("\"network\""), "match should be typed as network, got: \(text)")
+    }
+
+    @Test("ISSUE 20: os_find resolves flavor names")
+    func findResolvesFlavorNames() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_find", arguments: ["value": .string("m1.small")])
+        #expect(result.isError != true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("m1.small"), "os_find should return the seeded flavor, got: \(text)")
+        #expect(text.contains("\"flavor\""), "match should be typed as flavor, got: \(text)")
+    }
+
+    @Test("ISSUE 19: os_get(load_balancer, id=<uuid>) resolves by id")
+    func loadBalancerGetById() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Create an LB, then get it back BY ID. On live Rackspace octavia the
+        // item endpoint 404s while list works; NameResolver now falls back to a
+        // list-scan by idField so get-by-id succeeds whenever list can see the
+        // resource. In the fake the direct get already works — this pins that
+        // behavior and guards against regressing the by-id path.
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("load_balancer"),
+            "spec": .object(["name": .string("test-lb")]),
+        ])
+        #expect(created.isError != true, "create load_balancer failed: \(firstText(created.content) ?? "nil")")
+        let createdData = try parseResult(created)
+        let lbID = ((createdData["data"] as? [String: Any])?["id"] as? String) ?? ""
+        #expect(!lbID.isEmpty, "expected the created LB to carry an id, got: \(createdData)")
+
+        let getResult = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("load_balancer"),
+            "id_or_name": .string(lbID),
+        ])
+        #expect(getResult.isError != true, "get-by-id failed: \(firstText(getResult.content) ?? "nil")")
+        let getText = firstText(getResult.content) ?? ""
+        #expect(getText.contains(lbID), "get-by-id should echo the id, got: \(getText)")
+    }
+
     @Test("os_quota returns compute quotas")
     func quotaCompute() async throws {
         let handle = try await FakeApp.start()

@@ -49,7 +49,21 @@ public actor NameResolver {
             let raw = try await get(vt: vt, descriptor: descriptor, id: idOrName, region: region)
             return (idOrName, raw)
         } catch {
-            // Not found by ID — fall through to name resolution
+            // Not found by ID — fall through to recovery + name resolution
+        }
+
+        // 1b. Direct get-by-ID failed but the value may still be a valid ID that
+        //     the collection listing knows about (e.g. octavia member routes where
+        //     the item endpoint 404s while list works). Recover the listed item by
+        //     scanning its idField so os_get(id) behaves like os_get(name) — both
+        //     succeed whenever os_list can see the resource. Bounded to 500 items.
+        if let result = try? await list(vt: vt, descriptor: descriptor, filters: [:], limit: 500, region: region),
+           let items = result["items"]?.arrayValue {
+            for item in items {
+                if let obj = item.objectValue, obj[descriptor.idField]?.stringValue == idOrName {
+                    return (idOrName, obj)
+                }
+            }
         }
 
         // 2 & 3. Name-based resolution

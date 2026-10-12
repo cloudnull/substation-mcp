@@ -621,27 +621,76 @@ public struct ToolRegistry: Sendable {
         let vt = identity.vt
         let resourceFilter = argOptional(params, "resource")
         let lower = value.lowercased()
-        var matches: [[String: JSONValue]] = []
 
-        let computeNames = Set(catalog.resources(for: .compute).map { $0.name })
-        if resourceFilter == nil || computeNames.contains(resourceFilter ?? "") {
-            let r = await client.compute(region: region)
-            let servers = try await r.listServers(vt, filters: [:], limit: policy.maxListLimit)
-            for server in servers {
-                if server.name.lowercased().contains(lower) {
-                    matches.append(["resource": .string("server"), "id": .string(server.id), "name": .string(server.name), "matched_field": .string("name")])
-                }
+        // Catalog-driven search: for every listable resource that has a name
+        // field, match items whose nameField contains the value (case-insensitive).
+        // This is what makes os_find work for flavor/network/router/subnet/etc.,
+        // not just servers. The port fixed_ips branch below adds IP lookups on
+        // top (IPs aren't names and don't flow through nameField).
+        var targets = catalog.resources.filter { $0.verbs.contains(.list) && $0.nameField != nil }
+        if let filter = resourceFilter {
+            // Restrict to the one requested resource when given; fail loudly if
+            // it's not a valid, listable, named resource.
+            guard let d = catalog.descriptor(filter), d.verbs.contains(.list), d.nameField != nil else {
+                throw OpenStackError(service: "mcp", status: 400, code: "invalidResource",
+                    message: "Resource '\(filter)' is not searchable by os_find.")
             }
+            targets = [d]
         }
 
-        let networkNames = Set(catalog.resources(for: .network).map { $0.name })
-        if resourceFilter == nil || networkNames.contains(resourceFilter ?? "") {
-            let r = await client.network(region: region)
-            let ports = try await r.listPorts(vt, filters: [:], limit: policy.maxListLimit)
-            for port in ports {
-                for ip in port.fixedIPs where ip.ipAddress.lowercased() == lower {
-                    matches.append(["resource": .string("port"), "id": .string(port.id), "name": .string(port.name), "matched_field": .string("fixed_ips")])
+        let resolver = NameResolver(catalog: catalog, client: client)
+        var matches: [[String: JSONValue]] = []
+
+        // Search each target resource in parallel so a broad find stays fast
+        // even though it fans out over many services.
+        let found = try await withThrowingTaskGroup(of: [[String: JSONValue]].self) { group in
+            for d in targets {
+                group.addTask { () -> [[String: JSONValue]] in
+                    guard let nameField = d.nameField else { return [] }
+                    do {
+                        let raw = try await resolver.listPublic(vt, descriptor: d, filters: [:], limit: policy.maxListLimit, marker: nil, region: region)
+                        var out: [[String: JSONValue]] = []
+                        if let arr = raw["items"]?.arrayValue {
+                            for item in arr {
+                                guard let obj = item.objectValue else { continue }
+                                guard let name = obj[nameField]?.stringValue, name.lowercased().contains(lower) else { continue }
+                                let id = obj[d.idField]?.stringValue ?? ""
+                                out.append([
+                                    "resource": .string(d.name),
+                                    "id": .string(id),
+                                    "name": .string(name),
+                                    "matched_field": .string("name"),
+                                ])
+                            }
+                        }
+                        return out
+                    } catch {
+                        // A single service being absent/denied/down must not sink
+                        // the whole find; skip it and report the rest.
+                        return []
+                    }
                 }
+            }
+            var acc: [[String: JSONValue]] = []
+            for try await chunk in group { acc.append(contentsOf: chunk) }
+            return acc
+        }
+        matches.append(contentsOf: found)
+
+        // IP / address lookup against neutron ports (fixed_ips), preserved from
+        // the original behavior: os_find(value=<ip>) locates the port holding it.
+        // Only run when the filter doesn't narrow us away from network.
+        if resourceFilter == nil || resourceFilter == "port" {
+            do {
+                let r = await client.network(region: region)
+                let ports = try await r.listPorts(vt, filters: [:], limit: policy.maxListLimit)
+                for port in ports {
+                    for ip in port.fixedIPs where ip.ipAddress.lowercased() == lower {
+                        matches.append(["resource": .string("port"), "id": .string(port.id), "name": .string(port.name), "matched_field": .string("fixed_ips")])
+                    }
+                }
+            } catch {
+                // Port scan is best-effort; ignore on failure.
             }
         }
 
