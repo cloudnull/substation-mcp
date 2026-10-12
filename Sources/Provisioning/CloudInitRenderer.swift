@@ -155,7 +155,7 @@ private extension CloudInitRenderer {
             let ruleList = rules.map(\.description).joined(separator: ", ")
             switch distro.family {
             case .apt:
-                let cmds = rules.map { "provision_one ufw allow \(shellQuote($0.description))" }.joined(separator: " ; ")
+                let cmds = rules.map { rule in "provision_one ufw allow \(shellQuote(String(rule.port)))/\(shellQuote(rule.proto))" }.joined(separator: " ; ")
                 lines.append("if command -v ufw >/dev/null 2>&1; then ufw --force enable >/dev/null 2>&1; \(cmds); else echo \"[osmcp-provision] WARN: ufw not available, skipping firewall: \(ruleList)\"; fi")
             case .yum:
                 let cmds = rules.map { rule in

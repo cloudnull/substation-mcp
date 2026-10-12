@@ -366,6 +366,27 @@ struct NetworkServiceTests {
         )
         #expect(withGW.externalGatewayInfo?.networkID == "net-ext")
     }
+    @Test("router create honours external_gateway_info at create time", .timeLimit(.minutes(2)))
+    func createRouterWithGatewayAtCreate() async throws {
+        let (handle, vt, network, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = network.region("RegionOne")
+        // Regression (ISSUE 10): external_gateway_info on create was silently dropped — the router
+        // came back with no gateway even though the spec asked for one. It must persist on create.
+        let router = try await region.createRouter(
+            vt,
+            CreateRouterSpec(name: "gw-router", externalGatewayNetworkID: "net-ext")
+        )
+        #expect(router.name == "gw-router")
+        #expect(router.externalGatewayInfo?.networkID == "net-ext",
+                 "gateway set at create time must be present in the returned router")
+        // Read-back via list/get should agree.
+        let routers = try await region.listRouters(vt)
+        let found = routers.first { $0.id == router.id }
+        #expect(found?.externalGatewayInfo?.networkID == "net-ext")
+    }
+
 
     @Test("delete router", .timeLimit(.minutes(2)))
     func deleteRouter() async throws {

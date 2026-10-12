@@ -384,8 +384,11 @@ public struct NeutronFake {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
             let body = try await Self.readBody(req)
-            let name = Self.extractString("name", from: Self.objectForKey("router", in: body) ?? body) ?? "router"
-            let router = await state.createRouter(projectID: token.projectID, name: name)
+            let routerBody = Self.objectForKey("router", in: body) ?? body
+            let name = Self.extractString("name", from: routerBody) ?? "router"
+            let gwObj = Self.objectForKey("external_gateway_info", in: routerBody)
+            let externalNetworkID = gwObj.flatMap { Self.extractString("network_id", from: $0) }
+            let router = await state.createRouter(projectID: token.projectID, name: name, externalNetworkID: externalNetworkID)
             return Self.jsonResponse(status: .created, body: """
             {"router":\(Self.routerJSON(router))}
             """)
@@ -429,19 +432,23 @@ public struct NeutronFake {
             return Response(status: .noContent)
         }
 
-        router.delete("\(base)/routers/:id/remove_router_interface") { req, ctx in
+        // Neutron's remove_router_interface is a PUT that REQUIRES {"subnet_id"} in the body — it
+        // detaches exactly the named subnet (not all interfaces). Mirror that so the fake matches
+        // the real API (and the client) rather than the old delete-removes-all behavior.
+        router.put("\(base)/routers/:id/remove_router_interface") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
             }
             let id = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let subnetID = Self.extractString("subnet_id", from: body) ?? ""
             guard let router = await state.getRouter(id: id, projectID: token.projectID) else {
                 return Self.notFound(message: "Router \(id) could not be found.")
             }
             _ = router
-            let subnets = await state.routerInterfaceSubnets(routerID: id)
-            for subnetID in subnets {
-                await state.removeRouterInterface(routerID: id, subnetID: subnetID)
+            guard await state.removeRouterInterface(routerID: id, subnetID: subnetID) == true else {
+                return Self.neutronError(status: .badRequest, type: "InvalidInput", message: "No interface to remove on router \(id) for subnet \(subnetID).")
             }
             return Response(status: .noContent)
         }

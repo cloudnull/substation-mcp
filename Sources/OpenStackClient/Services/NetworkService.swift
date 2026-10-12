@@ -1104,7 +1104,10 @@ public struct NetworkRegion: Sendable {
     /// Remove a router interface (detach subnet from router).
     public func removeRouterInterface(_ vt: ValidatedToken, _ region: String, routerID: String, subnetID: String) async throws -> (status: Int, body: Data, requestID: String?) {
         let r = try resolveRegion(vt)
-        return try await req(vt, r, method: "DELETE", path: "\(basePath)/routers/\(routerID)/remove_router_interface")
+        // Neutron's remove_router_interface is a PUT that REQUIRES {"subnet_id":...} in the body.
+        // The old DELETE-without-body returned 405 MethodNotAllowed, so router teardown was broken.
+        let body = "{\"subnet_id\":\"\(subnetID)\"}".data(using: .utf8)
+        return try await req(vt, r, method: "PUT", path: "\(basePath)/routers/\(routerID)/remove_router_interface", body: body)
     }
 
     // MARK: - Private helpers

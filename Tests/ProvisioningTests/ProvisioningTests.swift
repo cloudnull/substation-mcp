@@ -213,7 +213,9 @@ struct RendererTests {
         let spec = ProvisioningSpec(firewall: [.init(proto: "tcp", port: 8080)])
         let out = try CloudInitRenderer.render(spec: spec, distro: .ubuntu)
         #expect(out.contains("ufw --force enable"))
-        #expect(out.contains("ufw allow 'tcp/8080'"))
+        // ufw requires "<port>/<proto>" (port FIRST); "tcp/8080" fails with "Bad port".
+        #expect(out.contains("ufw allow '8080'/'tcp'"))
+        #expect(!out.contains("'tcp/8080'"))
     }
 
     @Test("firewall renders firewalld on yum")

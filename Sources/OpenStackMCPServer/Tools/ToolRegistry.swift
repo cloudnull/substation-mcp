@@ -562,9 +562,8 @@ public struct ToolRegistry: Sendable {
             let nets = try? await ns.listNetworks(vt, filters: [:], limit: 200)
 
             var entry: [String: JSONValue] = ["region": .string(region)]
-            if let vts, !vts.isEmpty {
-                entry["volume_types"] = .array(vts.map { .string($0.name) })
-            }
+            // Always emit volume_types (empty array when Cinder /types is unreachable or member role lacks it) so the field doesn't silently vanish from the capability entry.
+            entry["volume_types"] = .array((vts ?? []).map { .string($0.name) })
             if let azs, !azs.isEmpty {
                 entry["availability_zones"] = .array(azs.map { .string($0.zoneName) })
             }

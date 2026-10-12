@@ -962,33 +962,26 @@ public actor NameResolver {
                 let rc = await client.compute(region: region)
                 let flavors = try await rc.listFlavors(vt)
                 let flavorItems = try flavors.map { try Self.encodeObject($0) as [String: JSONValue] }
+                // In dry-run we do NOT hard-fail on unresolvable flavor/image refs. We resolve when
+                // possible (so the resolved ID is used downstream) but keep the raw ref as a
+                // placeholder otherwise; the single accumulator below (the `if dryRun` block) then
+                // reports each problem ONCE with a clean message. This removes the old fail-fast
+                // early return and the duplicate leaked-Swift-image error so all issues surface in
+                // one response without internal type names.
                 let flavorID: String
                 if dryRun {
-                    do {
-                        flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
-                    } catch {
-                        return ["valid": .bool(false),
-                                "errors": .array([.string("flavorNotFound: \(error.localizedDescription)")]),
-                                "warnings": .array([])]
-                    }
+                    flavorID = (try? Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")) ?? flavorRef
                 } else {
                     flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
                 }
-                // Resolve image name to UUID. In dry-run mode a missing image is
-                // reported in the validation result instead of thrown; the
-                // original ref is kept as a placeholder so later checks still run.
+                // Resolve image name to UUID. Same policy as flavor above: non-failing in dry-run.
                 let ri = await client.image(region: region)
                 let images = try await ri.listImages(vt)
                 let imageItems = try images.map { try Self.encodeObject($0) as [String: JSONValue] }
                 var dryRunErrors: [String] = []
                 let imageID: String
                 if dryRun {
-                    do {
-                        imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
-                    } catch {
-                        dryRunErrors.append("imageNotFound: \(error.localizedDescription)")
-                        imageID = imageRef
-                    }
+                    imageID = (try? Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")) ?? imageRef
                 } else {
                     imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
                 }
@@ -1243,10 +1236,31 @@ public actor NameResolver {
                 if securityGroups.isEmpty {
                     let sgName = "\(name)-sg"
                     let rn = await client.network(region: region)
-                    let newSG = try await rn.createSecurityGroup(
-                        vt,
-                        CreateSecurityGroupSpec(name: sgName, description: "Auto-created by openstack-mcp for SSH access")
-                    )
+                    // Reuse an existing <server>-sg instead of always creating a new one. Retrying a
+                    // server create (or a prior partial failure) previously spawned a DUPLICATE with
+                    // the same name, after which every same-name lookup became ambiguous -> Nova
+                    // 409 "Multiple security_group matches". Fetch once and match by exact name.
+                    let existing = (try? await rn.listSecurityGroups(vt)) ?? []
+                    let matches = existing.filter { $0.name == sgName }
+                    let newSG: SecurityGroup
+                    switch matches.count {
+                    case 0:
+                        newSG = try await rn.createSecurityGroup(
+                            vt,
+                            CreateSecurityGroupSpec(name: sgName, description: "Auto-created by openstack-mcp for SSH access")
+                        )
+                    case 1:
+                        // Reuse the existing group; still ensure the ingress rules exist below.
+                        newSG = matches[0]
+                    default:
+                        throw OpenStackError(
+                            service: "network", status: 409, code: "ambiguousAutoSG",
+                            message: "Found \(matches.count) security groups named '\(sgName)'. Pass 'security_groups' explicitly (by ID) to disambiguate.",
+                            requestID: nil, retriable: false,
+                            hint: "Delete the stray duplicate SGs, or pass the intended security group's ID in security_groups."
+                        )
+                    }
+                    // Ensure TCP/22 ingress is present (idempotently) so reused SGs keep working.
                     _ = try await rn.createSecurityGroupRule(
                         vt,
                         securityGroupID: newSG.id,
@@ -1269,7 +1283,8 @@ public actor NameResolver {
                             remoteIPPrefix: "0.0.0.0/0"
                         )
                     }
-                    securityGroups = [newSG.name]
+                    // Pass the ID (not the name) to Nova to avoid any name-based ambiguity.
+                    securityGroups = [newSG.id]
                     autoSGName = newSG.name
                 }
 
@@ -1325,6 +1340,14 @@ public actor NameResolver {
             }
         case .network:
             let r = await client.network(region: region)
+            // Helper: resolve a network reference (name or UUID) to its UUID so callers can pass
+            // "PUBLICNET" anywhere a network id is expected, matching server-create semantics.
+            func resolveNetworkRef(_ ref: String) async throws -> String {
+                if Self.looksLikeUUID(ref) { return ref }
+                let nws = try await r.listNetworks(vt)
+                let items = try nws.map { try Self.encodeObject($0) as [String: JSONValue] }
+                return try Self.resolveRef(value: ref, resource: "network", items: items, service: "network")
+            }
             switch descriptor.name {
             case "network":
                 let name = obj["name"]?.stringValue ?? "mcp-net"
@@ -1332,29 +1355,42 @@ public actor NameResolver {
                 let n = try await r.createNetwork(vt, spec)
                 return try Self.encodeObject(n)
             case "subnet":
-                let networkID = obj["network_id"]?.stringValue
+                let networkIDRaw = obj["network_id"]?.stringValue
                 let cidr = obj["cidr"]?.stringValue
-                guard let networkID, let cidr else {
+                guard let networkIDRaw, let cidr else {
                     throw OpenStackError(service: "network", status: 400, message: "Subnet create requires network_id and cidr")
                 }
+                let networkID = try await resolveNetworkRef(networkIDRaw)
                 let spec = CreateSubnetSpec(networkID: networkID, cidr: cidr, name: obj["name"]?.stringValue)
                 let s = try await r.createSubnet(vt, spec)
                 return try Self.encodeObject(s)
             case "port":
-                let networkID = obj["network_id"]?.stringValue
-                guard let networkID else { throw OpenStackError(service: "network", status: 400, message: "Port create requires network_id") }
+                let networkIDRaw = obj["network_id"]?.stringValue
+                guard let networkIDRaw else { throw OpenStackError(service: "network", status: 400, message: "Port create requires network_id") }
+                let networkID = try await resolveNetworkRef(networkIDRaw)
                 let name = obj["name"]?.stringValue ?? ""
                 let spec = CreatePortSpec(networkID: networkID, name: name)
                 let p = try await r.createPort(vt, spec)
                 return try Self.encodeObject(p)
             case "router":
                 let name = obj["name"]?.stringValue ?? "mcp-router"
-                let spec = CreateRouterSpec(name: name)
+                // Accept external_gateway_info either as {"network_id": "<ref>"} or a bare "<ref>".
+                var gatewayNetworkID: String?
+                if let egw = obj["external_gateway_info"] {
+                    let rawRef = egw.objectValue?["network_id"]?.stringValue ?? egw.stringValue
+                    if let ref = rawRef, !ref.isEmpty {
+                        gatewayNetworkID = try await resolveNetworkRef(ref)
+                    }
+                } else if let gwNet = obj["gateway_network_id"]?.stringValue ?? obj["floating_network_id"]?.stringValue {
+                    gatewayNetworkID = try await resolveNetworkRef(gwNet)
+                }
+                let spec = CreateRouterSpec(name: name, externalGatewayNetworkID: gatewayNetworkID)
                 let rt = try await r.createRouter(vt, spec)
                 return try Self.encodeObject(rt)
             case "floating_ip":
-                let networkID = obj["floating_network_id"]?.stringValue
-                guard let networkID else { throw OpenStackError(service: "network", status: 400, message: "Floating IP create requires floating_network_id") }
+                let networkIDRaw = obj["floating_network_id"]?.stringValue
+                guard let networkIDRaw else { throw OpenStackError(service: "network", status: 400, message: "Floating IP create requires floating_network_id") }
+                let networkID = try await resolveNetworkRef(networkIDRaw)
                 let spec = CreateFloatingIPSpec(floatingNetworkID: networkID)
                 let f = try await r.createFloatingIP(vt, spec)
                 return try Self.encodeObject(f)
@@ -1758,6 +1794,7 @@ public actor NameResolver {
             case "router": try await r.deleteRouter(vt, id: id)
             case "floating_ip": try await r.deleteFloatingIP(vt, id: id)
             case "security_group": try await r.deleteSecurityGroup(vt, id: id)
+            case "address_group": try await r.deleteAddressGroup(vt, id: id)
             default: throw OpenStackError(service: "network", status: 400, message: "Unknown network delete: \(descriptor.name)")
             }
         case .blockStorage:

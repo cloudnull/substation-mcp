@@ -9,7 +9,7 @@
   "cmd": ["serve", "--host", "0.0.0.0", "--port", "8080"],
   "expose": [8080],
   "user": "substation-mcp:10001",
-  "binary_sha256": "2e1d083028dd3d2f851e006586d13b6caf4efdd9188ae4314a4dd81cde264c11",
-  "binary_size_bytes": "96464936",
+  "binary_sha256": "c689a078d299f725eba4dbf37da04948b5af28f47b8a0aa5e4b790934f17302d",
+  "binary_size_bytes": "106001896",
   "note": "Native rootfs (no docker). Extract on an arm64 UBI10 host, or feed as a layer. ca-certificates must be present on the host (the image relies on the host's /etc/ssl/certs)."
 }

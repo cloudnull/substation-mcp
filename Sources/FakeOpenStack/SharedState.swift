@@ -2240,10 +2240,15 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createRouter(projectID: String, name: String) -> FakeRouter {
+    public func createRouter(projectID: String, name: String, externalNetworkID: String? = nil) -> FakeRouter {
         routerIDCounter += 1
         let id = "router-\(routerIDCounter)"
-        let router = FakeRouter(id: id, name: name, projectID: projectID, externalNetworkID: nil, status: "DOWN")
+        var ext: String? = nil
+        if let gw = externalNetworkID, networks.contains(where: { $0.id == gw && $0.routerExternal }) {
+            ext = gw
+        }
+        let status = (ext != nil) ? "ACTIVE" : "DOWN"
+        let router = FakeRouter(id: id, name: name, projectID: projectID, externalNetworkID: ext, status: status)
         routers.append(router)
         return router
     }

@@ -1,605 +1,102 @@
 # substation-mcp
 
-A Hummingbird-hosted Swift MCP (Model Context Protocol) server that lets an LLM
-client consume an OpenStack cloud — identity (Keystone), compute (Nova), network
-(Neutron), block storage (Cinder), image (Glance), object storage (Swift), key
-management (Barbican), load balancing (Octavia), DNS (Designate), container
-infrastructure (Magnum), orchestration (Heat), and shared file systems (Manila) —
-through a small set of catalog-driven tools.
+A Hummingbird-hosted Swift **MCP (Model Context Protocol) server** that lets an
+LLM client consume a whole OpenStack cloud through a small, stable set of
+catalog-driven tools. Every request carries its own Keystone token, so the
+server is multi-tenant, holds no user credentials, and enforces project
+isolation by construction.
 
-Identity is **token-per-request**: every HTTP request carries a Keystone token
-(`Authorization: Bearer <token>`). The server validates it and uses only that
-token upstream, so it is multi-tenant, holds no user credentials, and enforces
-project isolation by construction.
+```mermaid
+graph LR
+    Client["MCP client<br/>Claude / OpenCode / …"]
+    substation["substation-mcp<br/>auth gate · scope gate<br/>catalog · policy · sessions<br/>stateless OAuth 2.1 AS"]
+    OS["OpenStack<br/>Nova / Neutron / Cinder / Glance / …<br/>(~19 resource types)"]
+    Client -- "Bearer &lt;token&gt;<br/>/v1 SSE" --> substation
+    substation -- "real endpoint + version<br/>+ per-token identity" --> OS
+```
+
+## At a glance
+
+- **What it is.** An MCP server for OpenStack — identity, compute, network,
+  block storage, images, object storage, key management, load balancing, DNS,
+  containers, orchestration, and shared file systems behind **20 tools**
+  (14 read-only + 6 write).
+- **Identity.** Token-per-request. No long-lived session token; the Keystone
+  token *is* the identity and it's used only on that one request.
+- **Auth.** Two profiles: `oauth` (default — substation-mcp fronts Keystone as
+  its own stateless OAuth 2.1 AS with browser login) or `keystone_token`
+  (raw bearer, unchanged). See [OAuth 2.1 login](docs/oauth.md).
+- **Stable surface.** The verbs are additive-only. New services appear as new
+  *resources* under the same verbs (currently 63 descriptors across ~19 types),
+  never as new tools.
+
+| | |
+|---|---|
+| **[Quickstart](docs/quickstart.md)** | Build → validate token → run → connect a client in ~5 steps |
+| **[Tools reference](docs/tools.md)** | All 20 tools, read/write split, argument conventions |
+| **[Architecture](docs/architecture.md)** | How the pieces fit: transport, client, catalog, caching |
+| **[Configuration](docs/configuration.md)** | Every config key, env var, and subcommand |
+| **[Security model](docs/security.md)** | Scope gating, redaction, audit, rate limits |
+| **[Deploying](docs/deploying.md)** | Docker, systemd, Genestack/K8s, native aarch64 |
+
+Full design rationale: [`specs/substation-mcp-spec.md`](specs/substation-mcp-spec.md).
 
 ## Tools
 
-Phase 1 exposes 15 tools (9 read-only + 6 write):
+The verb tools are **stable**: `os_list`, `os_get`, `os_create`, `os_update`,
+`os_delete`, `os_action`, `os_attach`, `os_detach` cover every resource. Helpers
+add discovery, topology, waiting, and background tasks. Read-only mode restricts
+the server to the 14 read tools; write calls need the `openstack:write` scope
+else `403 insufficient_scope`. Full descriptions: [Tools reference](docs/tools.md).
 
-| Tool | Read | Description |
-|------|:----:|-------------|
-| `os_list` | ✓ | List a resource type (server, network, volume, image, …) with filters, limit, marker |
-| `os_get` | ✓ | Get one resource by ID or name (project-scoped) |
-| `os_describe` | ✓ | Get + resolved name + attached resources (volumes, ports, SGs) |
-| `os_topology` | ✓ | Graph of connected resources from an anchor (depth 1–3, optional diagnosis) |
-| `os_find` | ✓ | Search across resource types by name/ID |
-| `os_whoami` | ✓ | Token identity: project, domain, roles, scopes, regions |
-| `os_quota` | ✓ | Quota usage for a resource type |
-| `os_clouds` | ✓ | Cloud catalog: regions, services, endpoints |
-| `os_wait` | ✓ | Poll a resource until it reaches a target state (with progress) |
-| `os_create` | | Create a resource (schema-validated) |
-| `os_update` | | Update a resource |
-| `os_delete` | | Delete a resource |
-| `os_action` | | Run a server action (start, stop, reboot, resize, …) |
-| `os_attach` | | Attach a resource (volume, interface, SG, floating IP, …) |
-| `os_detach` | | Detach a resource |
-
-Read-only mode (`--read-only` / `policy.read_only: true`) restricts the server
-to the 9 read tools. Write tools are additionally gated by the token's derived
-scopes: a token without the `openstack:write` scope gets `403 insufficient_scope`
-on mutating calls.
-
-## Architecture
-
-```
-MCP Client (Claude, etc.)
-  │  Authorization: Bearer <keystone-token>
-  ▼
-substation-mcp serve
-  ├── MCPRoute (HummingbirdMCP adapter)
-  │     ├── Token-per-request validation (GET /v3/auth/tokens, cached)
-  │     ├── Scope gate (read-only / write)
-  │     ├── Per-token MCP.Server (SessionRegistry)
-  │     └── SSE / Streamable-HTTP transport
-  ├── /healthz, /readyz
-  ├── /.well-known/oauth-protected-resource (PRM, RFC 9728)
-  ├── /v1/login (URL-mode token elicitation)
-  └── /metrics (Prometheus, optional bearer gate)
-  │
-  ▼
-OpenStackClient (stateless per-identity actor)
-  ├── Transport (async-http-client, retry, request-id, redirects,
-  │               per-request token override, multi-endpoint overrideBase)
-  ├── EndpointResolver (routes each call to the service's real catalog endpoint)
-  ├── VersionNegotiator (per-service microversion + version-unit negotiation)
-  ├── Cache (TTL + per-token invalidation)
-  ├── KeystoneService (identity: token decode, catalog, scopes)
-  ├── ComputeService (Nova)
-  ├── NetworkService (Neutron)
-  ├── BlockStorageService (Cinder v3)
-  ├── ImageService (Glance v2)
-  ├── ObjectStorageService (Swift)
-  ├── KeyManagerService (Barbican)
-  ├── LoadBalancerService (Octavia v2)
-  ├── DNSService (Designate)
-  ├── ContainerService (Magnum)
-  ├── OrchestrationService (Heat)
-  └── ShareService (Manila)
-```
-
-The MCP verb tools (`os_list`, `os_get`, `os_create`, …) are **stable**
-(additive-only invariant): new OpenStack services are exposed as new *resources*
-under the existing verbs, not as new tools.
+| Tool | R/W | One-liner |
+|------|:---:|-----------|
+| `os_list` | ✓ | List a resource type with filters |
+| `os_get` | ✓ | Get one resource by ID or name |
+| `os_describe` | ✓ | Schema, verbs, actions, links for a resource |
+| `os_topology` | ✓ | Connected-resources graph from an anchor |
+| `os_find` | ✓ | Search across types by name/ID/IP |
+| `os_whoami` | ✓ | Token identity: project, roles, regions |
+| `os_project_readiness` | ✓ | What exists vs. what's needed to deploy servers |
+| `os_quota` | ✓ | Quota usage per resource type |
+| `os_clouds` | ✓ | Regions, services, endpoints |
+| `os_wait` | ✓ | Poll until a target state (with progress) |
+| `os_recommend_flavor` | ✓ | Flavor suggestions for a plain-English workload |
+| `os_task_submit` | ✓ | Start a long-running wait in the background |
+| `os_task_status` | ✓ | Poll a submitted task |
+| `os_task_cancel` | ✓ | Cancel a running task |
+| `os_create` | ✗ | Create a resource (schema-validated, dry-run) |
+| `os_update` | ✗ | Update a resource (PATCH) |
+| `os_delete` | ✗ | Delete a resource (dry-run shows blockers) |
+| `os_action` | ✗ | Server action: start/stop/reboot/resize/… |
+| `os_attach` | ✗ | Attach a link (volume, interface, SG, FIP, …) |
+| `os_detach` | ✗ | Detach a link (FIP = disassociate, never delete) |
 
 ## Build & test
 
-All Swift work runs inside the pinned Linux container image
-(`swift:6.4-rhel-ubi10`) via the `scripts/swift` wrapper, which resolves your
-container runtime (docker, podman, or Apple `container`) for you. Never build
-natively on macOS.
+All Swift work runs inside the pinned Linux container (`swift:6.4-rhel-ubi10`)
+via the `scripts/swift` wrapper — it resolves docker/podman/Apple `container`
+for you. Never build natively on macOS.
 
 ```sh
 scripts/swift --version   # verify the container toolchain
 scripts/swift build       # debug build
-scripts/swift test        # run the test suite (364 tests; integration target self-skips without OSMCP_IT_CLOUD)
+scripts/swift test        # unit + in-process suite (integration self-skips w/o OSMCP_IT_CLOUD)
+scripts/build.sh          # release → ./.build/release/substation-mcp
 ```
 
-Release build:
-
-```sh
-scripts/build.sh          # swift build -c release (attempts --static-swift-stdlib first)
-# → ./.build/release/substation-mcp
-```
-
-> **Note:** the static build is attempted first (spec §13 wants a
-> self-contained binary). As of Swift 6.4 on UBI10, the toolchain's static
-> Foundation archives reference ICU symbols that are not in the static link
-> path, so the build falls back to a dynamically-linked release binary. This
-> binary runs on any UBI10/RHEL 10 system with the Swift runtime.
-
-## Quickstart
-
-### 1. Build
-
-```sh
-scripts/build.sh
-```
-
-### 2. Validate your credential
-
-```sh
-# Using an existing token:
-OS_AUTH_TOKEN=<token-id> ./.build/release/substation-mcp check --cloud mycloud
-
-# Or let it mint a token from the cloud's application credential:
-./.build/release/substation-mcp check --cloud mycloud
-```
-
-Expected output: project name, derived scopes (`[openstack:read openstack:write]`),
-regions, negotiated microversions, Neutron extensions, and any access-rule gaps.
-
-### 3. Register the MCP service in Keystone
-
-The server's endpoints must appear in the Keystone catalog so clients can
-discover them. Run once per cloud/region as an operator with an identity-admin
-credential:
-
-```sh
-# Using the wrapper script:
-export OS_CLOUD=mycloud REGION=RegionOne PUBLIC_URL=https://mcp.example.com
-export OS_AUTH_TOKEN=<admin-token>   # or OS_APPLICATION_CREDENTIAL_ID+SECRET
-deploy/register-catalog.sh
-
-# Or directly:
-./.build/release/substation-mcp register-catalog \
-  --cloud mycloud --region RegionOne \
-  --public-url https://mcp.example.com \
-  --admin-token <admin-token>
-```
-
-This is **idempotent** — re-running it reuses the existing `type=mcp` service
-and endpoints.
-
-### 4. Run the server
-
-```sh
-./substation-mcp serve \
-  --config /etc/substation-mcp/config.yaml \
-  --host 127.0.0.1 --port 8080 \
-  --public-url https://mcp.example.com
-```
-
-Or via Docker:
-
-```sh
-docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
-docker run --rm -p 8080:8080 \
-  -v /path/to/clouds.yaml:/etc/openstack/clouds.yaml:ro \
-  -v /path/to/config.yaml:/etc/substation-mcp/config.yaml:ro \
-  substation-mcp:local
-```
-
-### 5. Connect an MCP client
-
-**Claude (HTTP):**
-
-```sh
-# Mint a token (or use the /v1/login page in a browser), then:
-claude mcp add --transport http openstack \
-  https://mcp.example.com/v1 \
-  --header "Authorization: Bearer <keystone-token>"
-```
-
-**Claude Desktop (stdio):**
-
-```json
-{
-  "mcpServers": {
-    "openstack": {
-      "command": "/usr/bin/substation-mcp",
-      "args": ["stdio", "--cloud", "mycloud"],
-      "env": {
-        "OS_AUTH_TOKEN": "<keystone-token>"
-      }
-    }
-  }
-}
-```
-
-**OpenCode (V2):**
-
-OpenCode connects to remote MCP servers over Streamable HTTP. Since P3,
-substation-mcp **is** an OAuth 2.1 authorization server (see
-`deploy/OAUTH.md`), so a client that speaks RFC 9728 discovery can just
-point at the URL and complete the browser login flow. For the quick path —
-or for clients that don't do OAuth discovery — use the P1 bearer header
-with a pre-minted Keystone token (`oauth: false`):
-
-```sh
-# Quick add (writes to the project config; add --global for every project):
-opencode mcp add openstack --url "https://mcp.example.com/v1"
-```
-
-Or configure it by hand in `opencode.jsonc` (project root, or
-`~/.config/opencode/opencode.jsonc` for global). Keep the token in an env var,
-not the file:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "servers": {
-      "openstack": {
-        "type": "remote",
-        "url": "https://mcp.example.com/v1",
-        "oauth": false,
-        "headers": {
-          "Authorization": "Bearer {env:OS_AUTH_TOKEN}"
-        }
-      }
-    }
-  }
-}
-```
-
-Then verify the connection and, if needed, complete sign-in:
-
-```sh
-export OS_AUTH_TOKEN=<keystone-token>
-opencode mcp list          # expect: ✓ openstack  connected
-/mcps                      # in-session: view / connect / authenticate
-```
-
-> **Notes:**
-> - OpenCode names the exposed tools `openstack_<tool>` (e.g.
->   `openstack_os_list`, `openstack_os_whoami`).
-> - Set `"codemode": false` on the server if you want the tools on OpenCode's
->   native tool list instead of through Code Mode.
-> - The bearer path above is P1-compatible and still fully supported: the
->   composite auth gate treats any non-`stst.at.` bearer token exactly as a
->   raw Keystone token. If you omit the header and let the client follow the
->   401 → Protected Resource Metadata → OAuth challenge, substation-mcp fronts
->   Keystone as its own stateless OAuth 2.1 AS (authorization code + PKCE) —
->   see `deploy/OAUTH.md`.
-
-**Token management:** the server supports three token-acquisition paths:
-1. **OAuth 2.1 flow (default, P3)** — the client follows the 401 challenge to
-   the Protected Resource Metadata, discovers substation-mcp's own stateless
-   OAuth AS (RFC 8414 metadata + deterministic DCR), runs the
-   authorization-code + PKCE flow through the browser consent page, and
-   presents the resulting `stst.at.` JWT. No pre-minted credential needed.
-   See `deploy/OAUTH.md`.
-2. **Client-side mint** — the client mints a token via Keystone and presents
-   it as a Bearer header. On `401`, the client re-mints and retries. Tokens
-   are stored at `~/.config/openstack/mcp-tokens/<cloud>.token` (mode `0600`).
-3. **URL-mode elicitation** — the client visits `/<endpoint>/login` in a
-   browser, enters the application credential, and the server mints + stores
-   the token in its `TokenStore`. The completion page displays the token ID.
-
-### 6. Reverse proxy (TLS)
-
-TLS terminates at the proxy; the server binds `127.0.0.1` (or `0.0.0.0`
-inside a container) in plaintext. See `deploy/caddy/Caddyfile` and
-`deploy/nginx/substation-mcp.conf` for ready-to-use configs. The critical
-setting: **disable response buffering** for the `/v1` and `/mcp` paths
-(Caddy: `flush_interval -1`; nginx: `proxy_buffering off; proxy_cache off;`)
-so SSE streams are not buffered.
-
-## Configuration
-
-Config is layered: **CLI flags > env vars > YAML file > defaults**.
-
-Env vars use the `OSMCP_` prefix with `__` (double-underscore) as the section
-separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `server.host` | `127.0.0.1` | Bind address |
-| `server.port` | `8080` | Bind port |
-| `server.endpoint` | `/v1` | MCP transport path (`/mcp` retained as alias) |
-| `server.allowed_origins` | localhost | `Origin` allow-list; `*` disables the check |
-| `server.max_body_bytes` | `1048576` | Request body limit (1 MiB) |
-| `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
-| `server.public_url` | unset | Canonical public base URL (PRM, login page) |
-| `auth.profile` | `oauth` | `oauth` (P3, default — stateless OAuth 2.1 AS in front of Keystone) or `keystone_token` (P1, raw Keystone bearer) |
-| `auth.keystone_url` | from catalog | Keystone base URL in PRM `authorization_servers` |
-| `oauth.server_secret` | derived (dev) | HS256 AS signing secret; **set explicitly in production** (see `deploy/OAUTH.md`) |
-| `oauth.code_ttl` | `120s` | Authorization-code JWT lifetime |
-| `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
-| `oauth.replay_store` | `local` | Code-replay store: `local` (single replica) or `memcached` (shared; endpoint from the token's Keystone catalog, service type `memcached` — see `deploy/OAUTH.md`) |
-| `oauth.replay_store_endpoint` | unset | `host:port` override for the shared replay cache (non-catalog deployments) |
-| `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
-| `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
-| `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
-| `clouds.default` | first in `clouds.yaml` | Default cloud |
-| `clouds.allowed` | all | Names a session may select |
-| `clouds.file` | search order | Path to `clouds.yaml` |
-| `session.idle_ttl` | `30m` | Idle session timeout |
-| `session.max_lifetime` | `12h` | Maximum session lifetime |
-| `session.max_sessions` | `500` | Concurrent session cap |
-| `policy.read_only` | `false` | Restrict to read-only tools |
-| `policy.deny_resources` | `[project, user, group, role, role_assignment, domain]` | Resources hidden from the catalog |
-| `policy.max_list_limit` | `200` | Max `limit` for list operations |
-| `client.request_timeout` | `60s` | Upstream request timeout |
-| `cache.ttl.<resource>` | per resource | Cache TTL per resource type |
-| `log.level` | `info` | Log level |
-| `log.format` | `json` | `json` or `logfmt` |
-| `log.audit` | `true` | Audit log for mutating tool calls |
-
-### Example config file
-
-```yaml
-server:
-  host: 127.0.0.1
-  port: 8080
-  public_url: https://mcp.example.com
-  metrics_token: "change-me"
-
-policy:
-  read_only: false
-
-log:
-  level: info
-  format: json
-  audit: true
-```
-
-## Subcommands
-
-| Command | Description |
-|---------|-------------|
-| `serve` | Run the HTTP (Streamable-HTTP) MCP server |
-| `stdio` | Run the MCP server over stdio (single cloud, single token) |
-| `healthz` | Print liveness JSON and exit 0 |
-| `check` | Validate a token, print identity/scopes/regions/versions/extensions/access-rule gaps |
-| `access-rules` | Emit the Keystone access-rule JSON for a mode/service/resource subset |
-| `tools` | Dump the tool list (name, description, annotations, inputSchema) |
-| `register-catalog` | Idempotently install the MCP service + endpoints in the Keystone catalog |
-
-### `access-rules`
-
-Generates the JSON that `openstack application credential create --access-rules`
-accepts. Two modes:
-
-- `--mode read-only` — GET-only rules for all 15 tool paths
-- `--mode operator` — all methods (default)
-
-```sh
-substation-mcp access-rules --mode read-only --services compute,network
-# → {"rules": [{"match": "GET /servers", "service": "compute"}, ...]}
-```
-
-> **Note:** for these rules to be enforced by Keystone, each service must be
-> registered with the correct `service_type` in keystonemiddleware.
-
-### `tools`
-
-```sh
-substation-mcp tools                  # human-readable table (15 tools)
-substation-mcp tools --read-only      # 9 read-only tools
-substation-mcp tools --json           # machine-readable JSON
-```
-
-## Security model
-
-- **Bearer token = Keystone token.** The server validates every request's
-  `Authorization: Bearer` header via `GET /v3/auth/tokens` (cached,
-  `auth.token_cache_ttl`). It never accepts client-supplied `auth_url` or
-  credentials.
-- **Token-per-request.** There is no long-lived session token; the Keystone
-  token *is* the identity. Expired token → `401` on the next request, even if
-  the `Mcp-Session-Id` is still alive.
-- **Project isolation.** Each token is project-scoped; the token-metadata cache
-  holds one entry per distinct token ID. Two sessions with different project
-  tokens interleaving requests never see each other's resources.
-- **Scope gate.** Read-only tokens get `403 insufficient_scope` on mutating
-  tool calls. The write-tool gate (`WriteToolGate`) names the specific tools
-  that require write scope.
-- **No held user credentials.** The server holds application-credential secrets
-  only for the login page (URL-mode elicitation); they are zeroized after use.
-- **Access rules.** Use `substation-mcp access-rules` to generate the
-  Keystone access-rule JSON for application credentials. Combine with
-  `keystonemiddleware` for per-service path enforcement.
-- **TLS off-host.** The server does not terminate TLS (phase 1); a reverse
-  proxy (Caddy/nginx) handles it. In containers, the server binds `0.0.0.0`
-  and the proxy binds the public interface.
-- **Rate limiting.** Per-source-IP auth-failure limit (429 after
-  `auth.failed_auth_per_minute` failures in 1 minute). Per-session tool-call
-  rate limit (`policy.max_calls_per_minute`, default 120/min).
-- **Redaction.** All log lines pass through a redaction layer that masks
-  `Authorization`, `X-Auth-Token`, `X-Subject-Token`, `secret`, `password`,
-  `adminPass`, `user_data`, `token`, `application_credential`, `appcredsecret`.
-- **Audit.** One record per mutating tool call: time, token ID, project ID,
-  tool, outcome, request ID, application credential ID.
-
-## Observability
-
-- **Logs:** JSON (default) or logfmt, to stdout in `serve`, stderr in `stdio`.
-  Every line carries `session`, `cloud`, `region`, `tool`, `request_id`.
-- **Metrics** (`/metrics`, Prometheus format, optional bearer gate):
-  - `osmcp_tool_calls_total{tool,outcome}`
-  - `osmcp_tool_duration_seconds{tool}`
-  - `osmcp_openstack_requests_total{service,method,status}`
-  - `osmcp_openstack_request_duration_seconds{service}`
-  - `osmcp_sessions_active`
-  - `osmcp_auth_failures_total{reason}`
-  - `osmcp_cache_hits_total{resource}`
-- **Audit log:** one `.info` record per mutating tool call (gated by
-  `log.audit`).
-
-## Deployment
-
-### Docker
-
-```sh
-docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
-docker run --rm -p 8080:8080 \
-  -v $(pwd)/clouds.yaml:/etc/openstack/clouds.yaml:ro \
-  -v $(pwd)/config.yaml:/etc/substation-mcp/config.yaml:ro \
-  substation-mcp:local
-```
-
-The container runs as non-root user `substation-mcp` (uid 10001) on genuine
-Red Hat **UBI10 minimal** (`registry.access.redhat.com/ubi10-minimal`, freely
-pullable with no login). The builder stage is `swift:6.4-rhel-ubi10` (same as
-`scripts/swift`). The dynamic release binary is bundled with the Swift runtime
-and its runtime libraries.
-
-> **Note:** the runtime is UBI10 minimal, using **microdnf** (the -minimal
-> image has no full dnf). EPEL is enabled by writing the repo file directly.
-> The base already ships libcurl/libstdc++/libssl/libnghttp2/krb5/glibc, so
-> only `libicu` + `glibc-langpack-en` are installed.
-
-### systemd
-
-```sh
-sudo install -m 755 ./.build/release/substation-mcp /usr/bin/substation-mcp
-sudo install -m 644 deploy/substation-mcp.service /etc/systemd/system/
-sudo mkdir -p /etc/substation-mcp
-sudo cp config.yaml /etc/substation-mcp/
-# Create /etc/substation-mcp/env with OSMCP_* variables (optional)
-sudo systemctl daemon-reload
-sudo systemctl enable --now substation-mcp
-```
-
-### Reverse proxy
-
-See `deploy/caddy/Caddyfile` and `deploy/nginx/substation-mcp.conf`. Both
-disable response buffering for `/v1` and `/mcp` (required for SSE).
-
-### Genestack (Kubernetes / OpenStack)
-
-For production deployment into a [Genestack](https://github.com/rackerlabs/genestack)
-cluster (Kubernetes-based OpenStack deployer), use the Helm chart + kustomize
-add-on under `deploy/genestack/`. This is the recommended path for
-pseudo-production and production OpenStack clouds.
-
-**Quick path:**
-
-```sh
-# 1. Build + push the image (amd64):
-docker build --platform linux/amd64 -f deploy/Dockerfile \
-  -t <registry>/openstack/substation-mcp:<tag> .
-docker push <registry>/openstack/substation-mcp:<tag>
-
-# 2. Install the chart into the Genestack cluster (on the controller node):
-./deploy/genestack/install-substation-mcp.sh \
-  --set image.repository=<registry>/openstack/substation-mcp \
-  --set image.tag=<tag>
-
-# 3. Register the MCP service in Keystone (one-time, as admin):
-OS_CLOUD=mycloud REGION=RegionOne \
-PUBLIC_URL=https://substation-mcp.<domain.tld> \
-./deploy/register-catalog.sh
-
-# 4. Connect a client:
-claude mcp add --transport http openstack \
-  https://substation-mcp.<domain.tld>/v1 \
-  --header "Authorization: Bearer <keystone-token>"
-```
-
-The full walkthrough — image build, chart configuration, Gateway API
-exposure, `register-catalog`, verification (`check` + `conformance`),
-upgrading, troubleshooting — lives in
-[`deploy/genestack/README.md`](deploy/genestack/README.md).
-
-> **Note:** the Docker and systemd paths above are for non-Kubernetes hosts.
-> Genestack is Kubernetes and consumes the container image, not the native
-> UBI10 rootfs tarball (`scripts/build-image.sh`) or the systemd unit
-> (`deploy/substation-mcp.service`).
-
-## Development
-
-### Fake OpenStack
-
-The repo includes an in-process fake cloud (`Sources/FakeOpenStack`) with
-seeded data (3 projects, servers, networks, volumes, images, SGs, routers).
-It is used by all tests and is also runnable as a standalone binary:
-
-```sh
-scripts/swift run substation-mcp-fake   # starts on :8080 (adjust in source)
-```
-
-Seeded credentials:
-- `fake-cred-admin` / `secret-admin` — proj-one, admin (read+write)
-- `fake-cred-ro` / `secret-ro` — proj-one, read-only
-- `fake-cred-two` / `secret-two` — proj-two, admin
-
-### Integration test (opt-in)
-
-Set `OSMCP_IT_CLOUD` to a cloud name in your `clouds.yaml` and run the
-integration test target explicitly:
-
-```sh
-OSMCP_IT_CLOUD=mycloud scripts/swift test --filter IntegrationTests
-```
-
-Pass 1 is read-only (whoami, clouds, list, describe). Pass 2 (network-only
-mutations: create/delete network+subnet+port) requires `OSMCP_IT_MUTATE=1`.
-
-### Conformance (HTTP smoke)
-
-`scripts/conformance.sh` drives the full MCP Streamable-HTTP handshake against a
-**running** `substation-mcp serve` using the binary itself as the HTTP client
-(`substation-mcp conformance`, a hidden subcommand — no curl, which is absent from
-the ubi10-minimal runtime). It asserts, in order: 401 challenge on an
-unauthenticated request, the PRM document shape (`resource` /
-`authorization_servers` / `scopes_supported`), `initialize` → 200 +
-`MCP-Session-Id`, `tools/list` (15 tools, or 9 with `--read-only`),
-`tools/call os_whoami` (200, not an error), and `DELETE` (200).
-
-```sh
-# Start a server (against your cloud or a fake), then:
-scripts/conformance.sh --url http://127.0.0.1:8080/v1 --token <minted-keystone-token>
-# or let it mint a token itself:
-scripts/conformance.sh --url http://127.0.0.1:8080/v1 \
-    --auth-url http://127.0.0.1:9999/keystone/v3 \
-    --app-cred-id <id> --app-cred-secret <secret>
-# read-only (9-tool) surface:
-scripts/conformance.sh --url ... --token ... --read-only
-```
-
-The same handshake is also covered in-process by `HummingbirdMCPTests`
-(session init/list/call/DELETE/401/PRM), so CI exercises it without a live
-server.
-
-**MCP Inspector (manual).** For an interactive, human-driven conformance check,
-point the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) at
-the running server and exercise the same surface manually:
-
-```sh
-npx @modelcontextprotocol/inspector \
-  --transport http --url http://127.0.0.1:8080/v1 \
-  --header "Authorization: Bearer <minted-keystone-token>"
-```
-
-In the Inspector UI: (1) confirm `initialize` completes and a session id is
-issued; (2) open **Tools** and confirm the tool count (15 write / 9 read-only);
-(3) call `os_whoami` and confirm it returns a project and roles with no error;
-(4) call `os_list` for `server`/`network`/`volume`/`image` and confirm results;
-(5) close the session (DELETE) and confirm the server returns 200.
-
-### Repository layout
-
-```
-Sources/
-  OpenStackClient/        # OpenStack API client (no MCP knowledge)
-  OpenStackMCPServer/     # MCP server logic (catalog, tools, policy, sessions)
-  HummingbirdMCP/         # Hummingbird ⇄ MCP SDK transport adapter (OpenStack-free)
-  substation-mcp/          # executable: serve, stdio, healthz, check, access-rules, tools, register-catalog
-  substation-mcp-fake/     # executable: standalone fake cloud
-  FakeOpenStack/          # in-process fake cloud (test support)
-Tests/
-  OpenStackClientTests/
-  OpenStackMCPServerTests/
-  HummingbirdMCPTests/     # adapter: auth, sessions, transport, soak, hardening sweep
-  OpenStackMCPTests/       # config, redaction, audit, access-rules, register-catalog, subcommands, check
-IntegrationTests/          # opt-in, real-cloud (OSMCP_IT_CLOUD); self-skips in CI
-deploy/
-  Dockerfile
-  substation-mcp.service
-  register-catalog.sh
-  caddy/Caddyfile
-  nginx/substation-mcp.conf
-specs/
-  substation-mcp-spec.md   # the specification
-docs/
-  superpowers/plans/      # implementation plans
-scripts/
-  swift                   # container wrapper (docker/podman/Apple container)
-  build.sh                # release build
-```
+> The static build is attempted first but currently falls back to a
+> dynamically-linked binary (Swift 6.4 on UBI10 references ICU symbols not in
+> the static link path). It runs on any UBI10/RHEL 10 host with the Swift runtime.
+
+## Next
+
+Jump straight into the **[Quickstart](docs/quickstart.md)**, or pick a page from
+the table above. Operator docs for each deploy target live alongside their
+assets: [`deploy/genestack/README.md`](deploy/genestack/README.md),
+`deploy/caddy/Caddyfile`, `deploy/nginx/substation-mcp.conf`,
+`deploy/substation-mcp.service`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

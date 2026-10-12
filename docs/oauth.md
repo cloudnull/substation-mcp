@@ -1,3 +1,4 @@
+[← Documentation home](index.md)
 # OAuth 2.1 login (P3, default)
 
 substation-mcp fronts its Keystone as a **stateless OAuth 2.1 authorization
@@ -156,3 +157,9 @@ exactly as before:
    store is sufficient.
 5. The DEBUG-only `POST /v1/oauth/dev-mint` endpoint is **not** compiled into
    release builds.
+
+## Related
+
+- [Security model](security.md) — token-per-request identity, scope gating, redaction, audit.
+- [Configuration](configuration.md) — every OAuth and auth config key.
+- [Quickstart](quickstart.md) — connecting a client to a running server.

@@ -136,6 +136,18 @@ public struct BlockStorageRegion: Sendable {
         }
         await cache.invalidate(resource: "volume", tokenID: vt.token.id, region: region)
     }
+    /// Async Cinder volume actions (extend/retype/set_bootable) often return 202 Accepted with an
+    /// EMPTY body, not a `{volume}` envelope. Decoding an empty body as a Volume throws a spurious
+    /// 500 even though the action succeeded. Best-effort decode; on empty/failed body, read the
+    /// volume back so callers get authoritative post-action state.
+    private func volumeAfterAction(_ vt: ValidatedToken, id: String, region: String, resultBody: Data) async throws -> Volume {
+        if !resultBody.isEmpty, let decoded = try? JSONDecoder().decode(VolumeEnvelope.self, from: resultBody).volume {
+            return decoded
+        }
+        return try await getVolume(vt, id: id)
+    }
+    private struct VolumeEnvelope: Decodable { let volume: Volume }
+
 
     public func extendVolume(_ vt: ValidatedToken, id: String, size: Int) async throws -> Volume {
         let region = try resolveRegion(vt)
@@ -145,8 +157,7 @@ public struct BlockStorageRegion: Sendable {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "volume", tokenID: vt.token.id, region: region)
-        struct VolumeResp: Decodable { let volume: Volume }
-        return try JSONDecoder().decode(VolumeResp.self, from: result.body).volume
+        return try await volumeAfterAction(vt, id: id, region: region, resultBody: result.body)
     }
 
     public func retypeVolume(_ vt: ValidatedToken, id: String, volumeType: String) async throws -> Volume {
@@ -157,8 +168,7 @@ public struct BlockStorageRegion: Sendable {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "volume", tokenID: vt.token.id, region: region)
-        struct VolumeResp: Decodable { let volume: Volume }
-        return try JSONDecoder().decode(VolumeResp.self, from: result.body).volume
+        return try await volumeAfterAction(vt, id: id, region: region, resultBody: result.body)
     }
 
     public func setBootable(_ vt: ValidatedToken, id: String, bootable: Bool) async throws -> Volume {
@@ -169,8 +179,7 @@ public struct BlockStorageRegion: Sendable {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "volume", tokenID: vt.token.id, region: region)
-        struct VolumeResp: Decodable { let volume: Volume }
-        return try JSONDecoder().decode(VolumeResp.self, from: result.body).volume
+        return try await volumeAfterAction(vt, id: id, region: region, resultBody: result.body)
     }
 
     public func uploadToImage(_ vt: ValidatedToken, id: String) async throws -> String {

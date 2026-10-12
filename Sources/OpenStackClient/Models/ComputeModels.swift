@@ -373,6 +373,9 @@ public struct KeyPair: Sendable, Codable {
     public var type: String?
     public var user: String?
     public var projectID: String?
+    /// Present only when the client auto-generated the key because the caller omitted `public_key`;
+    /// surfaces the private seed exactly once. Never sent to or returned from Nova.
+    public var privateKey: String?
 
     public init(
         name: String,
@@ -380,20 +383,22 @@ public struct KeyPair: Sendable, Codable {
         publicKey: String? = nil,
         type: String? = nil,
         user: String? = nil,
-        projectID: String? = nil
+        projectID: String? = nil,
+        privateKey: String? = nil
     ) {
         self.name = name
         self.fingerprint = fingerprint
         self.publicKey = publicKey
         self.type = type
-        self.user = user
         self.projectID = projectID
+        self.privateKey = privateKey
     }
 
     enum CodingKeys: String, CodingKey {
         case name, fingerprint, type, user
         case publicKey = "public_key"
         case projectID = "project_id"
+        case privateKey = "private_key"
     }
 }
 

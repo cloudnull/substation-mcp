@@ -209,7 +209,9 @@ enum ComputeEntries {
         ResourceDescriptor(
             name: "server_group",
             service: .compute,
-            verbs: [.list, .get, .create, .delete],
+            // Only list is implemented (ComputeService.listServerGroups). get/create/delete have no
+            // handlers yet; advertising them would let dry_run promise verbs that hard-400.
+            verbs: [.list],
             createSchema: .init(
                 type: "object",
                 properties: [

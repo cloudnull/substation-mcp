@@ -439,13 +439,20 @@ public struct Router: Sendable, Codable, Identifiable {
 
 public struct CreateRouterSpec: Sendable {
     public var name: String
+    /// Optional external network to wire as the router gateway at create time. When nil the body
+    /// omits external_gateway_info entirely (backward-compatible name-only create).
+    public var externalGatewayNetworkID: String?
 
-    public init(name: String) {
+    public init(name: String, externalGatewayNetworkID: String? = nil) {
         self.name = name
+        self.externalGatewayNetworkID = externalGatewayNetworkID
     }
 
     func body() -> String {
-        "{\"router\":{\"name\":\"\(name)\"}}"
+        if let gw = externalGatewayNetworkID, !gw.isEmpty {
+            return "{\"router\":{\"name\":\"\(name)\",\"external_gateway_info\":{\"network_id\":\"\(gw)\"}}}"
+        }
+        return "{\"router\":{\"name\":\"\(name)\"}}"
     }
 }
 

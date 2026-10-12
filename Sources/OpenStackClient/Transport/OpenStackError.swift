@@ -70,7 +70,12 @@ public struct OpenStackError: Error, Sendable, Equatable {
             hint = "Resource not found or you lack permission to see it. Use os_list to discover available resources."
         } else if status == 403 {
             let msgLower = message.lowercased()
-            if msgLower.contains("quota") {
+            // A Keystone/Neutron *policy* denial ("…is disallowed by policy", "policy",
+            // "PolicyNotAuthorized") is NOT a quota problem even when the denied rule name
+            // happens to contain "quota" (e.g. get_quota). Check this before the quota case.
+            if msgLower.contains("disallowed by policy") || msgLower.contains("policynota") || msgLower.contains(" policy ") || msgLower.hasSuffix("policy") {
+                hint = "Your role cannot perform this operation (policy denial). It may require elevated privileges; check os_whoami roles and ask the cloud admin."
+            } else if msgLower.contains("quota") {
                 hint = "Quota exceeded. Delete unused resources or request a quota increase from your cloud provider."
             } else if msgLower.contains("forbidden") || msgLower.contains("not authorized") {
                 hint = "Your token lacks required permissions. Check os_whoami for available scopes."

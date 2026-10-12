@@ -285,7 +285,9 @@ enum NetworkEntries {
         ResourceDescriptor(
             name: "address_group",
             service: .network,
-            verbs: [.list, .get, .create, .update, .delete],
+            // Update is intentionally NOT advertised: there is no update handler for address groups
+            // in NetworkService, so advertising it would let dry_run promise a verb that hard-400s.
+            verbs: [.list, .get, .create, .delete],
             createSchema: .init(
                 type: "object",
                 properties: [
@@ -295,11 +297,6 @@ enum NetworkEntries {
                 ],
                 required: ["name"]
             ),
-            updateSchema: .init(type: "object", properties: [
-                "name": .init(type: "string"),
-                "description": .init(type: "string"),
-                "ip_addresses": .init(type: "array", items: .init(type: "string"))
-            ]),
             listFilters: ["name"],
             idField: "id",
             nameField: "name"

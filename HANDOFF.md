@@ -57,7 +57,7 @@
   `oauth.server_secret` is unset, the AS derives a deterministic **dev** secret
   (`"dev-" + sha256_hex("substation-oauth-dev" + issuer)`) so OAuth is
   zero-config; **production must set `oauth.server_secret` explicitly** (full
-  details: `deploy/OAUTH.md`). Gaps closed during the port: G1 default profile
+  details: `docs/oauth.md`). Gaps closed during the port: G1 default profile
   flipped to `oauth`, G2 zero-config secret bootstrap (`oauthSecretResolved`),
   G3 constant-time JWT signature comparison (`constantTimeEquals`), G5 `jti`
   extraction verified (`jtiOf` in `OAuthRoutes.swift`), G6 build + full test
@@ -94,7 +94,7 @@
   enforcement beyond the existing coarse scopes, G9 dev-mint is `#if
   DEBUG`-gated (not compiled into release builds).
   Docs updated: spec §6.0 + config table, README auth section + config table,
-  `deploy/OAUTH.md` (new + "Multi-replica deployments" section), this file.
+  `docs/oauth.md` (new + "Multi-replica deployments" section), this file.
 - **Tests**: **562 tests, 0 failures** across all targets — OpenStackClientTests 242,
   OpenStackMCPServerTests 231 (was 217; +14 replay-store: local store, catalog
   endpoint discovery + override + interface preference, memcached wire

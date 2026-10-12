@@ -1,0 +1,118 @@
+[← Documentation home](index.md)
+# Configuration
+
+Config is layered: **CLI flags > env vars > YAML file > defaults.**
+
+Env vars use the `OSMCP_` prefix with `__` (double-underscore) as the section
+separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
+
+## Keys
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `server.host` | `127.0.0.1` | Bind address |
+| `server.port` | `8080` | Bind port |
+| `server.endpoint` | `/v1` | MCP transport path (`/mcp` retained as alias) |
+| `server.allowed_origins` | localhost | `Origin` allow-list; `*` disables the check |
+| `server.max_body_bytes` | `1048576` | Request body limit (1 MiB) |
+| `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
+| `server.public_url` | unset | Canonical public base URL (PRM, login page, OAuth issuer) |
+| `auth.profile` | `oauth` | `oauth` (P3, default — stateless OAuth 2.1 AS in front of Keystone) or `keystone_token` (P1, raw Keystone bearer) |
+| `auth.keystone_url` | from catalog | Keystone base URL in PRM `authorization_servers` |
+| `oauth.server_secret` | derived (dev) | HS256 AS signing secret; **set explicitly in production** (see [OAuth](oauth.md)) |
+| `oauth.code_ttl` | `120s` | Authorization-code JWT lifetime |
+| `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
+| `oauth.replay_store` | `local` | Code-replay store: `local` (single replica) or `memcached` (shared; endpoint from the token's Keystone catalog, service type `memcached`) |
+| `oauth.replay_store_endpoint` | unset | `host:port` override for the shared replay cache (non-catalog deployments) |
+| `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
+| `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
+| `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
+| `clouds.default` | first in `clouds.yaml` | Default cloud |
+| `clouds.allowed` | all | Names a session may select |
+| `clouds.file` | search order | Path to `clouds.yaml` |
+| `session.idle_ttl` | `30m` | Idle session timeout |
+| `session.max_lifetime` | `12h` | Maximum session lifetime |
+| `session.max_sessions` | `500` | Concurrent session cap |
+| `policy.read_only` | `false` | Restrict to read-only tools |
+| `policy.deny_resources` | `[project, user, group, role, role_assignment, domain]` | Resources hidden from the catalog |
+| `policy.max_list_limit` | `200` | Max `limit` for list operations |
+| `client.request_timeout` | `60s` | Upstream request timeout |
+| `cache.ttl.<resource>` | per resource | Cache TTL per resource type |
+| `log.level` | `info` | Log level |
+| `log.format` | `json` | `json` or `logfmt` |
+| `log.audit` | `true` | Audit log for mutating tool calls |
+
+## Example config file
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8080
+  public_url: https://mcp.example.com
+  metrics_token: "change-me"
+
+policy:
+  read_only: false
+
+log:
+  level: info
+  format: json
+  audit: true
+```
+
+## Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `serve` | Run the HTTP (Streamable-HTTP) MCP server |
+| `stdio` | Run the MCP server over stdio (single cloud, single token) |
+| `healthz` | Print liveness JSON and exit 0 |
+| `check` | Validate a token, print identity/scopes/regions/versions/extensions/access-rule gaps |
+| `access-rules` | Emit the Keystone access-rule JSON for a mode/service/resource subset |
+| `tools` | Dump the tool list (name, description, annotations, inputSchema) |
+| `register-catalog` | Idempotently install the MCP service + endpoints in the Keystone catalog |
+
+### `access-rules`
+
+Generates the JSON that `openstack application credential create --access-rules`
+accepts. Two modes:
+
+- `--mode read-only` — GET-only rules for all tool paths
+- `--mode operator` — all methods (default)
+
+```sh
+substation-mcp access-rules --mode read-only --services compute,network
+# → {"rules": [{"match": "GET /servers", "service": "compute"}, ...]}
+```
+
+> For these rules to be enforced by Keystone, each service must be registered
+> with the correct `service_type` in keystonemiddleware.
+
+### `tools`
+
+```sh
+substation-mcp tools                  # human-readable table (20 tools)
+substation-mcp tools --read-only      # 14 read-only tools
+substation-mcp tools --json           # machine-readable JSON
+```
+
+## Observability config & output
+
+- **Logs:** JSON (default) or logfmt, to stdout in `serve`, stderr in `stdio`.
+  Every line carries `session`, `cloud`, `region`, `tool`, `request_id`.
+- **Metrics** (`/metrics`, Prometheus format, optional bearer gate):
+  - `osmcp_tool_calls_total{tool,outcome}`
+  - `osmcp_tool_duration_seconds{tool}`
+  - `osmcp_openstack_requests_total{service,method,status}`
+  - `osmcp_openstack_request_duration_seconds{service}`
+  - `osmcp_sessions_active`
+  - `osmcp_auth_failures_total{reason}`
+  - `osmcp_cache_hits_total{resource}`
+- **Audit log:** one `.info` record per mutating tool call (gated by
+  `log.audit`).
+
+## Related
+
+- [Security model](security.md) — how the auth/rate-limit/audit keys behave.
+- [OAuth 2.1 login](oauth.md) — all `auth.*` and `oauth.*` key details.
+
