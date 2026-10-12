@@ -43,7 +43,7 @@ enum ComputeEntries {
                     source: .init(resource: "server"),
                     target: .init(resource: "volume"),
                     params: [
-                        ParamSpec(name: "device", description: "Device name (e.g. vda)"),
+                        ParamSpec(name: "device", description: "Requested device name (e.g. /dev/vdb). ADVISORY — KVM hypervisors frequently assign a different slot; the attach response reports the actual assigned device."),
                         ParamSpec(name: "delete_on_termination", type: "boolean", description: "Delete volume when server is deleted")
                     ],
                     preconditions: ["volume is available or multiattach type", "server is not building"]

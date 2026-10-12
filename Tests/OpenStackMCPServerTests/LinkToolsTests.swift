@@ -36,6 +36,13 @@ struct LinkToolsTests {
         let text = firstText(result.content)
         #expect(text?.contains("in-use") == true, "Volume should be in-use after wait, got: \(text ?? "nil")")
         #expect(text?.contains("wait") == true, "Result should carry the wait outcome")
+        // Device advisory reporting: response must expose both the request
+        // and the authoritative assigned path, plus an explanatory note.
+        #expect(text?.contains("requested_device") == true, "Response should report requested_device, got: \(text ?? "nil")")
+        // JSON escapes '/' as '\/', so match on the device basename rather than
+        // the full path; 'vdb' appears in both requested_device and device.
+        #expect(text?.contains("vdb") == true, "Response should carry the requested device value, got: \(text ?? "nil")")
+        #expect(text?.contains("device_note") == true, "Response should carry a device_note explaining KVM advisories, got: \(text ?? "nil")")
     }
 
     @Test("volume attach requires the device param", )

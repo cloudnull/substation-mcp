@@ -155,7 +155,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_wait",
-                description: "Wait for a resource to reach a terminal state. Sends progress notifications.",
+                description: "Wait for a resource to reach a terminal state. Fast settles return synchronously with progress notifications. By default, if it does not settle within a short synchronous window, it HANDS OFF to a background task (returns {task_id, handed_off:true}) so slow operations outlive the client's HTTP request timeout — then poll os_task_status(task_id). Set async_on_timeout=false to force a fully synchronous wait instead.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -165,6 +165,7 @@ public enum AllTools {
                         "until": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
                         "timeout_seconds": .object(["type": .string("integer"), "description": .string("Max seconds to wait (default 120). Alias: `timeout`.")]),
                         "timeout": .object(["type": .string("integer"), "description": .string("Alias for `timeout_seconds`.")]),
+                        "async_on_timeout": .object(["type": .string("boolean"), "description": .string("Default true. When the wait outlives the synchronous window, hand off to a background task (returns task_id) rather than blocking; set false to stay fully synchronous.")]),
                     ]),
                     "required": .array([.string("resource"), .string("id")]),
                 ]),
@@ -275,7 +276,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_attach",
-                description: "Attach a link between two resources (volume, interface, security_group, floating_ip, router_interface, router_gateway).",
+                description: "Attach a link between two resources (volume, interface, security_group, floating_ip, router_interface, router_gateway). For a volume link, params.device is ADVISORY — on KVM hypervisors the driver often auto-assigns the next free slot instead of the exact target; the response returns the actual assigned device (field 'device') plus requested_device and a device_note, so always read those for the authoritative path.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

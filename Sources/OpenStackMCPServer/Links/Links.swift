@@ -108,12 +108,27 @@ public struct LinkExecutor: Sendable {
             "operation": .string("attach"),
             "server": .string(serverID),
             "volume": .string(volumeID),
-            "device": .string(device),
+            "requested_device": .string(device),
             "region": .string(region),
         ]
         if wait {
             let final = try await waiter.wait(vt, resource: "volume", id: volumeID, region: region, until: ["in-use"], timeout: 60)
             result["wait"] = .object(final)
+        }
+        // Read back the device Nova ACTUALLY assigned. The requested device is
+        // advisory: KVM hypervisors frequently auto-allocate the next free
+        // slot instead of honoring the exact target, so report both and call
+        // out any divergence rather than silently echoing the request as fact.
+        if let attachments = try? await cs.listServerVolumeAttachments(vt, serverID: serverID),
+           let actual = attachments.first(where: { $0.volumeID == volumeID })?.devicePath {
+            result["device"] = .string(actual)
+            if actual != device {
+                result["device_note"] = .string(
+                    "The requested device '\(device)' is advisory; the hypervisor assigned '\(actual)' instead. This is normal on KVM (the driver picks the next free slot when the requested one is unavailable or per its allocation policy). Use os_get(volume) -> attachments[].device for the authoritative path."
+                )
+            } else {
+                result["device_note"] = .string("Requested device \(actual) was honored by the hypervisor.")
+            }
         }
         return result
     }

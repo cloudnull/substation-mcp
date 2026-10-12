@@ -109,6 +109,9 @@ struct WaiterTests {
             "id": .string("srv-0001"),
             "until": .array([.string("SHUTOFF")]),
             "timeout_seconds": .int(2),
+            // Force the fully-synchronous path so we observe the hard timeout
+            // error directly rather than the default async background handoff.
+            "async_on_timeout": .bool(false),
         ])
         #expect(result.isError == true)
         let text = firstText(result.content)
@@ -133,6 +136,7 @@ struct WaiterTests {
             "id": .string("srv-0001"),
             "until": .array([.string("SHUTOFF")]),
             "timeout": .int(2),
+            "async_on_timeout": .bool(false),
         ])
         #expect(result.isError == true)
         let text = firstText(result.content)
@@ -156,10 +160,56 @@ struct WaiterTests {
             "until": .array([.string("SHUTOFF")]),
             "timeout_seconds": .int(2),
             "timeout": .int(120),
+            "async_on_timeout": .bool(false),
         ])
         #expect(result.isError == true)
         let text = firstText(result.content)
         #expect(text?.contains("Timed out") == true, "Should be a timeout error, got: \(text ?? "nil")")
+    }
+
+    @Test("os_wait hands a slow op off to a background task by default", )
+    func waitHandsoffToTask() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // srv-0001 is ACTIVE; waiting for SHUTOFF that never happens means the
+        // bounded synchronous window (min(timeout,20)s) always elapses without a
+        // settle. With the default async_on_timeout=true this must NOT error and
+        // must NOT block ~timeout — it should return immediately with a task_id
+        // and handed_off:true so the harness can poll os_task_status instead.
+        let started = Date()
+        let result = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("srv-0001"),
+            "until": .array([.string("SHUTOFF")]),
+            "timeout_seconds": .int(45),
+        ])
+        // The call itself returns promptly (well under the full 45s timeout) —
+        // the whole point of the handoff is not holding the request open.
+        let elapsed = Date().timeIntervalSince(started)
+        #expect(elapsed < 30, "Handoff should return quickly, not block ~\(Int(elapsed))s")
+
+        #expect(result.isError != true, "A handoff is success, not an error")
+        let text = firstText(result.content)
+        #expect(text?.contains("task_id") == true, "Should carry a task_id for polling, got: \(text ?? "nil")")
+        #expect(text?.contains("handed_off") == true, "Should flag handed_off, got: \(text ?? "nil")")
+
+        // The returned task_id must be a real, pollable task in this token's scope.
+        var parsedTaskID: String?
+        if let raw = text?.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any] {
+            parsedTaskID = obj["task_id"] as? String
+        }
+        #expect(parsedTaskID != nil && !parsedTaskID!.isEmpty, "Should decode a non-empty task_id, got: \(text ?? "nil")")
+        guard let taskID = parsedTaskID else { return }
+        let status = try await bundle.mcpClient.callTool(name: "os_task_status", arguments: [
+            "task_id": .string(taskID),
+        ])
+            let statusText = firstText(status.content)
+            #expect(status.isError != true, "Background task should be pollable, got: \(statusText ?? "nil")")
+            #expect(statusText?.contains("state") == true, "Task status should report state, got: \(statusText ?? "nil")")
     }
 
     @Test("Waiter reports intermediate status via progress notifications", )

@@ -728,23 +728,119 @@ public struct ToolRegistry: Sendable {
         let region = try await resolveRegion(params)
         let until = argStringArray(params, "until")
         let timeoutSeconds = argTimeoutSeconds(params)
+        // By default a wait that outlives the short sync window hands off to a
+        // background task instead of holding the HTTP request open past the
+        // client's own request timeout (which would surface as an opaque
+        // transport failure). Pass async_on_timeout=false to force a fully
+        // synchronous wait (and get a hard timeout error on overrun).
+        let allowHandoff = arg(params, "async_on_timeout")?.boolValue ?? true
         let vt = identity.vt
         let progressToken = params._meta?.progressToken
 
         let waiter = Waiter(client: client, catalog: catalog, logger: logger)
-        let outcome = try await waiter.wait(
-            vt,
-            resource: resourceName,
-            id: id,
-            region: region,
-            until: until,
-            timeout: TimeInterval(timeoutSeconds),
-            progressToken: progressToken,
-            server: server
-        )
+        // Bounded synchronous attempt: settle within this window returns
+        // inline; exceed it and (when allowed) hand off to a background task.
+        // Keep the window comfortably under common client HTTP timeouts so the
+        // slow path is caught before the client gives up.
+        let syncGrace = TimeInterval(min(timeoutSeconds, 20))
+        do {
+            let outcome = try await waiter.wait(
+                vt,
+                resource: resourceName,
+                id: id,
+                region: region,
+                until: until,
+                timeout: syncGrace,
+                progressToken: progressToken,
+                server: server
+            )
+            let (text, val) = resultText(outcome)
+            return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+        } catch let e as OpenStackError where e.code == "timeout" {
+            // Hand off only when allowed; otherwise rethrow the timeout.
+            if allowHandoff {
+                // Spawn a background task for the FULL requested window.
+                let taskID = await spawnBackgroundWait(
+                    vt: vt, resourceName: resourceName, id: id, region: region,
+                    until: until, timeoutSeconds: timeoutSeconds
+                )
+                let result: [String: JSONValue] = [
+                    "task_id": .string(taskID),
+                    "resource": .string(resourceName),
+                    "id": .string(id),
+                    "region": .string(region),
+                    "state": .string("running"),
+                    "handed_off": .bool(true),
+                    "reason": .string("The resource did not reach its target within \(Int(syncGrace))s of synchronous waiting."),
+                    "timeout_seconds": .integer(timeoutSeconds),
+                    "note": .string("Continuing in the background. Poll os_task_status(task_id) until state is terminal (succeeded/failed/timed_out); stop with os_task_cancel(task_id). No work was lost."),
+                ]
+                let (text, val) = resultText(result)
+                return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+            }
+            // Synchronous forced (async_on_timeout explicitly false): rethrow the
+            // original timeout so the caller sees the exact bound they set.
+            throw e
+        }
+    }
 
-        let (text, val) = resultText(outcome)
-        return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    // MARK: - Background wait spawning (shared by os_task_submit + os_wait handoff)
+
+    /// Spawns a background poll for `resource`/`id` via the task registry and
+    /// returns the freshly-submitted `task_id`. The poll runs detached: it
+    /// writes its terminal state into the task store, so callers can return to
+    /// their client immediately and let a slow settle outlive any HTTP request
+    /// timeout. Used verbatim by `os_task_submit` and by `os_wait`'s
+    /// sync→background handoff.
+    private func spawnBackgroundWait(
+        vt: ValidatedToken,
+        resourceName: String,
+        id: String,
+        region: String,
+        until: [String]?,
+        timeoutSeconds: Int
+    ) async -> String {
+        let tokenID = vt.token.id
+        let taskID = await taskRegistry.submit(
+            tokenID: tokenID, resource: resourceName, resourceID: id, region: region
+        )
+        let waiter = Waiter(client: client, catalog: catalog, logger: logger)
+        let handle = Task { [waiter] in
+            let start = Date()
+            do {
+                let result = try await waiter.wait(
+                    vt, resource: resourceName, id: id, region: region,
+                    until: until, timeout: TimeInterval(timeoutSeconds),
+                    progressToken: nil, server: nil
+                )
+                let status = result["status"]?.stringValue ?? ""
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: .succeeded,
+                    lastStatus: status,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: result["polls"]?.intValue,
+                    result: result, message: nil
+                )
+            } catch let e as OpenStackError {
+                let state: TaskState = e.code == "timeout" ? .timedOut : .failed
+                let lastStatus: String? = (e.status == 404) ? "deleted" : nil
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: state,
+                    lastStatus: lastStatus,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: nil, result: nil, message: e.message
+                )
+            } catch {
+                await taskRegistry.complete(
+                    tokenID: tokenID, taskID: taskID, state: .failed,
+                    lastStatus: nil,
+                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
+                    polls: nil, result: nil, message: error.localizedDescription
+                )
+            }
+        }
+        await taskRegistry.attachHandle(handle, for: taskID)
+        return taskID
     }
 
     // MARK: - Task shim handlers (MCP Tasks, Path C)
@@ -757,8 +853,6 @@ public struct ToolRegistry: Sendable {
         let until = argStringArray(params, "until")
         let timeoutSeconds = argTimeoutSeconds(params)
         let vt = identity.vt
-        let tokenID = vt.token.id
-        let taskRegistry = self.taskRegistry
 
         // Validate up front (same rules os_wait uses) so a bad call fails
         // fast with a 4xx instead of spawning a task that immediately dies.
@@ -781,10 +875,6 @@ public struct ToolRegistry: Sendable {
             }
         }
 
-        let taskID = await taskRegistry.submit(
-            tokenID: tokenID, resource: resourceName, resourceID: id, region: region
-        )
-
         // Snapshot the current status so the submit response is informative
         // without blocking on the settle. Best-effort: a fetch failure just
         // means we report no initial status.
@@ -796,48 +886,10 @@ public struct ToolRegistry: Sendable {
             initialStatus = nil
         }
 
-        // Spawn the background poll. It writes its terminal state back into the
-        // store; cancellation is handled by the store holding the Task handle.
-        // `waiter` (a Sendable struct) is captured by value, as is client/
-        // catalog/logger — no mutable self is retained.
-        let handle = Task { [waiter] in
-            let start = Date()
-            do {
-                let result = try await waiter.wait(
-                    vt, resource: resourceName, id: id, region: region,
-                    until: until, timeout: TimeInterval(timeoutSeconds),
-                    progressToken: nil, server: nil
-                )
-                let status = result["status"]?.stringValue ?? ""
-                await taskRegistry.complete(
-                    tokenID: tokenID, taskID: taskID, state: .succeeded,
-                    lastStatus: status,
-                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
-                    polls: result["polls"]?.intValue,
-                    result: result, message: nil
-                )
-            } catch let e as OpenStackError {
-                let state: TaskState = e.code == "timeout" ? .timedOut : .failed
-                // A 404 "no longer exists" during a wait means the resource
-                // vanished; surface that as a "deleted" status. Otherwise the
-                // error text (in `message`) is the full detail.
-                let lastStatus: String? = (e.status == 404) ? "deleted" : nil
-                await taskRegistry.complete(
-                    tokenID: tokenID, taskID: taskID, state: state,
-                    lastStatus: lastStatus,
-                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
-                    polls: nil, result: nil, message: e.message
-                )
-            } catch {
-                await taskRegistry.complete(
-                    tokenID: tokenID, taskID: taskID, state: .failed,
-                    lastStatus: nil,
-                    elapsedSeconds: (Date().timeIntervalSince(start) * 10).rounded() / 10,
-                    polls: nil, result: nil, message: error.localizedDescription
-                )
-            }
-        }
-        await taskRegistry.attachHandle(handle, for: taskID)
+        let taskID = await spawnBackgroundWait(
+            vt: vt, resourceName: resourceName, id: id, region: region,
+            until: until, timeoutSeconds: timeoutSeconds
+        )
 
         let result: [String: JSONValue] = [
             "task_id": .string(taskID),
@@ -1186,7 +1238,7 @@ public struct ToolRegistry: Sendable {
             ]
         case "volume":
             return [
-                "Volume is available inside the server."
+                "Volume is available inside the server. The requested device is advisory on KVM — check the response's 'device' field (actual assigned path) and 'device_note'; use os_get(volume) -> attachments[].device if you need the authoritative target."
             ]
         default:
             return nil
