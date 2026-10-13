@@ -68,6 +68,10 @@ jobs:
       - name: Build and push image (linux/amd64)
         uses: docker/build-push-action@v6
         with:
+          # v6 does not auto-push just because tags are present — without an
+          # explicit push/load/output, buildx sends the result only to the GHA
+          # cache ("No output specified") and nothing lands on ghcr.io. Set it.
+          push: true
           context: .
           file: deploy/Dockerfile
           platforms: linux/amd64
