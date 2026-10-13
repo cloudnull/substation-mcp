@@ -6,6 +6,51 @@ pinned Linux container image (`swift:6.4-rhel-ubi10`) via the `scripts/swift`
 wrapper, which resolves your container runtime (docker, podman, or Apple
 `container`) for you. **Never build natively on macOS.**
 
+The `Makefile` is the single entry point for the whole **local** loop — build, test,
+release, and the running dev container (image + lifecycle). Prefer it over calling
+the scripts directly; it wraps them and resolves your container runtime. Production
+deployment (Genestack / systemd) is intentionally *not* in the Makefile. See
+[§ 0. The Makefile](#0-the-makefile-local-loop).
+
+## 0. The Makefile (local loop)
+
+Every local workflow is a `make` target. Build and test run through
+`scripts/swift`, which picks your container runtime automatically; the container
+lifecycle targets dispatch to whichever of **docker**, **podman**, or Apple
+**container** you have installed (override with `RT=docker|podman|container`).
+
+| Goal | Command |
+|------|---------|
+| Debug build (fast iteration) | `make build` |
+| Release binary (static → dynamic fallback) | `make release` |
+| Run the unit + service suites | `make test` |
+| Print / capture warnings | `make lint` · `make warnings` |
+| MCP handshake smoke test vs a running server | `make conformance ARGS="--url http://127.0.0.1:8080/v1 --token <id>"` |
+| Native UBI10 rootfs tarball (docker-less host) | `make package` |
+
+**Local dev container** — build the IAD3-baked image and run it, publishing :8080:
+
+```sh
+make release            # fresh binary (container-build needs it for the dev image)
+make container-build    # docker/podman/Apple-container image from deploy/Dockerfile.local-ead3
+make container-run      # foreground; Ctrl-C stops it (CONTAINER/HOST_PORT/CONT_PORT overridable)
+
+# in another shell:
+make container-logs     # tail its logs
+make container-exec CMD="ps aux"
+make container-stop && make container-rm   # stop, then delete
+```
+
+To use the standard multi-stage image instead of the baked-in IAD3 dev image:
+
+```sh
+make container-build DOCKERFILE=deploy/Dockerfile IMAGE_TAG=substation-mcp:local
+```
+
+All variables are overridable on the command line (`IMAGE_NAME`, `IMAGE_TAG`,
+`DOCKERFILE`, `CONTAINER`, `HOST_PORT`, `CONT_PORT`, `TAG`, plus `SWIFT=` and
+`RT=`). `make help` lists everything.
+
 ## 1. Build
 
 ```sh
