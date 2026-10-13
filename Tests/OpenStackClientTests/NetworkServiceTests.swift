@@ -221,10 +221,11 @@ struct NetworkServiceTests {
 
         let region = network.region("RegionOne")
         let ports = try await region.listPorts(vt)
-        // 2 seeded proj-one ports: port-seed and the client-test port-002.
-        #expect(ports.count == 2, "Expected 2 seeded ports, got \(ports.count)")
+        // 3 seeded proj-one ports: port-seed (port-001), port-002, and the router-1
+        #expect(ports.count == 3, "Expected 3 seeded ports (incl. router-1 interface port), got \(ports.count)")
         #expect(ports.contains { $0.id == "port-001" && $0.name == "port-seed" })
         #expect(ports.contains { $0.id == "port-002" })
+        #expect(ports.contains { ($0.deviceOwner ?? "") == "network:router_interface" }, "The seeded router-interface port should be present")
     }
 
     @Test("create port with explicit fixed ip", .timeLimit(.minutes(2)))

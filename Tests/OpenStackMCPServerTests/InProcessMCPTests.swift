@@ -332,6 +332,73 @@ struct InProcessMCPTests {
         #expect(text?.contains("status") == true)
     }
 
+    @Test("os_list security_group_rule honors the security_group_id filter (ISSUE 13)")
+    func listSecurityGroupRuleFilter() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Two fresh, distinct security groups.
+        let sgA = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("security_group"),
+            "spec": .object(["name": .string("e2e-sg-a"), "description": .string("a")]),
+        ])
+        #expect(sgA.isError != true, "create SG A failed: \(firstText(sgA.content) ?? "")")
+        let sgB = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("security_group"),
+            "spec": .object(["name": .string("e2e-sg-b"), "description": .string("b")]),
+        ])
+        #expect(sgB.isError != true, "create SG B failed: \(firstText(sgB.content) ?? "")")
+        let dataA = try? parseResult(sgA)
+        let dataB = try? parseResult(sgB)
+        let idA = (dataA?["data"] as? [String: Any])?["id"] as? String
+        let idB = (dataB?["data"] as? [String: Any])?["id"] as? String
+        #expect(idA != nil && idB != nil && idA != idB, "Need two distinct new SG ids; A=\(firstText(sgA.content) ?? "") B=\(firstText(sgB.content) ?? "")")
+        guard let idA = idA, let idB = idB, idA != idB else {
+            throw OpenStackError(service: "test", status: 500, message: "could not parse created SG ids")
+        }
+
+        // One rule on each group; capture each rule's id from its create response.
+        var ruleIDs: [String: String] = [:]   // sg id -> rule id
+        for sid in [idA, idB] {
+            let r = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+                "resource": .string("security_group_rule"),
+                "spec": .object([
+                    "security_group_id": .string(sid),
+                    "direction": .string("ingress"),
+                    "ethertype": .string("IPv4"),
+                    "protocol": .string("tcp"),
+                    "port_range_min": .int(80),
+                    "port_range_max": .int(80),
+                ]),
+            ])
+            #expect(r.isError != true, "create rule on \(sid) failed: \(firstText(r.content) ?? "")")
+            let ruleID = ((try? parseResult(r))?["data"] as? [String: Any])?["id"] as? String
+            #expect(ruleID != nil, "created rule should carry an id, got: \(firstText(r.content) ?? "")")
+            ruleIDs[sid] = ruleID
+        }
+
+        // Unfiltered list must see BOTH rules (one per group).
+        let allRes = try await bundle.mcpClient.callTool(name: "os_list", arguments: ["resource": .string("security_group_rule")])
+        #expect(allRes.isError != true)
+        #expect((try? parseResult(allRes))?["count"] as? Int == 2, "Unfiltered should list both rules, got: \(firstText(allRes.content) ?? "")")
+
+        // The filtered list for A must contain ONLY A's rule — not B's. Before the fix,
+        // NameResolver dropped the security_group_id filter, so this returned all rules
+        // regardless of the requested group.
+        let res = try await bundle.mcpClient.callTool(name: "os_list", arguments: [
+            "resource": .string("security_group_rule"),
+            "filters": .object(["security_group_id": .string(idA)]),
+        ])
+        #expect(res.isError != true, "filtered list failed: \(firstText(res.content) ?? "")")
+        let data = try parseResult(res)
+        let items = data["items"] as? [[String: Any]] ?? []
+        let ids = Set(items.compactMap { $0["id"] as? String })
+        #expect(data["count"] as? Int == 1, "Filtered list should return exactly A's rule, got count=\(String(describing: data["count"])): \(data)")
+        #expect(ids.contains(ruleIDs[idA]!) == true, "List should include SG A's rule id \(ruleIDs[idA]!): \(items)")
+        #expect(ids.contains(ruleIDs[idB]!) == false, "Filtered list leaked B's rule \(ruleIDs[idB]!): \(items)")
+    }
     @Test("os_list with unknown resource returns error")
     func listUnknownResource() async throws {
         let handle = try await FakeApp.start()

@@ -91,15 +91,24 @@ public struct TopologyBuilder: Sendable {
         let subnetByID = Dictionary(uniqueKeysWithValues: subnets.map { ($0.id, $0) })
         let portByID = Dictionary(uniqueKeysWithValues: ports.map { ($0.id, $0) })
         let fipByID = Dictionary(uniqueKeysWithValues: fips.map { ($0.id, $0) })
-
-        // Routers with interfaces: derived from which subnets a gateway router
-        // could serve. Phase 1: a router "has an interface on subnet S" when S
-        // is internal (not the gateway network) and the router has a gateway.
-        // (The fake tracks the exact mapping in shared state; topology
-        // approximates via the seeded router-1 -> subnet-int relationship by
-        // checking that the subnet is not the router's own gateway network.)
+        // Routers attached to a subnet: derived authoritatively from that subnet's
+        // network by reading the actual router-interface PORTS (device_owner ==
+        // "network:router_interface"), matching each port's device_id to a known router.
+        // The previous heuristic ("any gateway router whose gateway-net != this net")
+        // produced PHANTOM edges — every external-gateway router appeared connected to
+        // every internal subnet (ISSUE 7). Fallback: if no interface port is present for
+        // a subnet (some clouds return sparse ports), fall back to the old gateway check
+        // so we don't regress to showing nothing at all.
         func routersOnSubnet(_ subnetID: String) -> [Router] {
-            routers.filter { r in
+            let attachedRouterIDs: Set<String> = Set(ports.filter { p in
+                guard let owner = p.deviceOwner, owner.hasPrefix("network:router_interface"),
+                      let dev = p.deviceID else { return false }
+                return p.fixedIPs.contains(where: { $0.subnetID == subnetID })
+            }.compactMap { $0.deviceID })
+            let byPort = routers.filter { attachedRouterIDs.contains($0.id) }
+            if !byPort.isEmpty { return byPort }
+            // Fallback (sparse-port clouds): old gateway heuristic.
+            return routers.filter { r in
                 guard let gw = r.externalGatewayInfo else { return false }
                 return subnetByID[subnetID]?.networkID != gw.networkID
             }

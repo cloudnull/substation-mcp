@@ -96,7 +96,36 @@ public struct LoadBalancerRegion: Sendable {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "loadbalancer", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "load_balancer", tokenID: vt.token.id, region: region)
-        return try JSONDecoder().decode(LoadBalancer.self, from: result.body)
+        return try await loadBalancerAfterCreate(vt, region: region, spec: spec, resultBody: result.body)
+    }
+
+    /// Rackspace octavia's POST /loadbalancers does not always return a cleanly-decodable
+    /// bare loadbalancer object (it can be a different shape or an empty/minimal body), which
+    /// made os_create(load_balancer) 500 with "data is missing" even though the LB was created
+    /// (ISSUE 18). Best-effort decode; on any failure, fall back to a list-scan by
+    /// vip_subnet_id (+ name when given) so callers get the authoritative created object.
+    private func loadBalancerAfterCreate(_ vt: ValidatedToken, region: String, spec: CreateLoadBalancerSpec, resultBody: Data) async throws -> LoadBalancer {
+        // 1. Preferred: the response body itself carries the object.
+        if !resultBody.isEmpty {
+            if let bare = try? JSONDecoder().decode(LoadBalancer.self, from: resultBody), !bare.id.isEmpty {
+                return bare
+            }
+            struct Envelope: Decodable { let loadbalancer: LoadBalancer }
+            if let wrapped = try? JSONDecoder().decode(Envelope.self, from: resultBody).loadbalancer, !wrapped.id.isEmpty {
+                return wrapped
+            }
+        }
+        // 2. Fallback: find it in the collection (list is reliable where direct get-by-id
+        //    is flaky on some clouds — see NameResolver step 1b). Match by name when given;
+        //    otherwise pick the most recently created LB (a fresh create just added one).
+        let all = try await listLoadBalancers(vt)
+        if let exact = spec.name, !exact.isEmpty {
+            if let match = all.first(where: { $0.name == exact }) { return match }
+        }
+        guard !all.isEmpty else {
+            throw OpenStackError.normalize(body: resultBody, status: 201, service: "loadbalancer", requestID: nil, hasAccessRules: false)
+        }
+        return all.max(by: { ($0.created_at ?? "") < ($1.created_at ?? "") })!
     }
 
     public func deleteLoadBalancer(_ vt: ValidatedToken, id: String) async throws {

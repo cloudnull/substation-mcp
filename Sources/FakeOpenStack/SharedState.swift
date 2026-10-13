@@ -1051,6 +1051,23 @@ public actor FakeState {
         return armed.status
     }
 
+    /// Test-only knob: when set, the next octavia POST /loadbalancers returns this raw body
+    /// verbatim (e.g. an empty string or a non-loadbalancer shape) instead of the normal JSON —
+    /// mirroring Rackspace octavia's minimal create response that broke os_create(load_balancer)
+    /// with a false 500 (ISSUE 18). The client must recover via list-read-back. Consumed once.
+    public var lbCreateRawBodyNext: String? = nil
+
+    /// Arm a one-shot raw create-response for the next fake octavia LB POST.
+    public func setLBCreateRawBodyNext(_ value: String?) {
+        lbCreateRawBodyNext = value
+    }
+
+    /// Consume the armed one-shot raw create-response if present; clears it atomically.
+    public func consumeLBCreateRawBodyNext() -> String? {
+        defer { lbCreateRawBodyNext = nil }
+        return lbCreateRawBodyNext
+    }
+
     /// Test-only knob: force a fake server to a given status (e.g. ACTIVE) so
     /// provisioning round-trip tests can skip the boot wait.
     @discardableResult
@@ -1539,6 +1556,24 @@ public actor FakeState {
             minRAM: 512,
             created: "2026-01-01T00:00:00.000",
             updated: "2026-01-01T00:00:00.000"
+        ))
+        // Router-interface port for router-1 -> subnet-int (mirrors routerInterfaces
+        // above). Real Neutron exposes these as ports with device_owner
+        // "network:router_interface"; topology reads them as the authoritative
+        // router<->subnet attachment (ISSUE 7), so the fake must provide them too.
+        ports.append(FakePort(
+            id: "port-rif-router1",
+            projectID: "proj-one",
+            name: "router-1-interface-port",
+            status: "ACTIVE",
+            networkID: "net-int",
+            adminStateUp: true,
+            fixedIPs: [FakeFixedIP(ip: "192.168.1.2", subnetID: "subnet-int")],
+            securityGroups: [],
+            deviceID: "router-1",
+            deviceOwner: "network:router_interface",
+            extraDHCPOpts: [],
+            portSecurityEnabled: false
         ))
 
         // Swift (object storage) seed: one container with one object.

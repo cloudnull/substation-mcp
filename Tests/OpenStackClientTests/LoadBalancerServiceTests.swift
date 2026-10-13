@@ -86,6 +86,31 @@ struct LoadBalancerServiceTests {
         let after = try await region.listLoadBalancers(vt)
         #expect(!after.contains { $0.id == created.id })
     }
+    @Test("create load balancer recovers from a minimal/non-JSON response (ISSUE 18)")
+    func createLoadBalancerRecoversFromEmptyBody() async throws {
+        let (handle, vt, svc, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // Arm the fake to return an EMPTY create body (Rackspace octavia's minimal
+        // response shape) for the next POST /loadbalancers. The real bug was that this
+        // decoded as a LoadBalancer, threw, and surfaced as a false HTTP 500 even though
+        // the LB was created. The client must instead read the LB back from the list.
+        await handle.state.setLBCreateRawBodyNext("")
+
+        let region = svc.region("RegionOne")
+        let spec = CreateLoadBalancerSpec(name: "lb-empty-body", vip_address: "10.0.0.88")
+        let created = try await region.createLoadBalancer(vt, spec)
+
+        // No throw + we got a real, resolvable object, not the seed "lb-1".
+        #expect(created.id.hasPrefix("lb-"))
+        #expect(created.id != "lb-1")
+        #expect(created.name == "lb-empty-body")
+        // It must be present in the collection (proves the read-back found the true object).
+        let lbs = try await region.listLoadBalancers(vt)
+        #expect(lbs.contains { $0.id == created.id })
+        #expect(lbs.first(where: { $0.name == "lb-empty-body" })?.id == created.id)
+    }
+
 
     // MARK: - Pools
 

@@ -100,6 +100,42 @@ struct TopologyTests {
         #expect(text?.contains("port-001") != true, "port-001 is on net-ext, not net-int")
     }
 
+    @Test("network anchor shows only routers with a real interface port (ISSUE 7)")
+    func networkAnchorNoPhantomRouter() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // A second gateway-only router: external gateway on net-ext but NO interface
+        // port on subnet-int. The old heuristic ("any gateway router whose gateway-net
+        // != this net") drew a PHANTOM router_interface edge to net-int; the fixed code
+        // requires a real device_owner=network:router_interface port and must not show it.
+        let rt = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("router"),
+            "spec": .object([
+                "name": .string("e2e-gw-noif"),
+                "external_gateway_info": .object(["network_id": .string("net-ext")]),
+            ]),
+        ])
+        #expect(rt.isError != true, "create second router failed: \(firstText(rt.content) ?? "")")
+        let rtText = firstText(rt.content) ?? ""
+        guard let rtData = rtText.data(using: .utf8),
+              let rtObj = try? JSONSerialization.jsonObject(with: rtData) as? [String: Any] else {
+            throw OpenStackError(service: "test", status: 500, message: "unparseable router create result: \(rtText)")
+        }
+        let ghostID = ((rtObj["data"] as? [String: Any])?["id"] as? String) ?? ""
+        #expect(!ghostID.isEmpty, "expected created ghost router to carry an id, got: \(rtText)")
+
+        let result = try await bundle.mcpClient.callTool(name: "os_topology", arguments: [
+            "resource": .string("network"),
+            "id_or_name": .string("net-int"),
+        ])
+        #expect(result.isError != true, "Topology failed: \(String(describing: firstText(result.content)))")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("router-1") == true, "The real interface-owning router should appear, got: \(text)")
+        #expect(text.contains(ghostID) != true, "Phantom router edge for a gateway-only router leaked into topology: \(text)")
+    }
     @Test("router anchor shows the gateway network", )
     func routerAnchor() async throws {
         let handle = try await FakeApp.start()

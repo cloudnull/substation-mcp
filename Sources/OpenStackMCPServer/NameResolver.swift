@@ -626,7 +626,9 @@ public actor NameResolver {
                 result["region"] = .string(region)
                 return result
             case "security_group_rule":
-                let sgrs = try await r.listSecurityGroupRules(vt, limit: limit)
+                // Honor the security_group_id filter (ISSUE 13): previously dropped, so a
+                // filtered list returned project-wide rules instead of just the given SG's.
+                let sgrs = try await r.listSecurityGroupRules(vt, securityGroupID: filters["security_group_id"], limit: limit)
                 var result: [String: JSONValue] = try Self.encodeList(sgrs)
                 result["resource"] = .string("security_group_rule")
                 result["region"] = .string(region)

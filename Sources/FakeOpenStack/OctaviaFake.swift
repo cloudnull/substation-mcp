@@ -27,6 +27,10 @@ public struct OctaviaFake {
             let name = Self.extractString("name", from: inner)
             let vip = Self.extractString("vip_address", from: inner)
             let lb = await state.createLoadBalancer(projectID: projectID, name: name, vipAddress: vip)
+            // Test-only fault injection (ISSUE 18): the LB IS created server-side, but the
+            // response body is a minimal/non-JSON shape (like Rackspace octavia), forcing the
+            // client to recover via list-read-back rather than decoding the body.
+            if let raw = await state.consumeLBCreateRawBodyNext() { return raw }
             return Self.loadBalancerJSON(lb)
         }
 
