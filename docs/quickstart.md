@@ -28,11 +28,11 @@ lifecycle targets dispatch to whichever of **docker**, **podman**, or Apple
 | MCP handshake smoke test vs a running server | `make conformance ARGS="--url http://127.0.0.1:8080/v1 --token <id>"` |
 | Native UBI10 rootfs tarball (docker-less host) | `make package` |
 
-**Local dev container** — build the IAD3-baked image and run it, publishing :8080:
+**Local dev container** — build and run, publishing :8080:
 
 ```sh
-make release            # fresh binary (container-build needs it for the dev image)
-make container-build    # docker/podman/Apple-container image from deploy/Dockerfile.local-ead3
+# Default: self-contained multi-stage deploy/Dockerfile (builds the binary in-image)
+make container-build    # docker/podman/Apple-container image from deploy/Dockerfile
 make container-run      # foreground; Ctrl-C stops it (CONTAINER/HOST_PORT/CONT_PORT overridable)
 
 # in another shell:
@@ -41,11 +41,15 @@ make container-exec CMD="ps aux"
 make container-stop && make container-rm   # stop, then delete
 ```
 
-To use the standard multi-stage image instead of the baked-in IAD3 dev image:
+The default image binds `0.0.0.0:8080` with no baked config — mount your
+`clouds.yaml` / `config.yaml` at runtime (see [Deploying](deploying.md#docker)).
+For a fully self-contained Rackspace IAD3 image (binary + config baked in), use
+the local dev Dockerfile, which needs a fresh release build + `dist/rackspace-iad3/`:
 
 ```sh
-make container-build DOCKERFILE=deploy/Dockerfile IMAGE_TAG=substation-mcp:local
-```
+make release
+make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
+
 
 All variables are overridable on the command line (`IMAGE_NAME`, `IMAGE_TAG`,
 `DOCKERFILE`, `CONTAINER`, `HOST_PORT`, `CONT_PORT`, `TAG`, plus `SWIFT=` and

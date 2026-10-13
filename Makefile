@@ -25,7 +25,7 @@
 #   make clean          # remove build artifacts
 #
 # ── Local container lifecycle (image + running dev container) ────────────────
-#   make container-build     # build the local dev image from deploy/Dockerfile.local-ead3
+#   make container-build     # build a local image from $(DOCKERFILE); default deploy/Dockerfile
 #   make container-run       # start it (publishes :8080); CONTAINER_NAME/PORT overridable
 #   make container-logs      # tail its logs
 #   make container-exec      # run a command in it (e.g. make container-exec CMD="ps aux")
@@ -34,8 +34,8 @@
 #   make container-list      # list running containers
 #   make container-clean     # stop + delete our named container (idempotent)
 #
-#   # Or use the standard multi-stage image instead of the IAD3-baked dev image:
-#   make container-build DOCKERFILE=deploy/Dockerfile IMAGE_TAG=substation-mcp:local
+#   # The IAD3-baked, self-contained dev image (needs dist/rackspace-iad3/ + release build):
+#   make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
 #
 # The active container runtime is resolved by preferring docker, then podman,
 # then Apple `container`; override explicitly with RT=... :
@@ -79,7 +79,10 @@ endif
 IMAGE_NAME  ?= substation-mcp
 IMAGE_TAG   ?= local-dev
 IMAGE       := $(IMAGE_NAME):$(IMAGE_TAG)
-DOCKERFILE  ?= deploy/Dockerfile.local-ead3
+# Default: the self-contained multi-stage deploy/Dockerfile (builds the binary
+# in-image; needs no local config). For the IAD3-baked dev image that requires
+# dist/rackspace-iad3/ locally: DOCKERFILE=deploy/Dockerfile.local-ead3
+DOCKERFILE  ?= deploy/Dockerfile
 CONTAINER   ?= substation-mcp
 HOST_PORT   ?= 8080
 CONT_PORT   ?= 8080
@@ -150,16 +153,26 @@ define require-runtime
 		exit 127; fi
 endef
 
-## container-build: build the local dev image ($(DOCKERFILE)) tagged $(IMAGE).
-##   The IAD3-baked dev image expects a fresh release binary + dist/rackspace-iad3/.
-##   Standard multi-stage image: DOCKERFILE=deploy/Dockerfile IMAGE_TAG=substation-mcp:local
+## container-build: build a local image tagged $(IMAGE) from $(DOCKERFILE).
+##   Default deploy/Dockerfile is self-contained (builds the binary in-image).
+##   The IAD3-baked dev image needs a pre-built release binary + dist/rackspace-iad3/:
+##     DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
 container-build:
 	$(require-runtime)
 	if [ "$(RUNTIME)" = "container" ]; then \
-		test -x .build/release/substation-mcp || ./scripts/build.sh; \
-		container build --platform linux/arm64 --file $(DOCKERFILE) -t $(IMAGE) . ; \
+		case "$(DOCKERFILE)" in *Dockerfile.local-ead3) \
+			test -x .build/release/substation-mcp || ./scripts/build.sh; \
+			test -f dist/rackspace-iad3/config.yaml && test -f dist/rackspace-iad3/clouds.yaml \
+				|| { echo "ERROR: ead3 dev image needs dist/rackspace-iad3/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
+			container build --platform linux/arm64 --file $(DOCKERFILE) -t $(IMAGE) . ;; \
+		*) container build --platform linux/arm64 --file $(DOCKERFILE) -t $(IMAGE) . ;; esac ; \
 	else \
-		$(RUNTIME) build --platform linux/amd64 --file $(DOCKERFILE) -t $(IMAGE) . ; \
+		case "$(DOCKERFILE)" in *Dockerfile.local-ead3) \
+			test -x .build/release/substation-mcp || ./scripts/build.sh; \
+			test -f dist/rackspace-iad3/config.yaml && test -f dist/rackspace-iad3/clouds.yaml \
+				|| { echo "ERROR: ead3 dev image needs dist/rackspace-iad3/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
+			$(RUNTIME) build --platform linux/amd64 --file $(DOCKERFILE) -t $(IMAGE) . ;; \
+		*) $(RUNTIME) build --platform linux/amd64 --file $(DOCKERFILE) -t $(IMAGE) . ;; esac ; \
 	fi
 
 ## container-run: start the named dev container, publishing HOST_PORT:CONT_PORT.
@@ -245,6 +258,6 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make release && make container-build && make container-run"
-	@echo "  make container-build DOCKERFILE=deploy/Dockerfile IMAGE_TAG=substation-mcp:local"
+	@echo "  make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev"
 	@echo "  make conformance ARGS=\"--url http://127.0.0.1:8080/v1 --token <id>\""
 	@echo "  Override toolchain: SWIFT=swift   |   Force runtime: RT=podman"

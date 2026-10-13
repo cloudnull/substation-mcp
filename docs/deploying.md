@@ -16,6 +16,10 @@ and binds `127.0.0.1` (or `0.0.0.0` inside a container).
 
 ## Docker
 
+For a **local dev container** (build + run on your workstation), use the
+`Makefile` instead — `make container-build && make container-run`. The commands
+below are for pushing a deployable image to a target host.
+
 ```sh
 docker build --platform linux/amd64 -f deploy/Dockerfile -t substation-mcp:local .
 docker run --rm -p 8080:8080 \

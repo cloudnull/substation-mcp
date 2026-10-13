@@ -1,0 +1,26 @@
+# Local dev image for the substation-mcp MCP server against Rackspace IAD3.
+#
+# Base = swift:6.4-rhel-ubi10 (already imported by `container`), which ships the
+# full Swift runtime under /usr/lib/swift that the dynamically-linked release
+# binary needs, plus glibc/libcurl etc. We only overwrite the binary with the
+# freshly-built one from scripts/swift and bake in the local IAD3 config, so no
+# external bind mounts are required to run.
+FROM swift:6.4-rhel-ubi10
+
+# Make name resolution deterministic for Swift NIO / AsyncHTTPClient.
+RUN printf 'hosts: files dns\n' > /etc/nsswitch.conf
+
+WORKDIR /work
+
+# Freshly built native aarch64 release binary.
+COPY .build/release/substation-mcp /usr/local/bin/substation-mcp
+
+# Local IAD3 serve config; references /work/dist/rackspace-iad3/clouds.yaml,
+# which we also bake in so the container is self-contained.
+COPY dist/rackspace-iad3/config.yaml /etc/substation-mcp/config.yaml
+COPY dist/rackspace-iad3/clouds.yaml /work/dist/rackspace-iad3/clouds.yaml
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/substation-mcp"]
+CMD ["serve", "--config", "/etc/substation-mcp/config.yaml"]
