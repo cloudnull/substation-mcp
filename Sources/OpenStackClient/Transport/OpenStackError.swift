@@ -81,7 +81,15 @@ public struct OpenStackError: Error, Sendable, Equatable {
                 hint = "Your token lacks required permissions. Check os_whoami for available scopes."
             }
         } else if status == 409 {
-            hint = "Resource is in a conflicting state. Wait for it to reach a stable state, then retry."
+            let msgLower = message.lowercased()
+            // A delete blocked by still-attached children ("RouterInUse", "…is in
+            // use", "NetworkInUse") is NOT a transient state race — retrying won't help.
+            // Point at the actual detach/delete path instead of "wait for stable".
+            if msgLower.contains("inuse") || msgLower.contains("in use") || msgLower.contains("routerinuse") || msgLower.contains("networkinuse") || msgLower.contains("subnetinuse") {
+                hint = "This resource still has dependent resources attached, so it cannot be deleted yet. Find them with os_delete(<resource>, dry_run=true) (it lists 'dependents'), then remove each first — e.g. os_detach(link:router_interface, …) or delete the attached port/server — and retry."
+            } else {
+                hint = "Resource is in a conflicting state. Wait for it to reach a stable state, then retry."
+            }
         } else if status == 400 {
             let msgLower = message.lowercased()
             if msgLower.contains("required property") || msgLower.contains("missing") {

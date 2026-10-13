@@ -1138,17 +1138,60 @@ public struct ToolRegistry: Sendable {
         let (id, _) = try await resolver.resolve(vt, descriptor: d, idOrName: idOrName, region: region)
 
         if dryRun {
+            // Walk real child dependents so can_delete reflects what a Neutron/Cinder
+            // hard-delete would actually block on (ISSUE #1). Previously only `network`
+            // checked its ports, and every other resource reported can_delete:true even
+            // when it still had children — an under-report that green-lit a delete that
+            // then 409'd RouterInUse / InUse.
             var dependents: [String] = []
-            if d.name == "network" {
+            var hint: String?
+            switch d.name {
+            case "network":
                 let r = await client.network(region: region)
-                let ports = try await r.listPorts(vt, filters: ["network_id": id], limit: 100)
-                dependents = ports.map { "port \($0.id)" }
+                let ports = try await r.listPorts(vt, filters: ["network_id": id], limit: 200)
+                dependents += ports.map { "port \($0.id)" }
+                if !dependents.isEmpty {
+                    hint = "Detach/remove the ports first (os_detach interface, or delete the attached server)."
+                }
+            case "subnet":
+                // A subnet is blocked by any port whose fixed IP sits on it — including
+                // router-interface ports (device_owner network:router_interface). Neutron
+                // refuses to delete a subnet in use this way, so count them.
+                let r = await client.network(region: region)
+                let ports = try await r.listPorts(vt, filters: [:], limit: 500)
+                let onSubnet = ports.filter { p in
+                    p.fixedIPs.contains(where: { $0.subnetID == id })
+                }
+                for p in onSubnet {
+                    let label = (p.deviceOwner ?? "").hasPrefix("network:router_interface")
+                        ? "router-interface port \(p.id)" : "port \(p.id)"
+                    dependents.append(label)
+                }
+                if !dependents.isEmpty {
+                    hint = "Delete the ports/router interfaces first (os_detach router_interface, or delete attached servers), then retry."
+                }
+            case "router":
+                // A router is blocked while it has non-gateway interface ports
+                // (device_owner network:router_interface, device_id == router). The
+                // external gateway is not a blocker — Neutron clears it on delete.
+                let r = await client.network(region: region)
+                let ports = try await r.listPorts(vt, filters: [:], limit: 500)
+                let ifPorts = ports.filter { p in
+                    (p.deviceOwner ?? "") == "network:router_interface" && p.deviceID == id
+                }
+                dependents = ifPorts.map { "router-interface port \($0.id)" }
+                if !dependents.isEmpty {
+                    hint = "Remove its subnets first: os_detach(link:router_interface, source=\(id), target=<subnet>) for each, then delete the router."
+                }
+            default:
+                break
             }
-            let result: [String: JSONValue] = [
+            var result: [String: JSONValue] = [
                 "dry_run": .bool(true), "resource": .string(d.name), "id": .string(id), "region": .string(region),
                 "dependents": .array(dependents.map { .string($0) }),
                 "can_delete": .bool(dependents.isEmpty),
             ]
+            if let hint { result["hint"] = .string(hint) }
             let (text, val) = resultText(result)
             return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
         }

@@ -1115,4 +1115,137 @@ struct InProcessMCPTests {
         #expect(sgs.first { $0.name == "explicit-sg-server-sg" } == nil,
                "auto SG must not be created when explicit SGs are given: \(sgs.map(\.name))")
     }
+
+    // MARK: - Auto security group: retry/collision safety (ISSUE #2)
+
+    @Test("retrying a server create reuses an existing <name>-sg instead of duplicating (ISSUE 2)")
+    func autoSGReusedOnRetry() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Simulate the leftover state from a first (partially-succeeded) create:
+        // an SG named `<server>-sg` already exists. A retry must REUSE it, not
+        // spawn a second SG with the same name.
+        let rn = await bundle.client.network(region: nil)
+        let vt = bundle.identity.vt
+        let preExisting = try await rn.createSecurityGroup(vt, CreateSecurityGroupSpec(name: "retry-server-sg", description: "from first attempt"))
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("retry-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError != true, "create should succeed by reusing the SG: \(firstText(result.content) ?? "nil")")
+        let data = try parseResult(result)
+        let inner = data["data"] as? [String: Any] ?? [:]
+        #expect(inner["security_group_created"] as? String == "retry-server-sg",
+               "expected the reused SG name reported, got: \(inner)")
+
+        // Exactly ONE SG may bear that name — no duplicate was spawned.
+        let sgs = try await rn.listSecurityGroups(vt)
+        let matches = sgs.filter { $0.name == "retry-server-sg" }
+        #expect(matches.count == 1, "retry must not duplicate the SG; found \(matches.count): \(matches.map(\.id))")
+        // And it's the SAME group the first attempt made (id stable, reused).
+        #expect(matches.first?.id == preExisting.id, "reused SG should be the original, got ids: \(matches.map(\.id)) vs original \(preExisting.id)")
+        // The reused group still carries the SSH ingress rule (idempotent ensure).
+        let rules = try await rn.listSecurityGroupRules(vt, securityGroupID: preExisting.id)
+        #expect(rules.contains { $0.ipProtocol == "tcp" && $0.portRangeMin == 22 && $0.portRangeMax == 22 },
+               "reused SG must carry tcp/22 rule, got: \(rules)")
+    }
+
+    @Test("ambiguous duplicate <name>-sgs produce a clean error, not a Nova 409 (ISSUE 2)")
+    func autoSGAmbiguityErrorsCleanly() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Two same-named groups already exist (the pathological state from older
+        // runs). The create must fail with a clear, actionable message rather than
+        // surfacing Nova's opaque "Multiple security_group matches" 409.
+        let rn = await bundle.client.network(region: nil)
+        let vt = bundle.identity.vt
+        _ = try await rn.createSecurityGroup(vt, CreateSecurityGroupSpec(name: "dup-server-sg", description: "a"))
+        _ = try await rn.createSecurityGroup(vt, CreateSecurityGroupSpec(name: "dup-server-sg", description: "b"))
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("dup-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("ubuntu-24.04"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError == true, "create should fail when two same-named SGs exist, got: \(firstText(result.content) ?? "nil")")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("dup-server-sg") == true, "error should name the colliding SG, got: \(text)")
+        #expect(text.contains("security_groups") == true, "error should tell caller to pass security_groups explicitly, got: \(text)")
+        #expect(text.contains("Multiple security_group matches") == false, "should NOT leak raw Nova ambiguous-name 409, got: \(text)")
+        // No third duplicate was created.
+        let sgs = try await rn.listSecurityGroups(vt)
+        #expect(sgs.filter { $0.name == "dup-server-sg" }.count == 2, "no new SG may be added on ambiguity, got: \(sgs.filter { $0.name == "dup-server-sg" }.count)")
+    }
+
+    // MARK: - Delete dry-run dependency walk (ISSUE #1)
+
+    @Test("delete dry-run on a router with an interface port reports it as a dependent (ISSUE 1)")
+    func deleteDryRunRouterWithInterfaceBlocked() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // The fake seeds router-1 with an interface on subnet-int and we seed the
+        // matching network:router_interface port (port-rif-router1), so a dry-run
+        // delete of router-1 must report that port as blocking — NOT can_delete:true.
+        let result = try await bundle.mcpClient.callTool(name: "os_delete", arguments: [
+            "resource": .string("router"),
+            "id_or_name": .string("router-1"),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true, "dry-run should not error: \(firstText(result.content) ?? "")")
+        let data = try parseResult(result)
+        #expect(data["can_delete"] as? Bool == false,
+               "router with an interface port must not be deletable, got: \(data)")
+        let deps = (data["dependents"] as? [Any]) ?? []
+        #expect(deps.count >= 1, "expected at least one dependent (the interface port), got: \(data)")
+        // Must carry a specific teardown hint, not just a bare bool.
+        #expect((data["hint"] as? String)?.contains("router_interface") == true
+                || ((data["hint"] as? String) ?? "").lowercased().contains("detach"),
+               "blocked dry-run should include a router_interface/detach hint, got: \(data)")
+    }
+
+    @Test("delete dry-run on a clean router with no interfaces reports can_delete (ISSUE 1)")
+    func deleteDryRunCleanRouterCanDelete() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // A brand-new gateway-only router has NO interface port, so it is deletable.
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("router"),
+            "spec": .object(["name": .string("clean-dr-rtr"), "external_gateway_info": .object(["network_id": .string("net-ext")])]),
+        ])
+        #expect(created.isError != true, "create router failed: \(firstText(created.content) ?? "")")
+        let id = ((try? parseResult(created))?["data"] as? [String: Any])?["id"] as? String
+        #expect(id != nil, "expected created router id, got: \(created)")
+
+        let result = try await bundle.mcpClient.callTool(name: "os_delete", arguments: [
+            "resource": .string("router"),
+            "id_or_name": .string(id!),
+            "dry_run": .bool(true),
+        ])
+        #expect(result.isError != true)
+        let data = try parseResult(result)
+        #expect(data["can_delete"] as? Bool == true, "gateway-only router with no interfaces should be deletable, got: \(data)")
+        #expect(((data["dependents"] as? [Any]) ?? []).isEmpty, "no dependents expected, got: \(data)")
+    }
 }

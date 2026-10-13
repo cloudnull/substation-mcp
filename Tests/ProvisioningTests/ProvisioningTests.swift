@@ -113,11 +113,15 @@ struct RendererTests {
     func shellQuoting() throws {
         let spec = ProvisioningSpec(packages: ["it's-a-pkg"], services: ["we'ird"])
         let out = try CloudInitRenderer.render(spec: spec, distro: .ubuntu)
-        // 'it's-a-pkg' -> shell-quoted 'it'\''s-a-pkg'. Inside the double-quoted
-        // YAML scalar no extra escaping is needed (backslash isn't present in
-        // the shell-quoted form), so the rendered bytes are 'it'\''s-a-pkg'.
-        #expect(out.contains("'it'\\''s-a-pkg'"))
-        #expect(out.contains("systemctl enable 'we'\\''ird'"))
+        // 'it's-a-pkg' -> shell-quoted 'it'\''s-a-pkg' (the canonical POSIX
+        // '\'' close-escape-reopen form). That line is then emitted inside a
+        // DOUBLE-QUOTED YAML flow scalar, where every backslash must be doubled
+        // to \\ so cloud-init decodes it back to the intended single '\'. So the
+        // bytes actually present in the rendered text carry TWO backslashes:
+        // 'it'\\''s-a-pkg'. After YAML unescaping, sh sees 'it'\''s-a-pkg' —
+        // the correct quoted argument.
+        #expect(out.contains("'it'\\\\''s-a-pkg'"), "package should be shell-quoted then YAML-doubled; got:\n\(out)")
+        #expect(out.contains("systemctl enable 'we'\\\\''ird'"), "service should be shell-quoted then YAML-doubled; got:\n\(out)")
     }
 
 

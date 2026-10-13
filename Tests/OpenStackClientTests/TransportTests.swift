@@ -216,6 +216,53 @@ struct TransportTests {
         }
     }
 
+    @Test("normalize: 409 InUse gives a specific detach hint, not just 'wait'")
+    func normalizes409InUseHint() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        server.addHandler("/router-inuse") { _ in
+            // Rackspace/Neutron shape when a router still has interface ports.
+            let body = #"{"Invalid state PENDING_DELETE": {"message": "Router a61f... is in use", "code": 409}}"#
+            return (409, body, [("Content-Type", "application/json")])
+        }
+
+        let transport = makeTransport(baseURL: server.baseURL)
+        defer { transport.syncShutdown() }
+        do {
+            _ = try await transport.request(method: "DELETE", service: "neutron", path: "/router-inuse")
+            #expect(false, "should have thrown")
+        } catch let err as OpenStackError {
+            #expect(err.status == 409)
+            // The specific in-use hint, NOT the generic "wait for stable state".
+            #expect((err.hint ?? "").lowercased().contains("dependent") == true, "in-use 409 should give a dependent/detach hint, got: \(err.hint ?? "nil")")
+            #expect((err.hint ?? "").lowercased().contains("dry_run") == true, "hint should point to os_delete dry_run to find dependents, got: \(err.hint ?? "nil")")
+        }
+    }
+
+    @Test("normalize: non-in-use 409 keeps the transient 'stable state' hint")
+    func normalizes409TransientHint() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+
+        server.addHandler("/pending-delete") { _ in
+            let body = #"{"Invalid state PENDING_CREATE of loadbalancer resource xyz": {"message": "Invalid state PENDING_CREATE of loadbalancer resource xyz", "code": 409}}"#
+            return (409, body, [("Content-Type", "application/json")])
+        }
+
+        let transport = makeTransport(baseURL: server.baseURL)
+        defer { transport.syncShutdown() }
+        do {
+            _ = try await transport.request(method: "DELETE", service: "octavia", path: "/pending-delete")
+            #expect(false, "should have thrown")
+        } catch let err as OpenStackError {
+            #expect(err.status == 409)
+            #expect((err.hint ?? "").lowercased().contains("stable state") == true, "transient 409 should keep the wait-for-stable hint, got: \(err.hint ?? "nil")")
+        }
+    }
+
     // MARK: - Timeout
 
     @Test func timeoutOnSlowEndpoint() async throws {
