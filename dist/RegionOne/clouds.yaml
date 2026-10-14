@@ -1,4 +1,4 @@
-# clouds.yaml for the sat0.cloudnull.dev local cloud (integration testing).
+# clouds.yaml for the regionone.yourcloud.dev local cloud (integration testing).
 #
 # The MCP server authenticates *clients* via a Bearer Keystone token they
 # present (validated per-request against Keystone); it does NOT mint tokens
@@ -13,4 +13,4 @@ clouds:
     region_name: SAT0
     interface: public
     auth:
-      auth_url: https://keystone.api.sat0.cloudnull.dev
+      auth_url: https://keystone.api.regionone.yourcloud.dev

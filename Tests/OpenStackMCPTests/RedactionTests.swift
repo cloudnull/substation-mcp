@@ -118,7 +118,7 @@ func jsonHandlerEmitsParseableJSON() {
     let line = handler.format(
         level: .info,
         message: "hello world",
-        metadata: ["cloud": "sat0", "tool": "os_list"]
+        metadata: ["cloud": "regionone", "tool": "os_list"]
     )
     let data = Data(line.utf8)
     let obj = try! JSONSerialization.jsonObject(with: data) as! [String: Any]
@@ -126,7 +126,7 @@ func jsonHandlerEmitsParseableJSON() {
     #expect(obj["logger"] as? String == "test")
     #expect(obj["message"] as? String == "hello world")
     let meta = obj["meta"] as! [String: Any]
-    #expect(meta["cloud"] as? String == "sat0")
+    #expect(meta["cloud"] as? String == "regionone")
     #expect(meta["tool"] as? String == "os_list")
     #expect((obj["ts"] as? String)?.isEmpty == false)
 }

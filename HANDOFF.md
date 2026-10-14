@@ -2,15 +2,15 @@
 
 ## Current State
 
-- **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to sat0 Genestack
+- **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to regionone Genestack
   cluster (172.16.27.67), namespace `openstack`, image
   `ghcr.io/cloudnull/substation-mcp:latest` (tagged `0.2.0` + SHA), helm release
   revision 23 (chart 0.2.0). Auth profile: **oauth** (P3 stateless OAuth 2.1 AS —
   HS256 JWT codes/tokens, deterministic DCR, memcached replay store).
   `keystone_token` remains as an explicit opt-out. Full MCP wire E2E validated
-  live against sat0: 401 challenge, PRM, initialize (200 + session), tools/list
-  (18 tools), os_whoami (admin/SAT0/10 services), os_list servers (5 real ACTIVE
-  servers). External FQDN `https://substation.api.sat0.cloudnull.dev/v1` → 401
+  live against regionone: 401 challenge, PRM, initialize (200 + session), tools/list
+  (18 tools), os_whoami (admin/RegionOne/10 services), os_list servers (5 real ACTIVE
+  servers). External FQDN `https://substation.api.regionone.yourcloud.dev/v1` → 401
   (auth enforced through TLS→Gateway→Service→pod). 607 unit tests green. IAD3
   local E2E: 15 PASS / 3 DENIED(expected) / 0 FAIL.
 - **OAuth URL composition fix** (`8711f40`): `server.public_url` could be set to
@@ -24,7 +24,7 @@
   `publicURL` to strip a trailing endpoint path before composing. Adversarial
   route audit: all other routes use relative paths from the router root — no
   additional composition bugs found.
-- **Phase 1 complete** (22 tasks + `console_url`), **three sat0 real-cloud bugs fixed**, plus
+- **Phase 1 complete** (22 tasks + `console_url`), **three regionone real-cloud bugs fixed**, plus
   **Phase 2/3** (7 more services), **multi-endpoint routing**, **version negotiation**,
   **P2 per-service scopes**, and the **full IAD3 gap-fill** (Trove, Gnocchi, ZaQar, Blazar,
   Freezer, Heat-CFN — 11 new catalog resources, 52 → 63) — validated against live
@@ -114,7 +114,7 @@
   at a dfw3 dev host, 401) are upstream-broken — clients are wired and fake-verified,
   zero code change needed when the endpoints heal. Details in the
   "IAD3 gap-fill: six remaining services (2026-10-08)" section below.
-- **os_wait transient-fetch fix deployed to sat0 and live-E2E verified 2026-10-08** —
+- **os_wait transient-fetch fix deployed to regionone and live-E2E verified 2026-10-08** —
   see the `Genestack deployment` section below (digest `ea3ae61e`, real
   ACTIVE→SHUTOFF wait observed). The E2E exposed a `timeout` vs `timeout_seconds`
   gotcha, fixed in `8749860` (`timeout` now honored as an alias).
@@ -125,7 +125,7 @@
   (`timeout_seconds` wins over `timeout`). This surfaced + fixed a second latent bug:
   `ImageRef` didn't decode Rackspace's bare-string `image` field (500 on `os_list`/`os_get`).
   Full record + container-ops gotchas in the "2026-10-08 (cont): Clean live IAD3 compute
-  E2E" section below. **sat0** clean compute E2E remains blocked on sat0 Keystone infra
+  E2E" section below. **regionone** clean compute E2E remains blocked on regionone Keystone infra
   (NULL endpoint service links) — unrelated to MCP code.
 - **15-tool invariant**: the 15 MCP verb tools are stable; new services are new *resources*.
 - **Build**: `scripts/swift build` (Apple Container, `swift:6.4-rhel-ubi10`, native arm64).
@@ -183,10 +183,10 @@ Added after Phase 1, each validated against real clouds and committed on main:
 - **nova 500** was our decode bug (`listServers` needed `/servers/detail`, not `/servers`);
   **glance 300** was the version-root bug (catalog omits `/v2` → `serviceRoot: v2`).
 
-## Real-cloud integration against sat0 (2026-10-01)
+## Real-cloud integration against regionone (2026-10-01)
 
 Goal: produce a native aarch64/UBI10 deployable and integrate against the local
-cloud `https://keystone.api.sat0.cloudnull.dev` (read-only + conformance). No
+cloud `https://keystone.api.regionone.yourcloud.dev` (read-only + conformance). No
 docker on this host → the deployable is a UBI10 **filesystem-image tarball**
 built with Apple `container` (aarch64, no QEMU).
 
@@ -195,7 +195,7 @@ caught** (tests exercise the library, not the process entry or live-wire
 shapes). All three fixed TDD, all merged to main:
 
 1. **`fix(transport): also send token as X-Subject-Token` (8961a73)** — Keystone
-   3.14 on sat0 only honors the presented token on the whoami endpoint
+   3.14 on regionone only honors the presented token on the whoami endpoint
    (`GET /v3/auth/tokens`) when it is also sent as `X-Subject-Token`;
    `X-Auth-Token` alone → 404 "No token in the request". The server-side
    `TokenValidator` relies on that endpoint, so without the header the serve
@@ -225,16 +225,16 @@ step wrongly required the literal tool name in the response body; a valid
 `tools/call` result returns a JSON-RPC `result` envelope and never echoes the
 name. Now asserts on the result envelope.
 
-**Result — live sat0 conformance 6/6 PASS** (run in-container, read-only):
+**Result — live regionone conformance 6/6 PASS** (run in-container, read-only):
 401 challenge, PRM, initialize (200 + MCP-Session-Id), tools/list (15),
-tools/call os_whoami (returns real identity: project admin, region SAT0, all 9
+tools/call os_whoami (returns real identity: project admin, region RegionOne, all 9
 services, roles reader/member/admin/manager/glance_admin), DELETE.
 
 ### Native aarch64 image
 `scripts/build-image.sh TAG=v0.1.0` → `dist/substation-mcp-aarch64-ubi10-v0.1.0.tar.gz`
 (27 MB UBI10 rootfs: binary at `/usr/local/bin/substation-mcp`, `substation-mcp`
 uid 10001, `/etc/openstack*` mount points) + `.manifest.json`. See
-`deploy/NATIVE-AARCH64.md`. `dist/sat0/{clouds.yaml,config.yaml,clouds-it.yaml}`
+`deploy/NATIVE-AARCH64.md`. `dist/regionone/{clouds.yaml,config.yaml,clouds-it.yaml}`
 are working config templates (app-cred secret scrubbed).
 
 ### Known remaining issue (opt-in IT suite only, not in scope)
@@ -308,14 +308,14 @@ Attempts `--static-swift-stdlib` first, falls back to dynamic release (ICU symbo
 Deployed to the Genestack cluster at **172.16.27.67**, namespace `openstack`, image
 `ghcr.io/cloudnull/substation-mcp:latest`. Auth is **token-per-request** (the server
 holds no credentials; it validates each client Bearer token against the in-cluster
-Keystone `keystone-api.openstack.svc.cluster.local:5000`, region `SAT0`).
+Keystone `keystone-api.openstack.svc.cluster.local:5000`, region `RegionOne`).
 
-External exposure (full Gateway API): FQDN **`substation.api.sat0.cloudnull.dev`** →
+External exposure (full Gateway API): FQDN **`substation.api.regionone.yourcloud.dev`** →
 `substation-https` listener patched onto the shared `flex-gateway` (envoy-gateway ns) →
 HTTPRoute `substation-mcp-route` → Service `substation-mcp:8080`. TLS via cert-manager
 `Certificate substation-gw-tls-secret` (issuer `letsencrypt-prod`, HTTP-01 through
 flex-gateway). Verified: pod 1/1 Ready, `/healthz`+`/readyz` 200, and
-`https://substation.api.sat0.cloudnull.dev/v1` → `HTTP/2 401 {"error":"unauthorized"}`
+`https://substation.api.regionone.yourcloud.dev/v1` → `HTTP/2 401 {"error":"unauthorized"}`
 (full TLS→Gateway→Service→pod→MCP-auth chain works; 401 = auth correctly enforced).
 
 **Root cause of the long `readyz`/`connectTimeout` blocker** (pod stuck 0/1 for 2h while
@@ -329,10 +329,10 @@ were correct hardening but NOT the cause.
 
 **LIVE E2E — os_wait transient-fetch fix: PASS (2026-10-08).** After the fix landed
 (`1700132` — the waiter treats only a *confirmed* `404` as "gone"; every other fetch
-error is transient and retried until `timeout_seconds`), the sat0 deployment was
+error is transient and retried until `timeout_seconds`), the regionone deployment was
 restarted and confirmed running final image digest **`ea3ae61e`** on pod
 `substation-mcp-6cfc8cfd99-46mdp`. A real authenticated Streamable-HTTP session
-(Keystone admin token minted in-cluster, client run from the sat0 host against the
+(Keystone admin token minted in-cluster, client run from the regionone host against the
 pod IP) exercised `os_wait` live:
 - **`WAIT-ACTIVE`** on an already-ACTIVE server returned **immediately** (no-op case).
 - **`WAIT-SHUTOFF`** tracked a real **ACTIVE → SHUTOFF** transition across **5 polls**
@@ -347,11 +347,11 @@ as an honored alias (when both are sent, `timeout_seconds` wins). Second gotcha:
 `os_get`/`os_list`), so a server *name* gets a confirmed 404 → `itemNotFound`;
 resolve the UUID first.
 
-**REMAINING / BLOCKED**: volume-lifecycle E2E is blocked on sat0 Cinder — no usable
+**REMAINING / BLOCKED**: volume-lifecycle E2E is blocked on regionone Cinder — no usable
 `cinder-volume` backend (`lvmdriver-1` / LVM) is configured, so real volume create/attach
 cannot be exercised. The in-process data-plane is covered by the full suite
 (461 tests, 0 failures). The `timeout` alias (`8749860`) is merged but not yet on the
-sat0 image — the next CI build + `kubectl rollout restart` picks it up; no behavior
+regionone image — the next CI build + `kubectl rollout restart` picks it up; no behavior
 change for correct callers.
 
 ## Task 20 Implementation Notes (new)
@@ -841,60 +841,60 @@ correct. The clients are fully wired and fake-tested today.
   container was previously created `--rm`, so `stop` **destroys** it; recreate with
   `container run --name substation-mcp -c 4 -m 4g -p 8080:8080 -v <worktree>:/work
   swift:6.4-rhel-ubi10 /work/.build/debug/substation-mcp serve --config
-  /work/dist/rackspace-iad3/config.yaml`.
+  /work/dist/local/config.yaml`.
 - `dist/` is gitignored (clouds.yaml + config.yaml are local-only, bind-mounted at
-  `/work/dist/rackspace-iad3/`).
+  `/work/dist/local/`).
 - **The MCP client (Cline) session expires on server restart** — re-init or the
   `substation__` tools 401 with "session not found or expired". Curl-based MCP
   handshake (initialize → `mcp-session-id` → `tools/call`) works without touching the
   client and is how the live validation above was done.
 
-## 2026-10-08: Clean live sat0 compute E2E — blocked by sat0 Keystone endpoint-table corruption (infra, not MCP code)
+## 2026-10-08: Clean live regionone compute E2E — blocked by regionone Keystone endpoint-table corruption (infra, not MCP code)
 
-The alias rollout is functionally complete and live-verified. The "clean live compute E2E" (os_get / os_wait against real Nova) is **blocked at the sat0 Keystone**, not in substation-mcp. Full investigation record:
+The alias rollout is functionally complete and live-verified. The "clean live compute E2E" (os_get / os_wait against real Nova) is **blocked at the regionone Keystone**, not in substation-mcp. Full investigation record:
 
-### What was tried and found (sat0 host `172.16.27.67`, pod `substation-mcp-5745b679-f7vdl`, digest `7849feacc`)
-1. **The `no compute endpoint in region SAT0` error is correct server behavior, caused by an empty token catalog.** `EndpointResolver.endpoint` (Sources/OpenStackClient/EndpointResolver.swift:129) filters the *client token's* catalog by `type == "compute"` and `region == "SAT0"` (case-sensitive) and throws `code: no-endpoint` when nothing matches. With `catalog=0` it must throw.
-2. **Every credential minted from the sat0 host now returns a degraded token.** Probed via public Keystone (`https://keystone.api.sat0.cloudnull.dev`):
+### What was tried and found (regionone host `172.16.27.67`, pod `substation-mcp-5745b679-f7vdl`, digest `7849feacc`)
+1. **The `no compute endpoint in region RegionOne` error is correct server behavior, caused by an empty token catalog.** `EndpointResolver.endpoint` (Sources/OpenStackClient/EndpointResolver.swift:129) filters the *client token's* catalog by `type == "compute"` and `region == "RegionOne"` (case-sensitive) and throws `code: no-endpoint` when nothing matches. With `catalog=0` it must throw.
+2. **Every credential minted from the regionone host now returns a degraded token.** Probed via public Keystone (`https://keystone.api.regionone.yourcloud.dev`):
    - admin password, unscoped → token body has `user`, `audit_ids`, `expires_at`, `issued_at`, `methods` only — **no `id`, no `catalog`, no project/domain**.
    - admin password, project-scoped → 201, **project silently dropped, catalog=0**.
    - admin password, domain-scoped → 201, `domain=Default`, `roles=[admin, reader, member, manager]`, but catalog flickered: one probe returned `catalog=10`, then 4× and 15× repeats returned `catalog=0`. Non-deterministic → suggests either an active migration on the endpoints table or an LB with mixed backends.
    - provisioned app-cred `fdd0967e…` (substation/service, the pod's own identity, from k8s secret `substation-mcp-service-identity`) → scope-less mint 201, `roles=[]`, **catalog=0**. Even the pod's own identity has no catalog now.
-3. **`/v3/endpoints` (admin) shows the smoking gun**: 30 endpoint rows, all `region=SAT0`, all **`service_type=None`** (NULL service links). Catalog construction joins endpoints to services by type; with NULL types, zero endpoints can attach to any service → empty catalog for every scoped token.
+3. **`/v3/endpoints` (admin) shows the smoking gun**: 30 endpoint rows, all `region=RegionOne`, all **`service_type=None`** (NULL service links). Catalog construction joins endpoints to services by type; with NULL types, zero endpoints can attach to any service → empty catalog for every scoped token.
 4. **Pod-level confirmation**: minting via the in-cluster `keystone-api.openstack.svc.cluster.local:5000` (same path the pod's TokenValidator uses) gives the identical degraded token. A Bearer client token passes validation, then `os_get` fails with `no-endpoint` and `os_wait` reports `Last status: unknown` (transient no-endpoint retries) — exactly the observed symptoms.
-5. **`os_whoami` does NOT prove the client token is healthy.** `handleWhoami` (Sources/OpenStackMCPServer/Tools/ToolRegistry.swift:520) reads `identity.whoami` — the **server's own app-cred identity** (`identity.vt`), not the request's Bearer token. Same for `os_clouds` (:534). During this investigation a live sat0 `os_whoami` returned `project:"unscoped"`, `services:{}`, `regions:[]` — the pod's identity token itself is now degraded. Do not use `os_whoami` output as evidence of client-token health.
-6. The earlier handoff note ("Cline MCP showed `compute: [SAT0]`") was **stale**: the currently connected `substation__` MCP in this Cline environment points at a **Rackspace cloud (region IAD3)**, not sat0. It cannot serve as a sat0 E2E client.
+5. **`os_whoami` does NOT prove the client token is healthy.** `handleWhoami` (Sources/OpenStackMCPServer/Tools/ToolRegistry.swift:520) reads `identity.whoami` — the **server's own app-cred identity** (`identity.vt`), not the request's Bearer token. Same for `os_clouds` (:534). During this investigation a live regionone `os_whoami` returned `project:"unscoped"`, `services:{}`, `regions:[]` — the pod's identity token itself is now degraded. Do not use `os_whoami` output as evidence of client-token health.
+6. The earlier handoff note ("Cline MCP showed `compute: [RegionOne]`") was **stale**: the currently connected `substation__` MCP in this Cline environment points at a **Rackspace cloud (region IAD3)**, not regionone. It cannot serve as a regionone E2E client.
 
 ### Conclusion
-- No client-credential choice can fix this: the Keystone backends currently serve catalogs with **no endpoints bound to service types**, so no token (password any scope, app-cred) carries `compute@SAT0`.
-- **Fix is on the sat0 platform side**: repair the Keystone endpoints table (re-register endpoints against services — e.g. `openstack endpoint list`/re-create, or fix the `endpoint.service_id` links / service catalog in the RDO/Genestack deployment) and verify with a domain-scoped admin mint that `catalog` ≥ 10 with `compute` region `SAT0`. Possibly a recent cloud migration/tooling left endpoints orphaned from services.
+- No client-credential choice can fix this: the Keystone backends currently serve catalogs with **no endpoints bound to service types**, so no token (password any scope, app-cred) carries `compute@RegionOne`.
+- **Fix is on the regionone platform side**: repair the Keystone endpoints table (re-register endpoints against services — e.g. `openstack endpoint list`/re-create, or fix the `endpoint.service_id` links / service catalog in the RDO/Genestack deployment) and verify with a domain-scoped admin mint that `catalog` ≥ 10 with `compute` region `RegionOne`. Possibly a recent cloud migration/tooling left endpoints orphaned from services.
 - Until then, keep: alias verified live (both `timeout: 2` and `timeout_seconds: 2` → ~2s, HTTP 408 `code: timeout`), `os_wait` transient-fetch behavior verified, 461 local tests green.
 
 ### Diagnostic gotchas worth remembering
 - Keystone v3: app-creds carry a **fixed scope**; sending `"scope"` in the mint body → 400/401. Mint scope-less.
 - App-cred mints may need `id` (+`user_id` for name/secret forms) — name+secret+domain alone → 400 "Expecting to find user in application credential".
-- sat0 in-cluster keystone svc rejects some scoped password mints (spurious 400 "invalid JSON" per deploy README); public endpoint accepts them — but currently BOTH return empty catalogs.
+- regionone in-cluster keystone svc rejects some scoped password mints (spurious 400 "invalid JSON" per deploy README); public endpoint accepts them — but currently BOTH return empty catalogs.
 - `kubectl exec POD -- curl -d <json>` works when the JSON has no shell-special chars beyond quotes; avoid embedding secrets in heredoc'd shell scripts (quoting through ssh+heredoc mangles backslashes). Host-side Python + `subprocess` kubectl is the reliable pattern.
 - `os_wait.id` is not name-resolved — pass a server UUID.
 
 ### Status
-- Alias rollout: **DONE** (commit `8749860`, sat0 pod verified; **clean live IAD3 E2E now done** — see next section).
-- Clean live compute E2E on sat0: **STILL BLOCKED — sat0 Keystone endpoints table has NULL service links** (infra fix required).
-- Volume lifecycle E2E: **BLOCKED** — sat0 Cinder has no usable backend (unchanged).
+- Alias rollout: **DONE** (commit `8749860`, regionone pod verified; **clean live IAD3 E2E now done** — see next section).
+- Clean live compute E2E on regionone: **STILL BLOCKED — regionone Keystone endpoints table has NULL service links** (infra fix required).
+- Volume lifecycle E2E: **BLOCKED** — regionone Cinder has no usable backend (unchanged).
 
 ## 2026-10-08 (cont): Clean live IAD3 compute E2E — PASS on the Rackspace IAD3 environment
 
 Per instruction to "use the IAD3 environment, as it is configured", the clean live compute
 E2E was completed against the live Rackspace **IAD3** cloud via the Cline `substation__` MCP
-(local `localhost:8080/v1` dev server). This supersedes the sat0-blocked E2E as the
-completed rollout proof; sat0 remains blocked on its Keystone infra as above.
+(local `localhost:8080/v1` dev server). This supersedes the regionone-blocked E2E as the
+completed rollout proof; regionone remains blocked on its Keystone infra as above.
 
 ### What the E2E caught: the running IAD3 dev binary was STALE (pre-alias)
 The local IAD3 server is an **Apple container** (`substation-mcp`, image
 `swift:6.4-rhel-ubi10`) whose `/work` is a **bind mount of the `80e90` Cline worktree**
 (`/Users/cloudnull/.cline/worktrees/80e90/openstack-mcp`, gitdir
 `/Users/cloudnull/Projects/openstack-mcp/.git/worktrees/openstack-mcp`), launched:
-`/work/.build/debug/substation-mcp serve --config /work/dist/rackspace-iad3/config.yaml`
+`/work/.build/debug/substation-mcp serve --config /work/dist/local/config.yaml`
 (port 8080). That worktree was checked out at `daf83a8` — **before** the alias commit
 `8749860` — so its compiled binary ignored the `timeout` alias. The E2E symptom:
 `timeout: 2` on an unsatisfied wait blew **past the 60s client timeout** (alias dropped →
@@ -904,13 +904,13 @@ The local IAD3 server is an **Apple container** (`substation-mcp`, image
 - `container stop` on this container **destroyed it entirely** (it had been created
   `--rm`); `container start` afterwards → "container not found". Recreate with
   `container run --name substation-mcp -p 8080:8080 -v <worktree>:/work -w /work
-  swift:6.4-rhel-ubi10 sh -c '... serve --config /work/dist/rackspace-iad3/config.yaml'`.
+  swift:6.4-rhel-ubi10 sh -c '... serve --config /work/dist/local/config.yaml'`.
   **Do NOT pass `--rm`** if you want stop/start to work (recreated without `--rm` on
   2026-10-08).
 - `container copy hostfile cont:path` did NOT reliably update files in this environment;
   use `cat file | container exec -i cont sh -c 'cat > /work/...'` (or a bind mount) instead.
-- The IAD3 cloud config lives at **`<worktree>/dist/rackspace-iad3/{config,clouds}.yaml`**
-  (bind-mounted into the container at `/work/dist/rackspace-iad3/`). `dist/` is
+- The IAD3 cloud config lives at **`<worktree>/dist/local/{config,clouds}.yaml`**
+  (bind-mounted into the container at `/work/dist/local/`). `dist/` is
   **gitignored**, so these are local-only; the `80e90` worktree copy was used as the
   canonical source to restore it. `clouds.yaml` holds an app credential for
   `https://keystone.api.iad3.rackspacecloud.com` (region `IAD3`, `interface: public`).
@@ -922,7 +922,7 @@ The local IAD3 server is an **Apple container** (`substation-mcp`, image
 After rebuilding the IAD3 binary from current (main) sources, `os_list`/`os_get`/`os_wait`
 on IAD3 returned **HTTP 500** `DecodingError.typeMismatch: Expected Dictionary, found a
 string. Path: servers[0].image`. Rackspace Nova returns the server `image` field as a
-**bare string id** (`"image": "<uuid>"`), whereas standard Nova (sat0) returns an object
+**bare string id** (`"image": "<uuid>"`), whereas standard Nova (regionone) returns an object
 (`{"id":..., "links":...}`). The committed `ImageRef.init(from:)` was keyed-only and
 crashed on the string form — the same polymorphic-decode bug class already fixed for
 `FlavorRef` in commit `3fb7621` (fresh sub-decoder per shape; never mix
@@ -955,9 +955,9 @@ OpenStackMCPTests 42).
   (alias honored, precedence honored, transient/waiter behavior intact).
 - `ImageRef` bare-string-image decode: **DONE** — committed alongside the E2E (see
   commit log); 3 regression tests added.
-- Clean live compute E2E on **sat0**: still **BLOCKED** (sat0 Keystone NULL service
+- Clean live compute E2E on **regionone**: still **BLOCKED** (regionone Keystone NULL service
   links — infra fix required; unrelated to MCP code).
-- Volume lifecycle E2E: still **BLOCKED** — sat0 Cinder has no usable backend.
+- Volume lifecycle E2E: still **BLOCKED** — regionone Cinder has no usable backend.
 
 ---
 
@@ -990,7 +990,7 @@ or extend.
 
 ### Root cause (why it broke — do not "fix" by re-tightening)
 Rackspace IAD3 Cinder `volume` **LIST (index)** rows carry **only** `id`, `name`,
-`links` — no `status`, no `size`. Stock Cinder (sat0) always includes them. The
+`links` — no `status`, no `size`. Stock Cinder (regionone) always includes them. The
 **DETAIL** rows return `bootable`/`multiattach` as **strings** (`"true"`/`"false"`),
 not JSON bools. The strict `Volume.init(from:)` threw `DecodingError`
 (`typeMismatch: Expected Bool, found String` on `.bootable`; missing-key on
@@ -1018,9 +1018,9 @@ not JSON bools. The strict `Volume.init(from:)` threw `DecodingError`
   CLI). Image `ghcr.io/cloudnull/substation-mcp:local-main-volfix`. `curl
   http://localhost:8080/v1` → **HTTP 401** (auth required = live, healthy). 4 CPU /
   1 GiB.
-- **Config** (gitignored, local-only, at `dist/rackspace-iad3/`):
+- **Config** (gitignored, local-only, at `dist/local/`):
   - `config.yaml`: `server 0.0.0.0:8080 /v1`, `clouds.file:
-    /work/dist/rackspace-iad3/clouds.yaml`, `default: rackspace-iad3`,
+    /work/dist/local/clouds.yaml`, `default: rackspace-iad3`,
     `policy.read_only: false`, `max_calls_per_minute: 600`.
   - `clouds.yaml`: `region_name: IAD3`, `interface: public`,
     `auth_url: https://keystone.api.iad3.rackspacecloud.com` (BASE, no `/v3`),
@@ -1044,12 +1044,12 @@ deliberately left out. Do not `git add -A` / `git stash` / checkout these.
 ### How to re-run the E2E (recipe)
 1. **Fresh token** (the old one may have expired). Mint from the IAD3 app cred:
    `POST https://keystone.api.iad3.rackspacecloud.com/v3/auth/tokens` with
-   `application_credential_id` + `_secret` (from `dist/rackspace-iad3/clouds.yaml`),
+   `application_credential_id` + `_secret` (from `dist/local/clouds.yaml`),
    take the `X-Subject-Token` response header, write it to `/tmp/iad3_token.txt`.
 2. **Server up**: `container ls` (see gotcha below) → confirm `substation-mcp`
    `running`. If not: start/recreate it against the `local-main-volfix` image with
-   `dist/rackspace-iad3/` mounted at `/work/dist/rackspace-iad3/`, serving
-   `--config /work/dist/rackspace-iad3/config.yaml` on port 8080. **Do NOT pass
+   `dist/local/` mounted at `/work/dist/local/`, serving
+   `--config /work/dist/local/config.yaml` on port 8080. **Do NOT pass
    `--rm`** (see gotchas).
 3. **Run**: `bash /tmp/e2e_validate.sh`. Read the summary line
    `Pass: N | Denied(expected): N | Skip: N | Fail: N`. Expect
@@ -1076,11 +1076,11 @@ deliberately left out. Do not `git add -A` / `git stash` / checkout these.
 - **Write-path E2E is NOT exercisable** with the current IAD3 credential: it lacks
   `admin`, so `os_create`/`os_update`/`os_delete`/`os_action` return
   `insufficient_scope`. To validate writes end-to-end, obtain an **IAD3 app cred
-  with the `admin` role** and re-run the E2E. (The sat0 volume-lifecycle E2E is
+  with the `admin` role** and re-run the E2E. (The regionone volume-lifecycle E2E is
   separately blocked — no cinder-volume daemonset on that cluster.)
 - **IAD3 token is ephemeral** — any future E2E run needs a freshly minted token
   (recipe above).
-- **sat0 compute E2E** remains blocked on sat0 Keystone infra (NULL service links);
+- **regionone compute E2E** remains blocked on regionone Keystone infra (NULL service links);
   unrelated to this fix.
 
 ### Next-agent options (pick what's relevant)

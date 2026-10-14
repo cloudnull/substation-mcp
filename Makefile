@@ -34,8 +34,8 @@
 #   make container-list      # list running containers
 #   make container-clean     # stop + delete our named container (idempotent)
 #
-#   # The IAD3-baked, self-contained dev image (needs dist/rackspace-iad3/ + release build):
-#   make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
+#   # The IAD3-baked, self-contained dev image (needs dist/local/ + release build):
+#   make container-build DOCKERFILE=deploy/Dockerfile.local IMAGE_TAG=local-dev
 #
 # The active container runtime is resolved by preferring docker, then podman,
 # then Apple `container`; override explicitly with RT=... :
@@ -81,7 +81,7 @@ IMAGE_TAG   ?= local-dev
 IMAGE       := $(IMAGE_NAME):$(IMAGE_TAG)
 # Default: the self-contained multi-stage deploy/Dockerfile (builds the binary
 # in-image; needs no local config). For the IAD3-baked dev image that requires
-# dist/rackspace-iad3/ locally: DOCKERFILE=deploy/Dockerfile.local-ead3
+# dist/local/ locally: DOCKERFILE=deploy/Dockerfile.local
 DOCKERFILE  ?= deploy/Dockerfile
 CONTAINER   ?= substation-mcp
 HOST_PORT   ?= 8080
@@ -155,22 +155,22 @@ endef
 
 ## container-build: build a local image tagged $(IMAGE) from $(DOCKERFILE).
 ##   Default deploy/Dockerfile is self-contained (builds the binary in-image).
-##   The IAD3-baked dev image needs a pre-built release binary + dist/rackspace-iad3/:
-##     DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
+##   The IAD3-baked dev image needs a pre-built release binary + dist/local/:
+##     DOCKERFILE=deploy/Dockerfile.local IMAGE_TAG=local-dev
 container-build:
 	$(require-runtime)
 	if [ "$(RUNTIME)" = "container" ]; then \
-		case "$(DOCKERFILE)" in *Dockerfile.local-ead3) \
+		case "$(DOCKERFILE)" in *Dockerfile.local) \
 			test -x .build/release/substation-mcp || ./scripts/build.sh; \
-			test -f dist/rackspace-iad3/config.yaml && test -f dist/rackspace-iad3/clouds.yaml \
-				|| { echo "ERROR: ead3 dev image needs dist/rackspace-iad3/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
+			test -f dist/local/config.yaml && test -f dist/local/clouds.yaml \
+				|| { echo "ERROR: ead3 dev image needs dist/local/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
 			container build --platform linux/arm64 --file $(DOCKERFILE) -t $(IMAGE) . ;; \
 		*) container build --platform linux/arm64 --file $(DOCKERFILE) -t $(IMAGE) . ;; esac ; \
 	else \
-		case "$(DOCKERFILE)" in *Dockerfile.local-ead3) \
+		case "$(DOCKERFILE)" in *Dockerfile.local) \
 			test -x .build/release/substation-mcp || ./scripts/build.sh; \
-			test -f dist/rackspace-iad3/config.yaml && test -f dist/rackspace-iad3/clouds.yaml \
-				|| { echo "ERROR: ead3 dev image needs dist/rackspace-iad3/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
+			test -f dist/local/config.yaml && test -f dist/local/clouds.yaml \
+				|| { echo "ERROR: ead3 dev image needs dist/local/{config,clouds}.yaml (gitignored)." >&2; exit 1; }; \
 			$(RUNTIME) build --platform linux/amd64 --file $(DOCKERFILE) -t $(IMAGE) . ;; \
 		*) $(RUNTIME) build --platform linux/amd64 --file $(DOCKERFILE) -t $(IMAGE) . ;; esac ; \
 	fi
@@ -258,6 +258,6 @@ help:
 	@echo ""
 	@echo "Examples:"
 	@echo "  make release && make container-build && make container-run"
-	@echo "  make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev"
+	@echo "  make container-build DOCKERFILE=deploy/Dockerfile.local IMAGE_TAG=local-dev"
 	@echo "  make conformance ARGS=\"--url http://127.0.0.1:8080/v1 --token <id>\""
 	@echo "  Override toolchain: SWIFT=swift   |   Force runtime: RT=podman"

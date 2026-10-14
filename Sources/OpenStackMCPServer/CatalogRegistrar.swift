@@ -193,7 +193,7 @@ public struct CatalogRegistrar {
         // Use the flat endpoint-creation path (POST /v3/endpoints with the
         // service_id in the body) rather than the nested POST
         // /v3/services/{id}/endpoints: RDO/Genestack Keystones 404 the nested
-        // form while supporting the flat form (verified live on sat0).
+        // form while supporting the flat form (verified live on regionone).
         let createBody = """
         {"endpoint":{"service_id":"\(serviceID)","interface":"\(interface)","region_id":"\(region)","url":"\(url)"}}
         """

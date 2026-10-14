@@ -965,7 +965,7 @@ public struct CreateServerSpec: Sendable {
         var server: [String: String] = [
             "name": name
         ]
-        // sat0's Nova (2026 cloud, strict schema) requires the *string*
+        // regionone's Nova (2026 cloud, strict schema) requires the *string*
         // flavorRef/imageRef form: {"flavorRef":"<uuid>","imageRef":"<uuid>"}.
         // It rejects the bare "flavor"/"image" keys ("'flavorRef' is a required
         // property") and rejects the object form flavorRef:{id:...} ("not of type
@@ -1004,7 +1004,7 @@ public struct CreateServerSpec: Sendable {
             let nets = networks.map { net -> String in
                 var netParts: [String] = []
                 if let port = net.port { netParts.append("\"port\":\"\(port)\"") }
-                // sat0 Nova's create schema rejects the "network" key on a
+                // regionone Nova's create schema rejects the "network" key on a
                 // networks[] entry ("Additional properties are not allowed") but
                 // accepts "uuid". Live-validated: networks:[{"uuid":"..."}] -> 202.
                 if let network = net.network { netParts.append("\"uuid\":\"\(network)\"") }

@@ -22,7 +22,7 @@ struct TokenValidatorTests {
                 "type": "compute",
                 "name": "nova",
                 "endpoints": [
-                  {"region": "SAT0", "interface": "public", "url": "http://nova.example.com/v2.1"}
+                  {"region": "RegionOne", "interface": "public", "url": "http://nova.example.com/v2.1"}
                 ]
               }
             ]
@@ -31,7 +31,7 @@ struct TokenValidatorTests {
         """
     }
 
-    // Real Keystone v3 clouds (e.g. sat0) return a token body that differs from
+    // Real Keystone v3 clouds (e.g. regionone) return a token body that differs from
     // the minimal fixture above in several ways: no top-level `id`, no top-level
     // `domain` (project-scoped tokens only carry `user.domain`), and `roles` as
     // objects {"id","name"} rather than strings. `Token.decode` must accept all
@@ -55,7 +55,7 @@ struct TokenValidatorTests {
                 "type": "compute",
                 "name": "nova",
                 "endpoints": [
-                  {"region": "SAT0", "interface": "public", "url": "https://nova.api.example.com/v2.1"}
+                  {"region": "RegionOne", "interface": "public", "url": "https://nova.api.example.com/v2.1"}
                 ]
               }
             ]
@@ -73,7 +73,7 @@ struct TokenValidatorTests {
         #expect(token.roles.contains("reader"))
         #expect(token.roles.contains("admin"))
         #expect(token.catalog.count == 1)
-        #expect(token.catalog.first?.endpoints.first?.region == "SAT0")
+        #expect(token.catalog.first?.endpoints.first?.region == "RegionOne")
     }
 
     /// Rackspace/Keystone whoami bodies omit `token.id`. The decode must fall

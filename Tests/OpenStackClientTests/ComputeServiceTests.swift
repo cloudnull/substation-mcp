@@ -57,13 +57,13 @@ struct ComputeServiceTests {
         let novaJSON = """
         {"hypervisors":[{
             "id":"1",
-            "hypervisor_hostname":"compute-1.cloud.cloudnull.dev.local",
+            "hypervisor_hostname":"compute-1.cloud.yourcloud.dev.local",
             "state":"up",
             "status":"enabled",
             "hypervisor_type":"QEMU",
             "hypervisor_version":7002022,
             "host_ip":"172.16.27.34",
-            "service":{"id":"43","host":"compute-1.cloud.cloudnull.dev.local","disabled_reason":null},
+            "service":{"id":"43","host":"compute-1.cloud.yourcloud.dev.local","disabled_reason":null},
             "vcpus":16,
             "memory_mb":63987,
             "local_gb":499,
@@ -81,7 +81,7 @@ struct ComputeServiceTests {
         struct HypervisorList: Decodable { let hypervisors: [Hypervisor] }
         let decoded = try JSONDecoder().decode(HypervisorList.self, from: novaJSON.data(using: .utf8)!)
         let h = decoded.hypervisors[0]
-        #expect(h.hypervisorHostname == "compute-1.cloud.cloudnull.dev.local")
+        #expect(h.hypervisorHostname == "compute-1.cloud.yourcloud.dev.local")
         #expect(h.state == "up")
         #expect(h.vcpus == 16)
         #expect(h.memoryMB == 63987)
@@ -93,7 +93,7 @@ struct ComputeServiceTests {
         let novaJSON = """
         {"services":[{
             "binary":"nova-compute",
-            "host":"compute-1.cloud.cloudnull.dev.local",
+            "host":"compute-1.cloud.yourcloud.dev.local",
             "id":"43",
             "zone":"az1",
             "status":"enabled",
@@ -112,7 +112,7 @@ struct ComputeServiceTests {
 
     @Test("Server decodes real Nova /servers/detail JSON", .timeLimit(.minutes(2)))
     func serverDecodesRealNovaJSON() throws {
-        // Exact JSON shape from live sat0 Nova 2.1 /servers/detail.
+        // Exact JSON shape from live regionone Nova 2.1 /servers/detail.
         // This is the format that was causing DecodingError.keyNotFound
         // (500 "The data is missing") on every server list/get/find call.
         let novaJSON = """
@@ -124,13 +124,13 @@ struct ComputeServiceTests {
             "user_id":"e3e69b8fcf8f43408a8a1f29db08b05b",
             "metadata":{},
             "hostId":"45b369038f077768ac151cfde6d26c3824057cec4c1a1eedd8d3587b",
-            "image":{"id":"c8705b50-fdb2-4d12-8dd6-ab0e6dd35702","links":[{"rel":"bookmark","href":"https://nova.api.sat0.cloudnull.dev/images/c8705b50-fdb2-4d12-8dd6-ab0e6dd35702"}]},
-            "flavor":{"id":"567f142b-4e8c-4f08-a4e0-93e27b51c01e","links":[{"rel":"bookmark","href":"https://nova.api.sat0.cloudnull.dev/flavors/567f142b-4e8c-4f08-a4e0-93e27b51c01e"}]},
+            "image":{"id":"c8705b50-fdb2-4d12-8dd6-ab0e6dd35702","links":[{"rel":"bookmark","href":"https://nova.api.regionone.yourcloud.dev/images/c8705b50-fdb2-4d12-8dd6-ab0e6dd35702"}]},
+            "flavor":{"id":"567f142b-4e8c-4f08-a4e0-93e27b51c01e","links":[{"rel":"bookmark","href":"https://nova.api.regionone.yourcloud.dev/flavors/567f142b-4e8c-4f08-a4e0-93e27b51c01e"}]},
             "created":"2026-09-14T01:05:43Z",
             "updated":"2026-09-14T01:06:01Z",
             "addresses":{"flat":[{"version":4,"addr":"172.16.25.176","OS-EXT-IPS:type":"fixed","OS-EXT-IPS-MAC:mac_addr":"fa:16:3e:b0:5d:08"}]},
             "accessIPv4":"","accessIPv6":"",
-            "links":[{"rel":"self","href":"https://nova.api.sat0.cloudnull.dev/v2.1/servers/9a1912bc-b790-4df0-8571-4e11eac7ea18"}],
+            "links":[{"rel":"self","href":"https://nova.api.regionone.yourcloud.dev/v2.1/servers/9a1912bc-b790-4df0-8571-4e11eac7ea18"}],
             "OS-DCF:diskConfig":"MANUAL",
             "progress":0,
             "OS-EXT-AZ:availability_zone":"az1",
@@ -138,9 +138,9 @@ struct ComputeServiceTests {
             "key_name":"cloudnull-moylands",
             "OS-SRV-USG:launched_at":"2026-09-14T01:06:01.000000",
             "OS-SRV-USG:terminated_at":null,
-            "OS-EXT-SRV-ATTR:host":"compute-0.cloud.cloudnull.dev.local",
+            "OS-EXT-SRV-ATTR:host":"compute-0.cloud.yourcloud.dev.local",
             "OS-EXT-SRV-ATTR:instance_name":"instance-0000004b",
-            "OS-EXT-SRV-ATTR:hypervisor_hostname":"compute-0.cloud.cloudnull.dev.local",
+            "OS-EXT-SRV-ATTR:hypervisor_hostname":"compute-0.cloud.yourcloud.dev.local",
             "OS-EXT-STS:task_state":null,
             "OS-EXT-STS:vm_state":"active",
             "OS-EXT-STS:power_state":1,
@@ -381,7 +381,7 @@ struct ComputeServiceTests {
             networks: [CreateServerSpec.NetworkSpec(network: "flat-net")]
         )
         let body = spec.body()
-        // sat0 Nova (strict schema) requires STRING flavorRef/imageRef.
+        // regionone Nova (strict schema) requires STRING flavorRef/imageRef.
         // Live-validated via curl: {"flavorRef":"<uuid>","imageRef":"<uuid>"} -> 202.
         #expect(body.contains("\"flavorRef\":\"flv-001\""))
         #expect(body.contains("\"imageRef\":\"img-001\""))

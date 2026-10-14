@@ -6,7 +6,7 @@ import Testing
 struct CacheTests {
     @Test func putGetRoundTrip() async {
         let cache = Cache(maxEntries: 100)
-        let key = CacheKey(tokenID: "tok-1", region: "SAT0", resource: "servers", suffix: "f:status=ACTIVE")
+        let key = CacheKey(tokenID: "tok-1", region: "RegionOne", resource: "servers", suffix: "f:status=ACTIVE")
         struct Server: Codable, Sendable { let id: String; let name: String }
         let server = Server(id: "srv-1", name: "web")
         await cache.put(key, ttl: .seconds(30), value: server)
@@ -18,7 +18,7 @@ struct CacheTests {
 
     @Test func ttlExpiry() async {
         let cache = Cache(maxEntries: 100)
-        let key = CacheKey(tokenID: "tok-1", region: "SAT0", resource: "servers", suffix: "")
+        let key = CacheKey(tokenID: "tok-1", region: "RegionOne", resource: "servers", suffix: "")
         struct Item: Codable, Sendable { let v: Int }
         await cache.put(key, ttl: .milliseconds(50), value: Item(v: 1))
         let fresh = await cache.get(key, ttl: .milliseconds(50), as: Item.self)

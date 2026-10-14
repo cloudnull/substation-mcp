@@ -153,11 +153,11 @@ serviceUser:
   domain: service                 # OpenStack domain
   appCredName: substation-cred    # name of the application credential
   roles: [admin]                  # roles to grant on the domain
-  region: SAT0                    # region the mcp catalog endpoints go in
+  region: RegionOne                    # region the mcp catalog endpoints go in
   catalog:                        # public/internal/admin endpoint URLs
-    publicURL: "https://substation.api.sat0.cloudnull.dev"
-    internalURL: "https://substation.api.sat0.cloudnull.dev"   # defaults to publicURL
-    adminURL: "https://substation.api.sat0.cloudnull.dev"      # defaults to publicURL
+    publicURL: "https://substation.api.regionone.yourcloud.dev"
+    internalURL: "https://substation.api.regionone.yourcloud.dev"   # defaults to publicURL
+    adminURL: "https://substation.api.regionone.yourcloud.dev"      # defaults to publicURL
   auth:
     # Point at a k8s Secret in the release namespace that carries the
     # operator credential. The plaintext fields below are IGNORED.
@@ -295,13 +295,13 @@ credential manually using the `openstack` CLI. You need an admin credential
 
 ```sh
 # Authenticate as admin (project-scoped to admin/default):
-export OS_AUTH_URL=https://keystone.api.sat0.cloudnull.dev/v3
+export OS_AUTH_URL=https://keystone.api.regionone.yourcloud.dev/v3
 export OS_USERNAME=admin
 export OS_PASSWORD=<admin-password>
 export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=default
 export OS_PROJECT_DOMAIN_NAME=default
-export OS_REGION_NAME=SAT0
+export OS_REGION_NAME=RegionOne
 
 # Create the service user (idempotent — skip if it already exists):
 openstack user show substation --domain service 2>/dev/null || \
@@ -374,7 +374,7 @@ export OS_PROJECT_NAME=admin
 export OS_PROJECT_DOMAIN_NAME=default
 unset OS_AUTH_TOKEN   # re-mint as admin
 
-export PUBLIC_URL=https://substation.api.sat0.cloudnull.dev
+export PUBLIC_URL=https://substation.api.regionone.yourcloud.dev
 ./deploy/register-catalog.sh
 ```
 
@@ -383,9 +383,9 @@ Or manually (service **name** `substation-mcp`, **type** `mcp`):
 ```sh
 openstack service create --type mcp substation-mcp \
   "Model Context Protocol endpoint for the OpenStack cloud" 2>/dev/null || true
-openstack endpoint create --region SAT0 --service substation-mcp public   "$PUBLIC_URL"
-openstack endpoint create --region SAT0 --service substation-mcp internal "$PUBLIC_URL"
-openstack endpoint create --region SAT0 --service substation-mcp admin    "$PUBLIC_URL"
+openstack endpoint create --region RegionOne --service substation-mcp public   "$PUBLIC_URL"
+openstack endpoint create --region RegionOne --service substation-mcp internal "$PUBLIC_URL"
+openstack endpoint create --region RegionOne --service substation-mcp admin    "$PUBLIC_URL"
 ```
 
 > The service is identified by its **type** (`mcp`); the **name**
@@ -416,7 +416,7 @@ This is idempotent — re-running the catalog registration reuses the existing
 
 substation-mcp speaks the MCP **Streamable HTTP** protocol over
 `<public-url>` (the `serviceUser.catalog.publicURL` you configured, e.g.
-`https://substation.api.sat0.cloudnull.dev/v1`). Authenticate with a Keystone
+`https://substation.api.regionone.yourcloud.dev/v1`). Authenticate with a Keystone
 Bearer token — mint one with the `openstack` CLI, an app-cred, or the
 `/v1/login` page in a browser (pick **Application credential** or
 **User + password** and submit; the page stores the token for the session).
@@ -455,7 +455,7 @@ for global). Keep the token in an env var, not the file:
     "servers": {
       "openstack": {
         "type": "remote",
-        "url": "https://substation.api.sat0.cloudnull.dev/v1",
+        "url": "https://substation.api.regionone.yourcloud.dev/v1",
         "oauth": false,
         "headers": {
           "Authorization": "Bearer {env:OS_AUTH_TOKEN}"

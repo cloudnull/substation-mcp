@@ -204,13 +204,13 @@ serviceUser:
   roles: [admin]          # roles to grant on the domain (comma list or array)
   # The cloud (from clouds.yaml) the provisioner + catalog registration target.
   # Matches `config.clouds.default`.
-  cloud: sat0
+  cloud: regionone
   # The region the mcp catalog endpoints are registered in.
-  region: SAT0
+  region: RegionOne
   # Identity endpoint the curl token MINTS target. Separate from the cloud's
   # auth_url (which the provisioner's identity OPS use). On Genestack/RDO set
   # this to the PUBLIC Keystone endpoint (e.g.
-  # https://keystone.api.sat0.cloudnull.dev — keystone root, no /v3): the
+  # https://keystone.api.regionone.yourcloud.dev — keystone root, no /v3): the
   # in-cluster keystone svc REJECTS scoped password mints (spurious 400
   # "invalid JSON"), while the public endpoint accepts them and is pod-reachable.
   # Tokens minted on public are valid on the in-cluster svc (same Keystone

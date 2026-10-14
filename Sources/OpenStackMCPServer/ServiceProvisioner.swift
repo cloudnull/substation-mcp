@@ -300,10 +300,10 @@ public struct ServiceProvisioner {
         // Query without a name filter and match client-side: Keystone domain
         // names are case-sensitive in the API but the convention varies (the
         // default domain's *name* is "Default" while its *id* is "default", and
-        // clouds like sat0 expose only that one). Filtering server-side by
+        // clouds like regionone expose only that one). Filtering server-side by
         // `?name=<id>` returns empty when the id and name differ in case, which
         // is what made the provisioner report "domain 'default' not found" on
-        // sat0. Match on id OR case-insensitive name.
+        // regionone. Match on id OR case-insensitive name.
         let (status, body) = try await identityRequest(method: "GET", path: "/v3/domains")
         struct Domain: Decodable { let id: String; let name: String? }
         struct DomainList: Decodable { let domains: [Domain] }

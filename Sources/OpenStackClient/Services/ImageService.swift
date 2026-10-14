@@ -136,7 +136,7 @@ public struct ImageRegion: Sendable {
         if let status { parts.append("\"status\":\"\(status)\"") }
         let body = "{\"image\":{\(parts.joined(separator: ","))}}"
 
-        // Live Glance on sat0 accepts application/json for PATCH.
+        // Live Glance on regionone accepts application/json for PATCH.
         // (Some Glance installations require application/openstack-images;version=2,
         // but this one does not — it 415s on that media type.)
         // The Transport adds the default application/json Content-Type.

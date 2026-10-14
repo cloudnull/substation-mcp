@@ -15,10 +15,10 @@ WORKDIR /work
 # Freshly built native aarch64 release binary.
 COPY .build/release/substation-mcp /usr/local/bin/substation-mcp
 
-# Local IAD3 serve config; references /work/dist/rackspace-iad3/clouds.yaml,
+# Local IAD3 serve config; references /work/dist/local/clouds.yaml,
 # which we also bake in so the container is self-contained.
-COPY dist/rackspace-iad3/config.yaml /etc/substation-mcp/config.yaml
-COPY dist/rackspace-iad3/clouds.yaml /work/dist/rackspace-iad3/clouds.yaml
+COPY dist/local/config.yaml /etc/substation-mcp/config.yaml
+COPY dist/local/clouds.yaml /work/dist/local/clouds.yaml
 
 EXPOSE 8080
 

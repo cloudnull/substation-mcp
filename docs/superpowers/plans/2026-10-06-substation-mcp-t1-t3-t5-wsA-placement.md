@@ -17,7 +17,7 @@
 - Deploy: `cd /tmp/substation-mcp-deploy && helm upgrade substation-mcp helm/substation-mcp -n openstack -f /opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml --no-hooks --timeout 300s` then `kubectl -n openstack rollout restart deploy/substation-mcp` (on controller 172.16.27.67)
 - Commit footer: `Co-Authored-By: Erebine Qwen3.8-27B-FP8 erebine/co-engineer <noreply@erebine.ai>`
 - NO destructive ops on existing resources; test resources may use flavor `m1.small` + image `rocky-10.1`
-- sat0: Keystone `https://keystone.api.sat0.cloudnull.dev/v3`, Nova `https://nova.api.sat0.cloudnull.dev/v2.1`, Neutron `/v2.0`, Cinder `/v3`, Placement `https://placement.api.sat0.cloudnull.dev/`
+- regionone: Keystone `https://keystone.api.regionone.yourcloud.dev/v3`, Nova `https://nova.api.regionone.yourcloud.dev/v2.1`, Neutron `/v2.0`, Cinder `/v3`, Placement `https://placement.api.regionone.yourcloud.dev/`
 
 ## Review Focus
 
@@ -59,13 +59,13 @@ func hypervisorDecodesRealNovaJSON() throws {
     let novaJSON = """
     {"hypervisors":[{
         "id":1,
-        "hypervisor_hostname":"compute-1.cloud.cloudnull.dev.local",
+        "hypervisor_hostname":"compute-1.cloud.yourcloud.dev.local",
         "state":"up",
         "status":"enabled",
         "hypervisor_type":"QEMU",
         "hypervisor_version":7002022,
         "host_ip":"172.16.27.34",
-        "service":{"id":43,"host":"compute-1.cloud.cloudnull.dev.local","disabled_reason":null},
+        "service":{"id":43,"host":"compute-1.cloud.yourcloud.dev.local","disabled_reason":null},
         "vcpus":16,
         "memory_mb":63987,
         "local_gb":499,
@@ -83,7 +83,7 @@ func hypervisorDecodesRealNovaJSON() throws {
     struct HypervisorList: Decodable { let hypervisors: [Hypervisor] }
     let decoded = try JSONDecoder().decode(HypervisorList.self, from: novaJSON.data(using: .utf8)!)
     let h = decoded.hypervisors[0]
-    #expect(h.hypervisorHostname == "compute-1.cloud.cloudnull.dev.local")
+    #expect(h.hypervisorHostname == "compute-1.cloud.yourcloud.dev.local")
     #expect(h.state == "up")
     #expect(h.vcpus == 16)
     #expect(h.memoryMB == 63987)
@@ -178,7 +178,7 @@ func computeServiceDecodesRealNovaJSON() throws {
     let novaJSON = """
     {"services":[{
         "binary":"nova-compute",
-        "host":"compute-1.cloud.cloudnull.dev.local",
+        "host":"compute-1.cloud.yourcloud.dev.local",
         "id":43,
         "zone":"az1",
         "status":"enabled",
@@ -390,7 +390,7 @@ Co-Authored-By: Erebine Qwen3.8-27B-FP8 erebine/co-engineer <noreply@erebine.ai>
 - Test: `Tests/OpenStackClientTests/BlockStorageServiceTests.swift`
 
 **Interfaces:**
-- Produces: `os_list volume_type` → 200 (empty list on sat0 is fine).
+- Produces: `os_list volume_type` → 200 (empty list on regionone is fine).
 
 The current code calls `GET /v3/volume-types` which returns 404. Cinder v3 requires the project-scoped path: `GET /v3/{project_id}/volume-types`.
 
@@ -543,7 +543,7 @@ Co-Authored-By: Erebine Qwen3.8-27B-FP8 erebine/co-engineer <noreply@erebine.ai>
 - Produces: `os_list placement` → 200 with resource providers (name, uuid, generation). `os_get placement <uuid>` → 200 with inventory (VCPU, MEMORY_MB, DISK_GB totals + usages).
 
 Verified live Placement API (2026-10-06):
-- Base URL: `https://placement.api.sat0.cloudnull.dev/` (from Keystone service catalog, service type `placement`)
+- Base URL: `https://placement.api.regionone.yourcloud.dev/` (from Keystone service catalog, service type `placement`)
 - `GET /resource_providers` → `{"resource_providers": [{"uuid", "name", "generation", "links"}]}`
 - `GET /resource_providers/{uuid}/inventories` → `{"inventories": {"VCPU": {"total": 16}, "MEMORY_MB": {"total": 63987}, "DISK_GB": {"total": 499}}}`
 - `GET /resource_providers/{uuid}/usages` → `{"usages": {"VCPU": 4, "MEMORY_MB": 8192, "DISK_GB": 61}}`
@@ -690,7 +690,7 @@ git push
 # Wait for CI to complete
 ```
 
-- [ ] **Step 3: Deploy to sat0**
+- [ ] **Step 3: Deploy to regionone**
 
 ```bash
 # On controller 172.16.27.67:
@@ -703,12 +703,12 @@ kubectl -n openstack rollout restart deploy/substation-mcp
 Via MCP curl (initialize + tools/call):
 - `os_list hypervisor` → 200, 3 rows with vcpus/memory_mb
 - `os_list compute_service` → 200, 6 rows with binary/zone/updated_at
-- `os_list address_group` → 200 (empty on sat0)
+- `os_list address_group` → 200 (empty on regionone)
 - `os_list volume_quota` → 200 (quota_set values)
 - `os_list server_interface` → 200 (interfaces across all servers)
-- `os_list server_volume_attachment` → 200 (empty on sat0)
+- `os_list server_volume_attachment` → 200 (empty on regionone)
 - `os_list compute_quota` → 200 (quota_set values)
-- `os_list volume_type` → 200 (empty on sat0)
+- `os_list volume_type` → 200 (empty on regionone)
 - `os_describe region` → includes phase-1 note
 - `os_list placement` → 200, 3 resource providers
 - `os_get placement <uuid>` → 200 with inventory (VCPU=16, MEMORY_MB=63987, DISK_GB=499)
@@ -720,7 +720,7 @@ Via MCP curl (initialize + tools/call):
 
 - [ ] **Step 5: Save milestone**
 
-Track the milestone in Erebine: "T1–T3, T5, WS-A, §10-B all deployed and validated on sat0."
+Track the milestone in Erebine: "T1–T3, T5, WS-A, §10-B all deployed and validated on regionone."
 
 ---
 

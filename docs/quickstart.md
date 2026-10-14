@@ -44,11 +44,11 @@ make container-stop && make container-rm   # stop, then delete
 The default image binds `0.0.0.0:8080` with no baked config — mount your
 `clouds.yaml` / `config.yaml` at runtime (see [Deploying](deploying.md#docker)).
 For a fully self-contained Rackspace IAD3 image (binary + config baked in), use
-the local dev Dockerfile, which needs a fresh release build + `dist/rackspace-iad3/`:
+the local dev Dockerfile, which needs a fresh release build + `dist/local/`:
 
 ```sh
 make release
-make container-build DOCKERFILE=deploy/Dockerfile.local-ead3 IMAGE_TAG=local-dev
+make container-build DOCKERFILE=deploy/Dockerfile.local IMAGE_TAG=local-dev
 
 
 All variables are overridable on the command line (`IMAGE_NAME`, `IMAGE_TAG`,

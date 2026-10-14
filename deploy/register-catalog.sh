@@ -13,8 +13,8 @@
 #
 # Required env:
 #   OS_CLOUD        — cloud name from clouds.yaml
-#   REGION          — region to register (e.g. SAT0 / RegionOne)
-#   PUBLIC_URL      — externally reachable MCP URL, e.g. https://substation.api.sat0.cloudnull.dev
+#   REGION          — region to register (e.g. RegionOne / RegionOne)
+#   PUBLIC_URL      — externally reachable MCP URL, e.g. https://substation.api.regionone.yourcloud.dev
 #
 # Auth (one of):
 #   (preferred)   — the cloud entry in clouds.yaml carries an application

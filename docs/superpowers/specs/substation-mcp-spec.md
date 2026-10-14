@@ -155,7 +155,7 @@ Each component answers three questions: what it does, how it is used, what it de
 
 The server is a **Keystone-first OpenStack citizen**: it is registered in the Keystone service catalog (section 6.5), it authenticates clients with **Keystone tokens**, and it uses **only Keystone tokens** to talk to the upstream services. It is multi-tenant by construction — tenant isolation is enforced by Keystone via the project scope embedded in each presented token, not by the server keeping per-user identity state.
 
-The design conforms to the MCP 2025-11-25 authorization spec the way any authenticated MCP does (bearer on every request, 401 challenge with `resource_metadata`, 403 `insufficient_scope`, out-of-band credential entry via **URL-mode elicitation**), while remaining fully usable on clouds with **no OAuth** (e.g. `sat0.cloudnull.dev`), because Keystone itself plays the role of the authorization server. The one thing it never does is **token passthrough to a third party**: the Keystone token is validated by Keystone (the authorization server) and used to reach *this deployment's own* upstream OpenStack services, which is the server's own resource access, not transit.
+The design conforms to the MCP 2025-11-25 authorization spec the way any authenticated MCP does (bearer on every request, 401 challenge with `resource_metadata`, 403 `insufficient_scope`, out-of-band credential entry via **URL-mode elicitation**), while remaining fully usable on clouds with **no OAuth** (e.g. `regionone.yourcloud.dev`), because Keystone itself plays the role of the authorization server. The one thing it never does is **token passthrough to a third party**: the Keystone token is validated by Keystone (the authorization server) and used to reach *this deployment's own* upstream OpenStack services, which is the server's own resource access, not transit.
 
 ### 6.0 Auth profiles
 
@@ -232,7 +232,7 @@ Policy is defense in depth on top of Keystone roles and access rules, not a subs
 `substation-mcp` is a **first-class service in the Keystone catalog**, registered the same way an operator registers any other service (manual, operator-driven; the running server holds no admin/bootstrap credential and performs no self-registration).
 
 - **Identity:** `openstack service create --type mcp --name substation-mcp "OpenStack MCP"`. The `service_type` is `mcp` (short, filterable — other tools discover it via `service_type == "mcp"`); the name is `substation-mcp`.
-- **Endpoints:** per region and interface. Example for region `SAT0`: public `https://mcp.sat0.cloudnull.dev/v1`, internal `http://substation-mcp.openstack.svc.cluster.local:8080/v1`, admin same as internal. The endpoint URL **is the MCP server** (the transport path, section 7.1), so any client that can read a Keystone catalog can discover and reach the MCP server exactly as it would Nova.
+- **Endpoints:** per region and interface. Example for region `RegionOne`: public `https://mcp.regionone.yourcloud.dev/v1`, internal `http://substation-mcp.openstack.svc.cluster.local:8080/v1`, admin same as internal. The endpoint URL **is the MCP server** (the transport path, section 7.1), so any client that can read a Keystone catalog can discover and reach the MCP server exactly as it would Nova.
 - **We ship the commands.** `deploy/register-catalog.sh` takes `--cloud --region --public-url --internal-url` (admin defaults to internal) and is **idempotent**: it skips `service create` if a service with `type=mcp`+`name=substation-mcp` exists, then creates the public/internal/admin endpoints (skipping any that already exist). The README documents the equivalent bare `openstack` commands.
 - **Catalog-driven upstream topology.** Because every validated token carries the full service catalog, the server resolves its upstream endpoints (Nova/Neutron/Cinder/Glance) from the **token's catalog** via the existing endpoint resolver (interface preference public→internal→admin, region selection). `clouds.yaml` therefore drops from *the* config to a **fallback/override**: still used for multi-cloud deployments, per-host TLS `cacert`/`verify`, and stdio mode. A single-cloud, catalog-registered deployment needs no `clouds.yaml` at all.
 
@@ -496,7 +496,7 @@ swift-configuration with providers in priority order: command line flags, enviro
 | `server.max_body_bytes` | `1048576` | |
 | `server.tls.cert`, `server.tls.key` | unset | Enable HummingbirdTLS |
 | `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
-| `server.public_url` | unset | Canonical public base URL used in the Protected Resource Metadata and login URL (e.g. `https://mcp.sat0.cloudnull.dev`); defaults to the request's Host when unset |
+| `server.public_url` | unset | Canonical public base URL used in the Protected Resource Metadata and login URL (e.g. `https://mcp.regionone.yourcloud.dev`); defaults to the request's Host when unset |
 | `auth.profile` | `oauth` | `oauth` (P2/P3, default — the server fronts Keystone as its own stateless OAuth 2.1 AS) or `keystone_token` (P1, raw Keystone bearer only) — section 6.0 |
 | `oauth.server_secret` | derived (dev) | HS256 secret for the OAuth AS (authorization codes + `stst.at.` access tokens). Deterministically derived from the issuer when unset; **must be set explicitly in production** |
 | `oauth.code_ttl` | `120s` | Authorization-code (signed JWT) lifetime |
@@ -548,7 +548,7 @@ swift-configuration with providers in priority order: command line flags, enviro
 - **Catalog registration:** run `deploy/register-catalog.sh` (or `substation-mcp register-catalog`) once per cloud/region as an operator with an identity-admin credential to create the `type=mcp` service and endpoints (section 6.5).
 - systemd unit with `DynamicUser=yes`, `ProtectSystem=strict`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, environment file for `OSMCP_*`.
 - Client setup examples in the README:
-  - Catalog-registered HTTP client: discover the server from the Keystone catalog (`service_type=mcp`), then `claude mcp add --transport http openstack https://mcp.sat0.cloudnull.dev/v1 --header "Authorization: Bearer <keystone-token>"`. The token is minted per section 6.1 (client-side or `login`).
+  - Catalog-registered HTTP client: discover the server from the Keystone catalog (`service_type=mcp`), then `claude mcp add --transport http openstack https://mcp.regionone.yourcloud.dev/v1 --header "Authorization: Bearer <keystone-token>"`. The token is minted per section 6.1 (client-side or `login`).
   - stdio (Claude Desktop): an entry with `OS_CLOUD` (or the local-credential trio / `OS_AUTH_TOKEN`) so the server mints/adopts a token at startup (section 6.1 stdio).
 
 ## 14. Testing strategy

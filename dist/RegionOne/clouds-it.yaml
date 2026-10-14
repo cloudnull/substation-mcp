@@ -14,6 +14,6 @@ clouds:
     region_name: SAT0
     interface: public
     auth:
-      auth_url: https://keystone.api.sat0.cloudnull.dev
+      auth_url: https://keystone.api.regionone.yourcloud.dev
       # application_credential_id: "..."     # paste a real app-cred id
       # application_credential_secret: "..."  # paste a real app-cred secret
