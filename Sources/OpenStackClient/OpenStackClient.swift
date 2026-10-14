@@ -221,10 +221,25 @@ public actor OpenStackClient {
     // MARK: - Region resolution helper
 
     /// The effective region for a request: an explicit region, else the
-    /// cloud's configured region, else the first region in the token's
-    /// catalog.
+    /// token's catalog region (authoritative — reflects where the token was
+    /// minted), else the cloud's configured region.
+    ///
+    /// When the catalog advertises exactly one distinct region, that region
+    /// wins regardless of `cloud.regionName` (the token was explicitly minted
+    /// against a specific Keystone). With multiple regions the caller should
+    /// pass an explicit `region:` argument; we fall back to `cloud.regionName`
+    /// then the first catalog entry in document order.
     public func defaultRegion(_ vt: ValidatedToken) -> String {
-        cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
+        var seen = Set<String>()
+        var first: String?
+        for entry in vt.token.catalog {
+            for ep in entry.endpoints where !seen.contains(ep.region) {
+                seen.insert(ep.region)
+                if first == nil { first = ep.region }
+            }
+        }
+        if seen.count == 1 { return first! }
+        return cloud.regionName ?? first ?? "RegionOne"
     }
 
     /// Raw Neutron router-interface PUT/DELETE (add/remove_router_interface).
