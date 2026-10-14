@@ -56,6 +56,11 @@ public struct OpenStackMCPConfig: Sendable {
     /// service catalog (the normal OpenStack endpoint-discovery mechanism).
     /// Ignored unless `oauth.replay_store == "memcached"`.
     public var oauthReplayStoreEndpoint: String?
+    /// When true (default), a shared replay store failure falls back to the
+    /// local store. When false, the token endpoint rejects the code rather
+    /// than risk a cross-replica replay. Ignored unless
+    /// `oauth.replay_store == "memcached"`.
+    public var oauthReplayStoreFailOpen: Bool
 
     // MARK: clouds
     public var cloudsDefault: String?
@@ -100,11 +105,12 @@ public struct OpenStackMCPConfig: Sendable {
         authFailedAuthPerMinute: Int = 10,
         authLoginPageEnabled: Bool = true,
         oauthServerSecret: String? = nil,
-        oauthCodeTTL: Int = 120,
+        oauthCodeTTL: Int = 30,
         oauthTokenTTL: Int = 3600,
         oauthIssuer: String? = nil,
         oauthReplayStore: String = "local",
         oauthReplayStoreEndpoint: String? = nil,
+        oauthReplayStoreFailOpen: Bool = true,
         cloudsDefault: String? = nil,
         cloudsAllowed: [String] = [],
         cloudsFile: String? = nil,
@@ -145,6 +151,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.oauthIssuer = oauthIssuer
         self.oauthReplayStore = oauthReplayStore
         self.oauthReplayStoreEndpoint = oauthReplayStoreEndpoint
+        self.oauthReplayStoreFailOpen = oauthReplayStoreFailOpen
         self.cloudsDefault = cloudsDefault
         self.cloudsAllowed = cloudsAllowed
         self.cloudsFile = cloudsFile

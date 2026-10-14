@@ -190,8 +190,8 @@ struct SharedCodeReplayStoreTests {
             shared: replica(fake),
             logger: Logger(label: "test-replay")
         )
-        let first = await store.seen("fo-1", vt: vt)
-        let second = await store.seen("fo-1", vt: vt)
+        let first = try await store.seen("fo-1", vt: vt)
+        let second = try await store.seen("fo-1", vt: vt)
         #expect(first == false)
         #expect(second == true, "local fallback must still enforce single-use")
     }
@@ -204,8 +204,8 @@ struct SharedCodeReplayStoreTests {
             shared: replica(fake),
             logger: Logger(label: "test-replay")
         )
-        let first = await store.seen("nc-1", vt: vt)
-        let second = await store.seen("nc-1", vt: vt)
+        let first = try await store.seen("nc-1", vt: vt)
+        let second = try await store.seen("nc-1", vt: vt)
         #expect(first == false)
         #expect(second == true)
     }
@@ -214,8 +214,8 @@ struct SharedCodeReplayStoreTests {
     func defaultLocal() async throws {
         let store = CodeReplayStore(ttl: 300)
         let vt = makeVT(catalog: [])
-        let first = await store.seen("l-1", vt: vt)
-        let second = await store.seen("l-1", vt: vt)
+        let first = try await store.seen("l-1", vt: vt)
+        let second = try await store.seen("l-1", vt: vt)
         #expect(first == false)
         #expect(second == true)
     }

@@ -58,6 +58,9 @@ public struct LoginRequest: Sendable {
     /// a user in the default domain can log in without typing it.
     public let userDomain: String?
     public let projectName: String?
+    /// The region to target (multi-region clouds). When non-empty, the minted
+    /// token is used for API calls in this region via catalog endpoint resolution.
+    public let region: String?
 
     public init(
         elicitationId: String,
@@ -67,7 +70,8 @@ public struct LoginRequest: Sendable {
         userName: String? = nil,
         password: String? = nil,
         userDomain: String? = nil,
-        projectName: String? = nil
+        projectName: String? = nil,
+        region: String? = nil
     ) {
         self.elicitationId = elicitationId
         self.method = method
@@ -77,6 +81,7 @@ public struct LoginRequest: Sendable {
         self.password = password
         self.userDomain = userDomain
         self.projectName = projectName
+        self.region = region
     }
 }
 
@@ -115,6 +120,8 @@ public struct MCPRoute: Sendable {
     let onSessionStart: @Sendable () -> Void
     /// Fired when an MCP session is terminated/evicted (spec §12: `osmcp_sessions_active`).
     let onSessionEnd: @Sendable () -> Void
+    /// The cloud name displayed in the login page footer (e.g. "rackspace-iad3").
+    let cloudName: String?
 
     public init(
         config: MCPConfig,
@@ -127,6 +134,7 @@ public struct MCPRoute: Sendable {
         clock: @escaping @Sendable () -> Date = { Date() },
         onSessionStart: @escaping @Sendable () -> Void = {},
         onSessionEnd: @escaping @Sendable () -> Void = {},
+        cloudName: String? = nil,
         onAuthFailure: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.config = config
@@ -142,6 +150,7 @@ public struct MCPRoute: Sendable {
         self.logger = logger
         self.onSessionStart = onSessionStart
         self.onSessionEnd = onSessionEnd
+        self.cloudName = cloudName
         self.registry = SessionRegistry(
             idleTTL: config.idleTTL,
             maxLifetime: config.maxLifetime,
@@ -171,9 +180,9 @@ public struct MCPRoute: Sendable {
             installMCPRoutes(on: router, endpoint: config.legacyEndpoint, mcpHandler: mcpHandler)
         }
         installPRM(on: router, prm: prm)
-        installLogin(on: router, endpoint: config.endpoint, login: login)
+        installLogin(on: router, endpoint: config.endpoint, login: login, cloudName: cloudName)
         if config.legacyEndpoint != config.endpoint {
-            installLogin(on: router, endpoint: config.legacyEndpoint, login: login)
+            installLogin(on: router, endpoint: config.legacyEndpoint, login: login, cloudName: cloudName)
         }
     }
 
@@ -234,7 +243,7 @@ public struct MCPRoute: Sendable {
       --bg-1:#f7f9fc; --bg-2:#eef2f8;
       --card:#ffffff; --ink:#1f2733; --ink-soft:#5b6572; --ink-faint:#8b95a3;
       --line:#e2e8f1; --line-soft:#eef2f7;
-      --gold:#F2B01E; --gold-ink:#7a5600; --gold-soft:#fdf4e0;
+      --gold:#F2B01E; --gold-ink:#3d2e00; --gold-soft:#fdf4e0;
       --focus:#3b6fe0; --focus-ring:rgba(59,111,224,.18);
       --ok:#1f9d63; --ok-soft:#e9f7f0; --err:#c0392b; --err-soft:#fdecea;
       --radius:16px; --radius-s:10px;
@@ -251,7 +260,7 @@ public struct MCPRoute: Sendable {
       padding:40px 16px; -webkit-font-smoothing:antialiased;
     }
     .card{
-      width:100%; max-width:440px; background:var(--card);
+      width:100%; max-width:560px; background:var(--card);
       border:1px solid var(--line); border-radius:var(--radius);
       box-shadow:var(--shadow); padding:40px 36px 34px;
     }
@@ -341,7 +350,7 @@ public struct MCPRoute: Sendable {
     /// Exposed as a static function so tests (and the preview tooling) can
     /// render it without a full server. The `endpoint` is shown in the footer
     /// so an operator knows which MCP URL they are authenticating against.
-    static func loginHTML(endpoint: String) -> String {
+    static func loginHTML(endpoint: String, cloudName: String? = nil) -> String {
         let loginPath = endpoint + "/login"
         return """
         <!DOCTYPE html>
@@ -370,7 +379,7 @@ public struct MCPRoute: Sendable {
             <h1 class="title">Authenticate to your cloud</h1>
             <p class="sub">Mint a Keystone token to connect this MCP server to your OpenStack deployment.</p>
 
-            <form method="POST" action="\(loginPath)" onsubmit="return substationValidate(this)">
+            <form method="POST" action="\(loginPath)" onsubmit="return substationSubmit(this)">
               <div class="group">
                 <label for="method">Method</label>
                 <select id="method" name="method" class="field" onchange="substationFilter(this.value)">
@@ -408,7 +417,7 @@ public struct MCPRoute: Sendable {
                 <div class="group only-password">
                   <label for="password">Password</label>
                   <input class="field" id="password" name="password" type="password"
-                         placeholder="••••••••••••••••" autocomplete="current-password"
+                         placeholder="••••••••••••••••" autocomplete="off"
                          data-required="password">
                 </div>
                 <div class="group only-password">
@@ -418,21 +427,28 @@ public struct MCPRoute: Sendable {
                   <p class="hint">Omit for a domain-scoped token; set the cloud's admin project for cross-domain privileges.</p>
                   <div class="detect-row">
                     <button type="button" class="btn-detect" id="detectBtn" onclick="substationDetectProjects()">Detect projects</button>
-                    <span id="detectStatus" class="detect-status"></span>
+                    <span id="detectStatus" class="detect-status" role="status" aria-live="polite"></span>
                   </div>
                   <select id="projectSelect" class="field project-select" hidden onchange="substationPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
                 </div>
+                <div class="group">
+                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
+                  <input class="field" id="region" name="region" type="text" list="regionList"
+                         placeholder="e.g. IAD3, RegionOne" autocomplete="off" spellcheck="false">
+                  <datalist id="regionList"></datalist>
+                  <p class="hint" id="regionHint">Selects which region the minted token will target. Leave blank to use the default.</p>
+                </div>
               </div>
 
               <p id="formError" class="form-error" role="alert" hidden></p>
-              <button type="submit" class="btn">Log in</button>
+              <button type="submit" class="btn" id="loginBtn">Log in</button>
 
               <input type="hidden" name="elicitationId" value="E1">
             </form>
 
-            <p class="footer">Serving <code>\(endpoint)</code> · token is stored for this session only</p>
+            <p class="footer">Serving <code>\(endpoint)</code>\(cloudName.map { " · cloud <code>\($0)</code>" } ?? "") · token is stored for this session only</p>
           </main>
           <script>
             // Show/hide the field group for the selected method. Fields are
@@ -467,6 +483,18 @@ public struct MCPRoute: Sendable {
                   inp.focus();
                   return false;
                 }
+              }
+              return true;
+            }
+            // Validate then show a loading state on the button before the
+            // browser's native form POST takes over. The button is disabled
+            // and its label changes to prevent double-submission.
+            function substationSubmit(form) {
+              if (!substationValidate(form)) { return false; }
+              var btn = document.getElementById('loginBtn');
+              if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Minting…';
               }
               return true;
             }
@@ -526,10 +554,45 @@ public struct MCPRoute: Sendable {
               var target = document.getElementById('projectName');
               if (target && selectEl.value) { target.value = selectEl.value; }
             }
-            // initialise the field filter on load (defaults to app-cred)
+            // initialise the field filter on load (defaults to app-cred) and
+            // fetch the configured regions for the Region datalist.
             document.addEventListener('DOMContentLoaded', function() {
               var sel = document.getElementById('method');
               if (sel) { substationFilter(sel.value); }
+              // Populate the region datalist from the server.
+              fetch('\(endpoint)/login/regions').then(function(r) { return r.json(); })
+                .then(function(j) {
+                  var dl = document.getElementById('regionList');
+                  var hint = document.getElementById('regionHint');
+                  if (!dl || !j || !j.regions) { return; }
+                  if (!j.regions.length) {
+                    // Single-region cloud — dim the field so it's clear it's not needed.
+                    var inp = document.getElementById('region');
+                    if (inp) { inp.style.opacity = '0.5'; inp.placeholder = 'single-region cloud — leave blank'; }
+                    return;
+                  }
+                  for (var i = 0; i < j.regions.length; i++) {
+                    var opt = document.createElement('option');
+                    opt.value = j.regions[i];
+                    dl.appendChild(opt);
+                  }
+                  if (hint) { hint.textContent = 'Configured: ' + j.regions.join(', '); }
+                  // Warn when the typed value doesn't match a known region.
+                  var regionInp = document.getElementById('region');
+                  if (regionInp) {
+                    regionInp.addEventListener('input', function() {
+                      var val = (this.value || '').trim().toUpperCase();
+                      var match = j.regions.some(function(r) { return r.toUpperCase() === val; });
+                      if (val && !match && hint) {
+                        hint.textContent = 'Unknown region — available: ' + j.regions.join(', ');
+                        hint.style.color = '#b3360c';
+                      } else if (hint) {
+                        hint.textContent = 'Configured: ' + j.regions.join(', ');
+                        hint.style.color = '';
+                      }
+                    });
+                  }
+                }).catch(function() { /* regions endpoint unavailable — field stays free-text */ });
             });
           </script>
         </body>
@@ -540,12 +603,13 @@ public struct MCPRoute: Sendable {
     private func installLogin(
         on router: Router<BasicRequestContext>,
         endpoint: String,
-        login: (@Sendable (LoginRequest) async -> LoginResponse)?
+        login: (@Sendable (LoginRequest) async -> LoginResponse)?,
+        cloudName: String? = nil
     ) {
         let loginPath = endpoint + "/login"
         let loginRoutePath = RouterPath(loginPath)
         router.get(loginRoutePath) { _, _ in
-            let html = Self.loginHTML(endpoint: endpoint)
+            let html = Self.loginHTML(endpoint: endpoint, cloudName: cloudName)
             return Response(
                 status: .ok,
                 headers: [.contentType: "text/html; charset=utf-8"],
@@ -759,7 +823,8 @@ public struct MCPRoute: Sendable {
             userName: fields["userName"],
             password: fields["password"],
             userDomain: fields["userDomain"],
-            projectName: fields["projectName"]
+            projectName: fields["projectName"],
+            region: fields["region"]
         )
     }
 

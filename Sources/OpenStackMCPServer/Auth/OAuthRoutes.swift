@@ -159,14 +159,18 @@ extension OAuthAuthorizationServer {
                 }
                 return Self.redirectWithCode(code: code, redirectURI: redirectURI, state: state)
             } catch {
-                logger.warning("OAuth authorize mint failed", metadata: ["reason": "\(error)"])
+                var reason = "unknown"
+                if let osErr = error as? OpenStackError {
+                    reason = "keystone-\(osErr.status)-\(osErr.code ?? "generic")"
+                }
+                logger.warning("OAuth authorize mint failed", metadata: ["reason": .string(reason)])
                 return Self.oauthError(.invalidRequest(description: "Mint failed (check credentials)."), state: state, redirectURI: redirectURI)
             }
         }
 
         // No credentials: render the consent / credential form (browser path).
         if postBody == nil {
-            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope)
+            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope, cloudName: cloudName)
             return Response(status: .ok, headers: [.contentType: "text/html"], body: .init(byteBuffer: ByteBuffer(string: html)))
         }
 
@@ -176,6 +180,7 @@ extension OAuthAuthorizationServer {
     /// Mint a Keystone token from form credentials (same seam as the login page).
     private func mintKeystone(fields: [String: String]) async throws -> Token? {
         let method = fields["method"] ?? "app-cred"
+        let region = fields["region"]?.isEmpty == false ? fields["region"]! : nil
         if method == "password" {
             let uid = fields["userName"] ?? ""
             let pw = fields["password"] ?? ""
@@ -186,13 +191,13 @@ extension OAuthAuthorizationServer {
                 password: pw,
                 projectName: (fields["projectName"] ?? "").isEmpty ? nil : fields["projectName"]
             )
-            return try await minter.mint(method: m)
+            return try await minter.mint(method: m, region: region)
         } else {
             let id = fields["appCredId"] ?? ""
             let secret = fields["secret"] ?? ""
             guard !id.isEmpty, !secret.isEmpty else { return nil }
             let m = MintMethod.applicationCredential(id: id, secret: Array(secret.utf8).map { Int8(bitPattern: $0) })
-            return try await minter.mint(method: m)
+            return try await minter.mint(method: m, region: region)
         }
     }
     // MARK: - Token endpoint
@@ -265,15 +270,26 @@ extension OAuthAuthorizationServer {
         do {
             vt = try await tokenValidator.validate(grant.keystoneTokenID)
         } catch {
-            logger.warning("OAuth token exchange failed", metadata: ["reason": "\(error)"])
+            var reason = "token_validate"
+            if let osErr = error as? OpenStackError { reason = "keystone-\(osErr.status)-\(osErr.code ?? "generic")" }
+            logger.warning("OAuth token exchange failed", metadata: ["stage": .string("validate"), "reason": .string(reason)])
             return Self.oauthError(.invalidGrant(description: "Embedded Keystone token is invalid or expired."))
         }
 
         // Single-use: reject replayed codes. Instance-local by default; when
         // `oauth.replay_store: memcached` is configured, `vt`'s catalog gives
-        // the shared endpoint and the check is cluster-wide (fail-open to
-        // local if the cache is unreachable).
-        if await codeReplayStore.seen(jtiOf(code), vt: vt) {
+        // the shared endpoint and the check is cluster-wide. A shared-store
+        // failure fails open (local enforcement) unless
+        // `oauth.replay_store_fail_open: false`, in which case the code is
+        // rejected rather than risk a cross-replica replay.
+        let replayed: Bool
+        do {
+            replayed = try await codeReplayStore.seen(jtiOf(code), vt: vt)
+        } catch {
+            logger.warning("OAuth token exchange failed", metadata: ["stage": .string("replay_store"), "reason": .string("shared_store_error")])
+            return Self.oauthError(.invalidGrant(description: "Authorization code redemption unavailable."))
+        }
+        if replayed {
             return Self.oauthError(.invalidGrant(description: "Authorization code already redeemed."))
         }
 
@@ -301,7 +317,7 @@ extension OAuthAuthorizationServer {
             ])
             return Response(status: .ok, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(data: data)))
         } catch {
-            logger.warning("OAuth token exchange failed", metadata: ["reason": "\(error)"])
+            logger.warning("OAuth token exchange failed", metadata: ["stage": .string("mint_access_token"), "reason": .string("internal_error")])
             return Self.oauthError(.invalidGrant(description: "Embedded Keystone token is invalid or expired."))
         }
     }
@@ -509,8 +525,16 @@ extension OAuthAuthorizationServer {
     /// The OAuth authorization consent page. Matches the `/v1/login` page
     /// styling: Substation logo, IBM Plex Sans, centered card, gold-accented
     /// primary button, and method-filtered form groups (app-cred vs password).
-    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String) -> String {
-        func esc(_ s: String) -> String { s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;") }
+    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String, cloudName: String? = nil) -> String {
+        func esc(_ s: String) -> String {
+            var r = s
+            r = r.replacingOccurrences(of: "&", with: "&amp;")   // must be first
+            r = r.replacingOccurrences(of: "<", with: "&lt;")
+            r = r.replacingOccurrences(of: ">", with: "&gt;")
+            r = r.replacingOccurrences(of: "\"", with: "&quot;")
+            r = r.replacingOccurrences(of: "'", with: "&#39;")
+            return r
+        }
         let action = "\(path)/authorize"
         return """
         <!DOCTYPE html>
@@ -522,7 +546,7 @@ extension OAuthAuthorizationServer {
           --bg-1:#f7f9fc; --bg-2:#eef2f8;
           --card:#ffffff; --ink:#1f2733; --ink-soft:#5b6572; --ink-faint:#8b95a3;
           --line:#e2e8f1; --line-soft:#eef2f7;
-          --gold:#F2B01E; --gold-ink:#7a5600; --gold-soft:#fdf4e0;
+          --gold:#F2B01E; --gold-ink:#3d2e00; --gold-soft:#fdf4e0;
           --focus:#3b6fe0; --focus-ring:rgba(59,111,224,.18);
           --radius:16px; --radius-s:10px;
           --shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -8px rgba(16,24,40,.12);
@@ -538,7 +562,7 @@ extension OAuthAuthorizationServer {
           padding:40px 16px; -webkit-font-smoothing:antialiased;
         }
         .card{
-          width:100%; max-width:440px; background:var(--card);
+          width:100%; max-width:560px; background:var(--card);
           border:1px solid var(--line); border-radius:var(--radius);
           box-shadow:var(--shadow); padding:40px 36px 34px;
         }
@@ -597,7 +621,7 @@ extension OAuthAuthorizationServer {
             <p class="kicker">OAuth 2.1 · Authorization Code + PKCE</p>
             <h1 class="title">Authorize client</h1>
             <p class="sub"><code>\(esc(clientID))</code> will be redirected to<br><code>\(esc(redirectURI))</code> with an authorization code.</p>
-            <form method="POST" action="\(esc(action))">
+            <form method="POST" action="\(esc(action))" id="oauthForm" onsubmit="return oauthSubmit(this)">
               <input type="hidden" name="client_id" value="\(esc(clientID))">
               <input type="hidden" name="response_type" value="code">
               <input type="hidden" name="redirect_uri" value="\(esc(redirectURI))">
@@ -615,8 +639,7 @@ extension OAuthAuthorizationServer {
                 <div class="group">
                   <label for="scope">Access level</label>
                   <select id="scope" name="scope" class="field">
-                    <option value="" selected>Inherit from account (recommended)</option>
-                    <option value="openstack:read">Read-only</option>
+                    <option value="openstack:read" selected>Read</option>
                     <option value="openstack:read openstack:write">Read + write</option>
                   </select>
                 </div>
@@ -645,16 +668,23 @@ extension OAuthAuthorizationServer {
                   <input id="projectName" name="projectName" type="text" class="field" placeholder="e.g. admin">
                   <div class="detect-row">
                     <button type="button" class="btn-detect" id="detectBtn" onclick="oauthDetectProjects()">Detect projects</button>
-                    <span id="detectStatus" class="detect-status"></span>
+                    <span id="detectStatus" class="detect-status" role="status" aria-live="polite"></span>
                   </div>
                   <select id="projectSelect" class="field project-select" hidden onchange="oauthPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
                 </div>
+                <div class="group">
+                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
+                  <input id="region" name="region" type="text" class="field" list="oauthRegionList"
+                         placeholder="e.g. IAD3, DFW3, RegionOne" autocomplete="off" spellcheck="false">
+                  <datalist id="oauthRegionList"></datalist>
+                  <p class="hint" id="oauthRegionHint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Selects which region the minted token will target. Leave blank to use the default.</p>
+                </div>
               </div>
-              <button type="submit" class="btn">Authorize &amp; mint</button>
+              <button type="submit" class="btn" id="oauthSubmitBtn">Authorize &amp; mint</button>
             </form>
-            <p class="footer">Sign in to mint a Keystone token. The authorization code is single-use and expires in 30 seconds.</p>
+            <p class="footer">Sign in to mint a Keystone token.\(cloudName.map { " · cloud <code>\(esc($0))</code>" } ?? "") The authorization code is single-use and expires in 30 seconds.</p>
           </div>
         <script>
           // Detect projects for the entered user (password method only). The
@@ -707,6 +737,49 @@ extension OAuthAuthorizationServer {
             var target = document.getElementById('projectName');
             if (target && selectEl.value) { target.value = selectEl.value; }
           }
+          // Disable the submit button and show a loading state on form submit.
+          function oauthSubmit(form) {
+            var btn = document.getElementById('oauthSubmitBtn');
+            if (btn) {
+              btn.disabled = true;
+              btn.textContent = 'Minting…';
+            }
+            return true;
+          }
+          // Populate the region datalist from the server and warn on unknown values.
+          (function() {
+            fetch('\(endpoint)/login/regions').then(function(r) { return r.json(); })
+              .then(function(j) {
+                var dl = document.getElementById('oauthRegionList');
+                var hint = document.getElementById('oauthRegionHint');
+                if (!dl || !j || !j.regions) { return; }
+                if (!j.regions.length) {
+                  var inp = document.getElementById('region');
+                  if (inp) { inp.style.opacity = '0.5'; inp.placeholder = 'single-region cloud — leave blank'; }
+                  return;
+                }
+                for (var i = 0; i < j.regions.length; i++) {
+                  var opt = document.createElement('option');
+                  opt.value = j.regions[i];
+                  dl.appendChild(opt);
+                }
+                if (hint) { hint.textContent = 'Configured: ' + j.regions.join(', '); }
+                var regionInp = document.getElementById('region');
+                if (regionInp) {
+                  regionInp.addEventListener('input', function() {
+                    var val = (this.value || '').trim().toUpperCase();
+                    var match = j.regions.some(function(r) { return r.toUpperCase() === val; });
+                    if (val && !match && hint) {
+                      hint.textContent = 'Unknown region — available: ' + j.regions.join(', ');
+                      hint.style.color = '#b3360c';
+                    } else if (hint) {
+                      hint.textContent = 'Configured: ' + j.regions.join(', ');
+                      hint.style.color = '';
+                    }
+                  });
+                }
+              }).catch(function() {});
+          })();
         </script>
         </body></html>
         """

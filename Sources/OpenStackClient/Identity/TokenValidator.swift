@@ -90,7 +90,7 @@ public actor LoginMinter {
     }
 
     /// Mint a token using the given method.
-    public func mint(method: MintMethod, domainScoped: Bool = false) async throws -> Token {
+    public func mint(method: MintMethod, region: String? = nil, domainScoped: Bool = false) async throws -> Token {
         let body: Data
 
         let id = method.appCredID
@@ -156,12 +156,22 @@ public actor LoginMinter {
             var value: String?
         }
         let box = SubjectTokenBox()
+        // When a region is specified, look up that region's Keystone endpoint
+        // from the cloud config so multi-region clouds (each region having its
+        // own auth_url) can be selected from the login/OAuth form.
+        var overrideBase: URL? = nil
+        if let region, !region.isEmpty {
+            if let regionURL = Self.regionAuthURL(region: region) {
+                overrideBase = regionURL
+            }
+        }
         let (status, responseBody, _) = try await transport.request(
             method: "POST",
             service: "keystone",
             path: "/v3/auth/tokens",
             body: body,
             tokenOverride: "",
+            overrideBase: overrideBase,
             captureSubjectToken: { box.value = $0 }
         )
 
@@ -224,10 +234,11 @@ public actor LoginMinter {
         } catch {
             // Re-throw with a clear stage marker so the caller can distinguish
             // "bad credentials" (mint failed) from "no permission to list"
-            // (list failed). The underlying message may quote credential
-            // material, so we wrap it.
+            // (list failed). The raw error is deliberately NOT interpolated
+            // into the message: it may quote credential material, and the
+            // caller matches on the "mint_failed" substring only.
             throw OpenStackError(service: "keystone", status: 401,
-                                  message: "mint_failed: \(error)")
+                                  message: "mint_failed")
         }
 
         // 2. List the user's projects. Different clouds expose this differently:
@@ -312,6 +323,19 @@ public actor LoginMinter {
             if marker == nil { break }
         }
         return projects
+    }
+
+    // MARK: - Region → Keystone auth URL lookup
+
+    /// Look up the Keystone `auth_url` for a named region from the process's
+    /// clouds.yaml. Multi-region clouds (e.g. Rackspace IAD3/DFW3/SJC3) have
+    /// one cloud entry per region, each with its own `auth_url`. The login and
+    /// OAuth forms let the user pick a region; this resolves it to the correct
+    /// Keystone endpoint so the token is minted against the right identity API.
+    static func regionAuthURL(region: String) -> URL? {
+        let url = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OS_CLIENT_CONFIG_FILE"] ?? "clouds.yaml")
+        let config = CloudConfig.load(file: url)
+        return config.clouds.first { $0.regionName == region }?.authURL
     }
 
     // MARK: - JSON body builders

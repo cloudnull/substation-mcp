@@ -19,11 +19,13 @@ import OpenStackClient
 //   preference public → internal → admin, over the normal internal network),
 //   with an explicit `oauth.replay_store_endpoint` override for
 //   non-catalog deployments.
-//
-// The shared backend is **fail-open**: any discovery or cache failure degrades
-// that one exchange to the local store (with a warning log), so a memcached
-// outage never breaks the OAuth flow — it only degrades to single-replica
-// replay semantics until the cache is reachable again.
+// The shared backend **falls open by default** (`failOpen`, default true):
+// any discovery or cache failure degrades that one exchange to the local
+// store (with a warning log), so a memcached outage never breaks the OAuth
+// flow — it only degrades to single-replica replay semantics until the
+// cache is reachable again. Set `failOpen == false` to fail closed instead:
+// a shared-store error then rejects the code rather than risk a
+// cross-replica replay.
 
 /// The seam the token endpoint calls: "was this code `jti` already redeemed
 /// (and mark it if not)?"
@@ -76,10 +78,17 @@ public actor LocalCodeReplayStore: CodeReplayRecording {
 /// The AS's replay store: a pluggable backend with fail-open degradation to
 /// the local in-memory set. Retains the original `seen(_:)` surface for
 /// callers that don't carry a catalog.
+/// ``seen(_:vt:)`` never throws when the shared backend is fail-open (the
+/// default); with ``CodeReplayStore/init(shared:ttl:logger:failOpen:)``
+/// configured fail-closed, a shared-store error re-throws and the token
+/// endpoint rejects the code.
 public actor CodeReplayStore {
     private let shared: SharedCodeReplayStore?
     private let local: LocalCodeReplayStore
     private let logger: Logger
+    /// Whether a shared-store error degrades to local enforcement (default)
+    /// or fails the exchange.
+    private let failOpen: Bool
 
     /// Instance-local construction (the original default; single-replica
     /// semantics, zero external dependencies).
@@ -87,14 +96,16 @@ public actor CodeReplayStore {
         self.shared = nil
         self.local = LocalCodeReplayStore(ttl: ttl)
         self.logger = logger
+        self.failOpen = true
     }
 
     /// Shared (multi-replica) construction: `shared` first, failing open to
     /// `local` whenever discovery or the cache errors.
-    public init(shared: SharedCodeReplayStore, ttl: Int = 300, logger: Logger) {
+    public init(shared: SharedCodeReplayStore, ttl: Int = 300, logger: Logger, failOpen: Bool = true) {
         self.shared = shared
         self.local = LocalCodeReplayStore(ttl: ttl)
         self.logger = logger
+        self.failOpen = failOpen
     }
 
     /// The original surface: local enforcement only (no catalog to discover a
@@ -103,18 +114,24 @@ public actor CodeReplayStore {
         await local.record(jti)
     }
 
-    /// Token-endpoint entry point: shared-first with fail-open local
-    /// degradation. Never throws — a cache problem must not break the
-    /// exchange.
-    public func seen(_ jti: String, vt: ValidatedToken) async -> Bool {
+    /// Token-endpoint entry point: shared-first. A shared-store error either
+    /// degrades to local enforcement (fail-open, the default; never throws)
+    /// or re-throws so the token endpoint rejects the code (fail-closed).
+    public func seen(_ jti: String, vt: ValidatedToken) async throws -> Bool {
         if let shared {
             do {
                 return try await shared.record(jti, vt: vt)
-            } catch {
+            } catch where failOpen {
                 logger.warning(
                     "Shared replay store unavailable; using instance-local enforcement",
                     metadata: ["reason": .string(String(describing: error))]
                 )
+            } catch {
+                logger.error(
+                    "Shared replay store unavailable; rejecting authorization code (fail-closed)",
+                    metadata: ["reason": .string(String(describing: error))]
+                )
+                throw error
             }
         }
         return await local.record(jti, vt: vt)

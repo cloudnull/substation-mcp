@@ -271,10 +271,11 @@ public func pkceS256Challenge(_ verifier: String) -> String {
 @inline(__always)
 public func constantTimeEquals(_ a: String, _ b: String) -> Bool {
     let aa = Array(a.utf8), bb = Array(b.utf8)
-    guard aa.count == bb.count, !aa.isEmpty else { return false }
-    var diff: UInt8 = 0
-    for i in 0..<aa.count { diff |= aa[i] ^ bb[i] }
-    return diff == 0
+    let minLength = Swift.min(aa.count, bb.count)
+    var result: UInt8 = UInt8(truncatingIfNeeded: aa.count ^ bb.count)
+    for i in 0..<minLength { result |= aa[i] ^ bb[i] }
+    if aa.isEmpty || bb.isEmpty { result = 0xFF }
+    return result == 0
 }
 
 // MARK: - AnyCodableValue bridging from Foundation JSON

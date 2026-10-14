@@ -29,6 +29,7 @@ public struct LoginPage: Sendable {
         let minter = self.minter
         let logger = self.logger
         return { req in
+            let region = req.region?.isEmpty == false ? req.region! : nil
             let method: MintMethod
             switch req.method {
             case "password":
@@ -53,7 +54,7 @@ public struct LoginPage: Sendable {
             }
 
             do {
-                let token = try await minter.mint(method: method)
+                let token = try await minter.mint(method: method, region: region)
                 // The secret has been consumed by the minter. The minted token
                 // is display-only: it is shown on the completion page (its
                 // intended surface) but NEVER stored server-side — there is no
@@ -85,10 +86,6 @@ public struct LoginPage: Sendable {
                 logger.warning("Login mint failed", metadata: [
                     "elicitationId": "\(req.elicitationId)",
                     "reason": "\(reason)",
-                ])
-                logger.warning("Login mint failed", metadata: [
-                    "elicitationId": "\(req.elicitationId)",
-                    "error": "\(error)",
                 ])
                 return LoginResponse(
                     tokenID: "",

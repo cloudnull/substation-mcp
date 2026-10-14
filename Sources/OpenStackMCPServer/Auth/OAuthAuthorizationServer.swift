@@ -96,6 +96,8 @@ public struct OAuthAuthorizationServer: Sendable {
     /// piece of server-side state (a stateless AS otherwise holds nothing);
     /// instance-local so each AS (and each test) has its own replay window.
     public let codeReplayStore: CodeReplayStore
+    /// The cloud name shown in the authorize page footer (e.g. "rackspace-iad3").
+    public let cloudName: String?
 
     public init(
         secret: String,
@@ -109,6 +111,8 @@ public struct OAuthAuthorizationServer: Sendable {
         codeReplayStore: CodeReplayStore = CodeReplayStore(ttl: 300),
         sharedReplayCache: Bool = false,
         sharedReplayCacheOverride: (host: String, port: Int)? = nil,
+        replayStoreFailOpen: Bool = true,
+        cloudName: String? = nil,
         logger: Logger = Logger(label: "oauth-as")
     ) {
         self.secret = secret
@@ -121,9 +125,9 @@ public struct OAuthAuthorizationServer: Sendable {
         self.tokenValidator = tokenValidator
         // Shared (memcached) replay store when requested: the endpoint is
         // discovered from each token's Keystone service catalog (spec §6.5)
-        // unless an explicit override is configured. Falls back to the local
-        // store on any cache failure (fail-open), so this never breaks the
-        // flow.
+        // unless an explicit override is configured. On any cache failure it
+        // either falls back to the local store (fail-open, the default) or
+        // rejects the code (fail-closed).
         if sharedReplayCache {
             let override = sharedReplayCacheOverride
             self.codeReplayStore = CodeReplayStore(
@@ -135,12 +139,14 @@ public struct OAuthAuthorizationServer: Sendable {
                     ),
                     issuer: issuer
                 ),
-                logger: Logger(label: "oauth-as.replay")
+                logger: Logger(label: "oauth-as.replay"),
+                failOpen: replayStoreFailOpen
             )
         } else {
             self.codeReplayStore = codeReplayStore
         }
         self.logger = logger
+        self.cloudName = cloudName
     }
 
     /// The OAuth path prefix, e.g. `/v1/oauth`.
@@ -229,7 +235,7 @@ public struct OAuthAuthorizationServer: Sendable {
             if parts[0] == 192, parts[1] == 168 { return true }
         }
         // Private IPv6: fc00::/7 (unique-local).
-        if host.hasPrefix("fc") || host.hasPrefix("fd") { return true }
+        if host.contains(":") && (host.hasPrefix("fc") || host.hasPrefix("fd")) { return true }
         return false
     }
     // MARK: - JWT mint/verify (authorization code + access token)

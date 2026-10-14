@@ -67,6 +67,22 @@ struct ServeCommand: AsyncParsableCommand {
         _ = bootstrapMetrics()
         let logger = makeLogger(level: cfg.logLevel, format: cfg.logFormat, sink: .standardOutput)
         let cloudEntry = try resolveCloud(cfg: cfg, name: cloud, logger: logger)
+        // Release mode: refuse to start without an explicit OAuth server secret.
+        // The deterministic dev-secret fallback (derived from the issuer) is a
+        // zero-config bootstrap for development only; anyone who knows the public
+        // URL can recompute it, so production deployments MUST set one explicitly.
+        #if !DEBUG
+        if cfg.oauthEnabled {
+            if cfg.oauthServerSecret == nil || cfg.oauthServerSecret?.isEmpty == true {
+                logger.error("oauth.server_secret is required in release mode. Set it to a random value >= 256 bits. Refusing to start.")
+                Foundation.exit(1)
+            }
+        }
+        #else
+        if cfg.oauthEnabled && (cfg.oauthServerSecret == nil || cfg.oauthServerSecret?.isEmpty == true) {
+            logger.warning("oauth.server_secret is not set; using a deterministic dev secret derived from the issuer. This is INSECURE for production — set oauth.server_secret to a random value >= 256 bits.")
+        }
+        #endif
 
         let app = ServeApp(config: cfg, cloud: cloudEntry, logger: logger)
 

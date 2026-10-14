@@ -87,6 +87,8 @@ public struct ServeApp: Sendable {
                 tokenValidator: wiring.validator,
                 sharedReplayCache: config.oauthReplayStore == "memcached",
                 sharedReplayCacheOverride: config.oauthReplayStoreEndpointParsed,
+                replayStoreFailOpen: config.oauthReplayStoreFailOpen,
+                cloudName: cloud.name,
                 logger: logger
             )
         } else {
@@ -150,6 +152,7 @@ public struct ServeApp: Sendable {
             logger: logger,
             onSessionStart: { OSMetrics.sessionStarted() },
             onSessionEnd: { OSMetrics.sessionEnded() },
+            cloudName: cloud.name,
             onAuthFailure: { reason in OSMetrics.authFailure(reason: reason) }
         )
 
@@ -168,8 +171,22 @@ public struct ServeApp: Sendable {
         // projects the account can reach. Application credentials are not
         // accepted here — they are bound to a single project at creation.
         if config.authLoginPageEnabled {
+            let detectLimiter = FailedAuthLimiter(limitPerMinute: config.authFailedAuthPerMinute)
             let detectPath = "\(config.serverEndpoint)/login/detect-projects"
-            router.post(RouterPath(detectPath)) { [maxBodyBytes = config.serverMaxBodyBytes, minter, logger] request, _ in
+            router.post(RouterPath(detectPath)) { [maxBodyBytes = config.serverMaxBodyBytes, minter, logger, limiter = detectLimiter] request, _ in
+                // Rate-limit per client IP so brute-force credential guessing is bounded.
+                let forwardedName = HTTPField.Name("X-Forwarded-For")!
+                let sourceIP: String = {
+                    if let f = request.headers[forwardedName] {
+                        let first = f.split(separator: ",").first?.trimmingCharacters(in: .whitespaces)
+                        if let first, !first.isEmpty { return first }
+                    }
+                    return "local"
+                }()
+                guard await limiter.record(source: sourceIP) else {
+                    return Response(status: .tooManyRequests, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(string: #"{"error":"rate limited"}"#)))
+                }
                 var consumed = 0
                 var buf = Data()
                 do {
@@ -203,29 +220,51 @@ public struct ServeApp: Sendable {
                     return Response(status: .ok, headers: [.contentType: "application/json"],
                                      body: .init(byteBuffer: ByteBuffer(data: resp)))
                 } catch {
-                    logger.info("detect-projects failed for user \(user): \(error)")
-                    // Surface the failure stage so the operator knows whether
-                    // it's bad credentials (mint_failed) or a permission gap
-                    // (list_forbidden). The underlying message is not echoed
-                    // verbatim (it may quote credential material).
+                    // Log the failure stage server-side only (structured fields;
+                    // the raw error may quote credential material). The HTTP
+                    // response is identical regardless of which stage failed, so
+                    // an attacker cannot distinguish "bad credentials" from
+                    // "authenticated but no list permission" — no user-existence
+                    // or capability oracle.
                     let msg = "\(error)"
-                    // Classify the failure. Check the underlying markers in
-                    // priority order: mint_failed (bad creds) > list_projects
-                    // permission gap > generic. We match on substrings that
-                    // survive string interpolation of the OpenStackError.
-                    let isListForbidden = msg.contains("list_forbidden") || msg.contains("identity:list_projects") || msg.contains("not authorized to perform")
-                    let userMsg: String
-                    if msg.contains("mint_failed") {
-                        userMsg = "authentication failed — check username, domain, and password"
-                    } else if isListForbidden {
-                        userMsg = "authenticated, but this account cannot list its projects (missing identity:list_projects role) — enter the project name manually"
-                    } else {
-                        userMsg = "could not detect projects: \(msg)"
+                    var reason = "unknown"
+                    if let osErr = error as? OpenStackError {
+                        reason = "keystone-\(osErr.status)-\(osErr.code ?? "generic")"
+                    } else if msg.contains("mint_failed") {
+                        reason = "mint_failed"
+                    } else if msg.contains("list_forbidden") || msg.contains("identity:list_projects") || msg.contains("not authorized to perform") {
+                        reason = "list_forbidden"
                     }
-                    let status = isListForbidden ? HTTPResponse.Status.forbidden : HTTPResponse.Status.unauthorized
-                    return Response(status: status, headers: [.contentType: "application/json"],
-                                     body: .init(byteBuffer: ByteBuffer(string: "{\"error\":\"\(userMsg.replacingOccurrences(of: "\"", with: "\\\""))}\"")))
+                    logger.warning("detect-projects failed", metadata: [
+                        "reason": .string(reason),
+                        "user": .string(user),
+                    ])
+                    return Response(status: .unauthorized, headers: [.contentType: "application/json"],
+                                     body: .init(byteBuffer: ByteBuffer(string: #"{"error":"authentication failed"}"#)))
                 }
+            }
+        }
+
+        // Region-listing endpoint for the login/OAuth Region field. Returns
+        // the configured region names from clouds.yaml so the form can offer a
+        // datalist and warn on unknown values. Only reachable when the login
+        // page is enabled (the form that calls it).
+        if config.authLoginPageEnabled {
+            let regionsPath = "\(config.serverEndpoint)/login/regions"
+            router.get(RouterPath(regionsPath)) { [cloudsFile = config.cloudsFile, defaultCloud = cloud.name] _, _ in
+                let url: URL
+                if let cf = cloudsFile {
+                    url = URL(fileURLWithPath: cf)
+                } else {
+                    url = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OS_CLIENT_CONFIG_FILE"] ?? "clouds.yaml")
+                }
+                let cloudConfig = CloudConfig.load(file: url)
+                let regions: [String] = cloudConfig.clouds
+                    .compactMap { $0.regionName }
+                    .filter { !$0.isEmpty }
+                let resp = (try? JSONSerialization.data(withJSONObject: ["regions": regions])) ?? Data("{}".utf8)
+                return Response(status: .ok, headers: [.contentType: "application/json"],
+                                 body: .init(byteBuffer: ByteBuffer(data: resp)))
             }
         }
 
