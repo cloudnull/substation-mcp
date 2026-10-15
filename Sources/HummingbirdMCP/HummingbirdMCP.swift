@@ -420,6 +420,13 @@ public struct MCPRoute: Sendable {
                          placeholder="••••••••••••••••" autocomplete="off"
                          data-required="password">
                 </div>
+                <div class="group">
+                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
+                  <input class="field" id="region" name="region" type="text" list="regionList"
+                         placeholder="e.g. IAD3, RegionOne" autocomplete="off" spellcheck="false">
+                  <datalist id="regionList"></datalist>
+                  <p class="hint" id="regionHint">Selects which region the minted token will target. Leave blank to use the default.</p>
+                </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">optional</span></label>
                   <input class="field" id="projectName" name="projectName" type="text"
@@ -432,13 +439,6 @@ public struct MCPRoute: Sendable {
                   <select id="projectSelect" class="field project-select" hidden onchange="substationPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
-                </div>
-                <div class="group">
-                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
-                  <input class="field" id="region" name="region" type="text" list="regionList"
-                         placeholder="e.g. IAD3, RegionOne" autocomplete="off" spellcheck="false">
-                  <datalist id="regionList"></datalist>
-                  <p class="hint" id="regionHint">Selects which region the minted token will target. Leave blank to use the default.</p>
                 </div>
               </div>
 
@@ -577,8 +577,10 @@ public struct MCPRoute: Sendable {
                     dl.appendChild(opt);
                   }
                   if (hint) { hint.textContent = 'Configured: ' + j.regions.join(', '); }
-                  // Warn when the typed value doesn't match a known region.
+                  // Pre-fill the region field with the server's default region.
                   var regionInp = document.getElementById('region');
+                  if (regionInp && j.default) { regionInp.value = j.default; }
+                  // Warn when the typed value doesn't match a known region.
                   if (regionInp) {
                     regionInp.addEventListener('input', function() {
                       var val = (this.value || '').trim().toUpperCase();

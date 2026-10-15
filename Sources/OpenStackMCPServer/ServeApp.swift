@@ -257,7 +257,12 @@ public struct ServeApp: Sendable {
                 let regions: [String] = cloudConfig.clouds
                     .compactMap { $0.regionName }
                     .filter { !$0.isEmpty }
-                let resp = (try? JSONSerialization.data(withJSONObject: ["regions": regions])) ?? Data("{}".utf8)
+                // The served cloud's region is the default — pre-fill it so the
+                // operator doesn't have to pick the most common case by hand.
+                let defaultRegion = cloudConfig.cloud(named: defaultCloud)?.regionName ?? regions.first
+                var payload: [String: Any] = ["regions": regions]
+                if let dr = defaultRegion, !dr.isEmpty { payload["default"] = dr }
+                let resp = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
                 return Response(status: .ok, headers: [.contentType: "application/json"],
                                  body: .init(byteBuffer: ByteBuffer(data: resp)))
             }

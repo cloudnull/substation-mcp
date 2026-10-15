@@ -665,6 +665,13 @@ extension OAuthAuthorizationServer {
                   <label for="password">Password</label>
                   <input id="password" name="password" type="password" class="field" autocomplete="current-password">
                 </div>
+                <div class="group">
+                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
+                  <input id="region" name="region" type="text" class="field" list="oauthRegionList"
+                         placeholder="e.g. IAD3, DFW3, RegionOne" autocomplete="off" spellcheck="false">
+                  <datalist id="oauthRegionList"></datalist>
+                  <p class="hint" id="oauthRegionHint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Selects which region the minted token will target. Leave blank to use the default.</p>
+                </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">(required for write access)</span></label>
                   <input id="projectName" name="projectName" type="text" class="field" placeholder="e.g. admin">
@@ -675,13 +682,6 @@ extension OAuthAuthorizationServer {
                   <select id="projectSelect" class="field project-select" hidden onchange="oauthPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
-                </div>
-                <div class="group">
-                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
-                  <input id="region" name="region" type="text" class="field" list="oauthRegionList"
-                         placeholder="e.g. IAD3, DFW3, RegionOne" autocomplete="off" spellcheck="false">
-                  <datalist id="oauthRegionList"></datalist>
-                  <p class="hint" id="oauthRegionHint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Selects which region the minted token will target. Leave blank to use the default.</p>
                 </div>
               </div>
               <button type="submit" class="btn" id="oauthSubmitBtn">Authorize &amp; mint</button>
@@ -766,7 +766,9 @@ extension OAuthAuthorizationServer {
                   dl.appendChild(opt);
                 }
                 if (hint) { hint.textContent = 'Configured: ' + j.regions.join(', '); }
+                // Pre-fill the region field with the server's default region.
                 var regionInp = document.getElementById('region');
+                if (regionInp && j.default) { regionInp.value = j.default; }
                 if (regionInp) {
                   regionInp.addEventListener('input', function() {
                     var val = (this.value || '').trim().toUpperCase();
