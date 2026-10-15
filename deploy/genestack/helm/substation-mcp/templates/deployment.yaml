@@ -94,6 +94,17 @@ spec:
               containerPort: {{ .Values.containerPort }}
               protocol: TCP
           env:
+            # OAuth AS signing secret (required in release builds). Injected from
+            # the k8s Secret so it never lands in a ConfigMap. The server reads
+            # this as `oauth.server_secret` (ConfigLoader flattens to
+            # `oauth__server_secret`; env prefix is OSMCP_ with __ separator).
+            {{- if .Values.oauth.serverSecret }}
+            - name: OSMCP_OAUTH__SERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "substation-mcp.fullname" . }}-oauth
+                  key: server-secret
+            {{- end }}
             # Inject OSMCP_* config overrides (higher precedence than the config file).
             {{- range .Values.env }}
             - name: {{ .name }}

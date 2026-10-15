@@ -98,14 +98,20 @@ config:
     # its own RFC 8414 authorization server). Set to keystone_token for the
     # legacy P1 bearer-only path (no browser login, no DCR).
     profile: oauth
-    # Production MUST set this explicitly (the zero-config dev secret is
-    # derived deterministically and is NOT suitable for production).
-    server_secret: ""
     # keystone_url is derived from the Keystone catalog at runtime (empty = use catalog).
     keystone_url: ""
     token_cache_ttl: 60
     failed_auth_per_minute: 10
     login_page_enabled: true
+  # ── OAuth 2.1 AS settings (rendered to config.yaml; read as `oauth.*`) ────
+  # The server's ConfigLoader reads these under the `oauth` key prefix, NOT
+  # `auth`. See Sources/substation-mcp/ConfigLoader.swift line ~101.
+  oauth:
+    # HS256 signing secret for the authorization server (JWTs + DCR client
+    # derivation). REQUIRED in release builds — the server refuses to start
+    # without it. Set to a random value >= 256 bits (e.g.
+    # `openssl rand -base64 48`). Injected via k8s Secret, not this file.
+    server_secret: ""
   clouds:
     # Name of the default cloud in clouds.yaml (see cloudsClouds below).
     default: mycloud
@@ -286,6 +292,13 @@ serviceUser:
   output:
     id: ""
     secret: ""
+
+# ── OAuth 2.1 AS signing secret (k8s Secret, NOT in the config ConfigMap) ────
+# The server refuses to start in release mode without this. Set it to a random
+# value >= 256 bits: `openssl rand -base64 48`. Rendered into a k8s Secret and
+# injected as OSMCP_OAUTH__SERVER_SECRET env var.
+oauth:
+  serverSecret: ""
 
 # ── Extra env vars (OSMCP_* form, higher precedence than the config file) ─────
 env: []
