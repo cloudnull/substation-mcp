@@ -14,6 +14,16 @@ public struct OpenStackMCPConfig: Sendable {
     public var serverAllowedOrigins: [String]
     public var serverMaxBodyBytes: Int
     public var serverMetricsToken: String?
+    /// Shared bearer secret for **internal ops** routes — currently `/metrics`.
+    /// When set, these routes require `Authorization: Bearer <ops_token>` and
+    /// return 401 otherwise; when unset they behave as before (open). This is a
+    /// topology-independent way to keep operational surfaces reachable only by
+    /// authorized scrapers/operators without relying on network segmentation or
+    /// spoofable proxy headers. Prefer this over ``serverMetricsToken`` (which
+    /// remains accepted as an alias for `/metrics`). Note: `/healthz` and
+    /// `/readyz` stay open deliberately — Kubernetes liveness/readiness probes
+    /// cannot send auth headers, and their responses are intentionally coarse.
+    public var serverOpsToken: String?
     public var serverPublicURL: String?
     public var serverTLSCert: String?
     public var serverTLSKey: String?
@@ -61,6 +71,15 @@ public struct OpenStackMCPConfig: Sendable {
     /// than risk a cross-replica replay. Ignored unless
     /// `oauth.replay_store == "memcached"`.
     public var oauthReplayStoreFailOpen: Bool
+    /// When true, mounts the `POST /oauth/dev-mint` headless protocol-test
+    /// endpoint. This endpoint mints a Keystone token from raw form
+    /// credentials and returns the full authorize redirect (code + state) in
+    /// one step — it bypasses the browser consent flow and exists only for
+    /// automated OAuth integration tests. **Default false.** A deployment that
+    /// needs it must set `oauth.dev_mint_enabled: true` explicitly; there is no
+    /// build-config fallback (the previous `#if DEBUG` auto-enable was removed
+    /// so a debug binary shipped by accident cannot expose this surface).
+    public var oauthDevMintEnabled: Bool
 
     // MARK: clouds
     public var cloudsDefault: String?
@@ -95,6 +114,7 @@ public struct OpenStackMCPConfig: Sendable {
         serverAllowedOrigins: [String] = ["localhost"],
         serverMaxBodyBytes: Int = 1_048_576,
         serverMetricsToken: String? = nil,
+        serverOpsToken: String? = nil,
         serverPublicURL: String? = nil,
         serverTLSCert: String? = nil,
         serverTLSKey: String? = nil,
@@ -111,6 +131,7 @@ public struct OpenStackMCPConfig: Sendable {
         oauthReplayStore: String = "local",
         oauthReplayStoreEndpoint: String? = nil,
         oauthReplayStoreFailOpen: Bool = true,
+        oauthDevMintEnabled: Bool = false,
         cloudsDefault: String? = nil,
         cloudsAllowed: [String] = [],
         cloudsFile: String? = nil,
@@ -136,6 +157,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.serverAllowedOrigins = serverAllowedOrigins
         self.serverMaxBodyBytes = serverMaxBodyBytes
         self.serverMetricsToken = serverMetricsToken
+        self.serverOpsToken = serverOpsToken
         self.serverPublicURL = serverPublicURL
         self.serverTLSCert = serverTLSCert
         self.serverTLSKey = serverTLSKey
@@ -152,6 +174,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.oauthReplayStore = oauthReplayStore
         self.oauthReplayStoreEndpoint = oauthReplayStoreEndpoint
         self.oauthReplayStoreFailOpen = oauthReplayStoreFailOpen
+        self.oauthDevMintEnabled = oauthDevMintEnabled
         self.cloudsDefault = cloudsDefault
         self.cloudsAllowed = cloudsAllowed
         self.cloudsFile = cloudsFile

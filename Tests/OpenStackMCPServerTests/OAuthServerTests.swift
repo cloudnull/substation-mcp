@@ -280,7 +280,8 @@ private func oauthConfig(handle: FakeHandle, codeTTL: Int = 120, tokenTTL: Int =
         oauthServerSecret: testSecret,
         oauthCodeTTL: codeTTL,
         oauthTokenTTL: tokenTTL,
-        oauthIssuer: oauthIssuer(for: handle)
+        oauthIssuer: oauthIssuer(for: handle),
+        oauthDevMintEnabled: true
     )
 }
 

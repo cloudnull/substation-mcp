@@ -55,8 +55,9 @@
   but is **not** a production control — anyone who knows the public URL can
   recompute it. Set `oauth.server_secret` on any deployment reachable by
   untrusted parties. See [OAuth → Production checklist](oauth.md#production-checklist).
-- The DEBUG-only `POST /v1/oauth/dev-mint` endpoint mints codes without the
-  browser flow and is **not compiled into release builds**.
+- The headless `POST /v1/oauth/dev-mint` endpoint mints codes without the
+  browser flow. It is mounted **only** when `oauth.dev_mint_enabled: true`
+  (default `false`, off in every build). Leave it unset in production.
 
 ## Related
 

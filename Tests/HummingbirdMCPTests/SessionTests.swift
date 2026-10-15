@@ -494,6 +494,54 @@ struct ServeSessionTests {
         }
     }
 
+    @Test("server.ops_token gates /metrics; unset token keeps open access")
+    func opsTokenGating() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let store = TokenStore()
+
+        // No ops token configured -> /metrics stays open (200).
+        let openApp = makeServeApp(handle: handle, config: defaultConfig, tokenStore: store)
+        defer { openApp.shutdown() }
+        try await openApp.app.test(.router) { client in
+            let response = try await sendRequest(client, uri: "/metrics", method: .get)
+            #expect(response.status == .ok, "open metrics should be 200, got \(response.status)")
+        }
+
+        // Gated by server.ops_token: 401 without / with the wrong bearer, 200 with it.
+        var opsCfg = defaultConfig
+        opsCfg.serverOpsToken = "ops-secret"
+        let gatedApp = makeServeApp(handle: handle, config: opsCfg, tokenStore: store)
+        defer { gatedApp.shutdown() }
+        try await gatedApp.app.test(.router) { client in
+            let noAuth = try await sendRequest(client, uri: "/metrics", method: .get)
+            #expect(noAuth.status == .unauthorized, "no token should 401, got \(noAuth.status)")
+            let wrong = try await sendRequest(client, uri: "/metrics", method: .get,
+                                              headers: ["Authorization": "Bearer nope"])
+            #expect(wrong.status == .unauthorized, "wrong token should 401, got \(wrong.status)")
+            let ok = try await sendRequest(client, uri: "/metrics", method: .get,
+                                           headers: ["Authorization": "Bearer ops-secret"])
+            #expect(ok.status == .ok, "right ops token should 200, got \(ok.status)")
+        }
+
+        // Precedence: when both are set, server.ops_token is the accepted value and
+        // the legacy metrics_token is NOT valid on its own.
+        var bothCfg = defaultConfig
+        bothCfg.serverOpsToken = "ops-secret"
+        bothCfg.serverMetricsToken = "legacy-secret"
+        let bothApp = makeServeApp(handle: handle, config: bothCfg, tokenStore: store)
+        defer { bothApp.shutdown() }
+        try await bothApp.app.test(.router) { client in
+            let viaLegacy = try await sendRequest(client, uri: "/metrics", method: .get,
+                                                  headers: ["Authorization": "Bearer legacy-secret"])
+            #expect(viaLegacy.status == .unauthorized,
+                    "legacy-only token must not satisfy ops_token gate, got \(viaLegacy.status)")
+            let viaOps = try await sendRequest(client, uri: "/metrics", method: .get,
+                                               headers: ["Authorization": "Bearer ops-secret"])
+            #expect(viaOps.status == .ok, "ops_token must be honored, got \(viaOps.status)")
+        }
+    }
+
     @Test("/metrics renders real Prometheus data after a session and tool call")
     func metricsRenderPrometheusData() async throws {
         // Bootstrap the prometheus collector once per process so the /metrics

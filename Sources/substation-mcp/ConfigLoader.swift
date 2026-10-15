@@ -87,6 +87,7 @@ public enum ConfigLoader {
         if let a = arr("server__allowed_origins") { cfg.serverAllowedOrigins = a }
         cfg.serverMaxBodyBytes = int("server__max_body_bytes") ?? cfg.serverMaxBodyBytes
         cfg.serverMetricsToken = str("server__metrics_token")
+        cfg.serverOpsToken = str("server__ops_token")
         cfg.serverPublicURL = str("server__public_url")
         cfg.serverTLSCert = str("server__tls__cert")
         cfg.serverTLSKey = str("server__tls__key")
@@ -103,6 +104,8 @@ public enum ConfigLoader {
         cfg.oauthIssuer = str("oauth__issuer")
         if let rs = str("oauth__replay_store") { cfg.oauthReplayStore = rs }
         cfg.oauthReplayStoreEndpoint = str("oauth__replay_store_endpoint")
+        if let b = bool("oauth__replay_store_fail_open") { cfg.oauthReplayStoreFailOpen = b }
+        if let b = bool("oauth__dev_mint_enabled") { cfg.oauthDevMintEnabled = b }
         // clouds
         cfg.cloudsDefault = str("clouds__default")
         if let a = arr("clouds__allowed") { cfg.cloudsAllowed = a }

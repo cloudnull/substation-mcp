@@ -91,7 +91,8 @@ config:
     allowed_origins:
       - "*"
     max_body_bytes: 1048576
-    metrics_token: ""   # set to gate /metrics with a bearer token
+    metrics_token: ""   # legacy alias — prefer ops_token below
+    ops_token: ""       # set to gate internal ops routes (/metrics) with a bearer token
   auth:
     # Default: oauth (P3 stateless OAuth 2.1 AS — the server fronts Keystone as
     # its own RFC 8414 authorization server). Set to keystone_token for the

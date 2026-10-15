@@ -71,18 +71,13 @@ public struct ServeApp: Sendable {
         let minter = LoginMinter(transport: wiring.transport, logger: logger)
         let oauthServer: OAuthAuthorizationServer?
         if config.oauthEnabled {
-            #if DEBUG
-            let devMintEnabled = true
-            #else
-            let devMintEnabled = false
-            #endif
             oauthServer = OAuthAuthorizationServer(
                 secret: config.oauthSecretResolved,
                 issuer: config.oauthIssuerResolved,
                 codeTTL: config.oauthCodeTTL,
                 tokenTTL: config.oauthTokenTTL,
                 endpoint: config.serverEndpoint,
-                devMintEnabled: devMintEnabled,
+                devMintEnabled: config.oauthDevMintEnabled,
                 minter: minter,
                 tokenValidator: wiring.validator,
                 sharedReplayCache: config.oauthReplayStore == "memcached",
@@ -283,12 +278,15 @@ public struct ServeApp: Sendable {
         router.get("/readyz") { [cloud, transport = wiring.transport, logger] _, _ in
             await ReadyzChecker.check(cloud: cloud, transport: transport, logger: logger)
         }
-        router.get("/metrics") { [metricsToken = config.serverMetricsToken] context, _ in
-            // Optional bearer-token gating (spec §7.3: `server.metrics_token`).
-            if let metricsToken {
+        router.get("/metrics") { [opsToken = config.serverOpsToken ?? config.serverMetricsToken] context, _ in
+            // Internal-only gate (spec §7.3). `server.ops_token` is the canonical
+            // knob; `server.metrics_token` remains accepted as an alias so existing
+            // deployments keep working. When either is set, /metrics requires a
+            // matching `Authorization: Bearer <token>` and returns 401 otherwise.
+            if let opsToken, !opsToken.isEmpty {
                 let authName = HTTPField.Name("Authorization")
                 let auth = authName.flatMap { context.headers[$0] } ?? ""
-                guard auth == "Bearer \(metricsToken)" else {
+                guard auth == "Bearer \(opsToken)" else {
                     return Response(status: .unauthorized, headers: [.contentType: "text/plain"],
                                     body: .init(byteBuffer: ByteBuffer(string: "unauthorized")))
                 }

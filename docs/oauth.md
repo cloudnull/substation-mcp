@@ -76,7 +76,7 @@ Under `<endpoint>` (default `/v1`):
 | `POST <endpoint>/oauth/register` | RFC 7591 DCR (deterministic) |
 | `GET/POST <endpoint>/oauth/authorize` | Browser consent page; returns a code |
 | `POST <endpoint>/oauth/token` | Authorization-code grant; PKCE S256 required |
-| `POST <endpoint>/oauth/dev-mint` | **DEBUG builds only** — mint a code without the browser flow |
+| `POST <endpoint>/oauth/dev-mint` | Headless mint (no browser flow). **Opt-in only** — mounted when `oauth.dev_mint_enabled: true` |
 
 The issuer defaults to `<server.public_url><endpoint>/oauth`. Set
 `server.public_url` for production so the issuer matches the externally
@@ -155,8 +155,10 @@ exactly as before:
    cloud's service catalog, or `oauth.replay_store_endpoint`) — see
    "Multi-replica deployments" above. Single replica: the default `local`
    store is sufficient.
-5. The DEBUG-only `POST /v1/oauth/dev-mint` endpoint is **not** compiled into
-   release builds.
+5. Leave `oauth.dev_mint_enabled` unset (or `false`) — the headless
+   `POST /v1/oauth/dev-mint` endpoint is mounted **only** when explicitly set
+   to `true`. It is off by default in every build; there is no debug-build
+   auto-enable.
 
 ## Related
 

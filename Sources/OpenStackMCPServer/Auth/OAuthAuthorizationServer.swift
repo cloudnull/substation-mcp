@@ -82,7 +82,8 @@ public struct OAuthAuthorizationServer: Sendable {
     public let codeTTL: Int
     public let tokenTTL: Int
     public let endpoint: String        // MCP base path, e.g. "/v1"
-    /// Whether the DEBUG-only dev-mint helper is mounted.
+    /// Whether the headless `dev-mint` protocol-test endpoint is mounted.
+    /// Driven by `oauth.dev_mint_enabled` (default false).
     public let devMintEnabled: Bool
     /// Mints the Keystone token at the authorize step (same seam the login
     /// page uses). Kept on the server so the authorize handler + dev-mint can

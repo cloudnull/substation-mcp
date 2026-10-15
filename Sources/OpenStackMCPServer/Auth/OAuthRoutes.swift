@@ -65,9 +65,11 @@ extension OAuthAuthorizationServer {
             await server.handleToken(context)
         }
 
-        // DEBUG-only headless helper — POST /oauth/dev-mint. Never mounted in
-        // release builds (guarded by `devMintEnabled`, which ServeApp only sets
-        // under `#if DEBUG`).
+        // Headless protocol-test helper — POST /oauth/dev-mint. Mints a code
+        // without the browser flow; exists only for automated OAuth ITs.
+        // Mounted solely when the operator sets `oauth.dev_mint_enabled: true`
+        // (default false; ServeApp threads config.oauthDevMintEnabled into
+        // `devMintEnabled`). No build-config fallback.
         if server.devMintEnabled {
             router.on(RouterPath(base + "/dev-mint"), method: .post) { context, _ in
                 let body = try? await Self.readBody(context, limit: 1_048_576)

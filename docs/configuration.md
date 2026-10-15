@@ -15,15 +15,18 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `server.endpoint` | `/v1` | MCP transport path (`/mcp` retained as alias) |
 | `server.allowed_origins` | localhost | `Origin` allow-list; `*` disables the check |
 | `server.max_body_bytes` | `1048576` | Request body limit (1 MiB) |
-| `server.metrics_token` | unset | Bearer token required for `/metrics` when set |
+| `server.metrics_token` | unset | Legacy alias for `/metrics` bearer gate (kept for compatibility) |
+| `server.ops_token` | unset | Shared secret for **internal ops** routes. When set, `/metrics` requires `Authorization: Bearer <ops_token>` (401 otherwise). Canonical knob — takes precedence over `server.metrics_token`. Set it to keep `/metrics` reachable only by authorized scrapers/operators. `/healthz` & `/readyz` stay open (K8s probes can't send auth headers; responses are intentionally coarse) |
 | `server.public_url` | unset | Canonical public base URL (PRM, login page, OAuth issuer) |
 | `auth.profile` | `oauth` | `oauth` (P3, default — stateless OAuth 2.1 AS in front of Keystone) or `keystone_token` (P1, raw Keystone bearer) |
 | `auth.keystone_url` | from catalog | Keystone base URL in PRM `authorization_servers` |
 | `oauth.server_secret` | derived (dev) | HS256 AS signing secret; **set explicitly in production** (see [OAuth](oauth.md)) |
-| `oauth.code_ttl` | `120s` | Authorization-code JWT lifetime |
+| `oauth.code_ttl` | `30s` | Authorization-code JWT lifetime |
 | `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
 | `oauth.replay_store` | `local` | Code-replay store: `local` (single replica) or `memcached` (shared; endpoint from the token's Keystone catalog, service type `memcached`) |
 | `oauth.replay_store_endpoint` | unset | `host:port` override for the shared replay cache (non-catalog deployments) |
+| `oauth.replay_store_fail_open` | `true` | On a shared replay-store failure: fall back to the local store (`true`) or reject the code (`false`). Ignored unless `replay_store = memcached` |
+| `oauth.dev_mint_enabled` | `false` | Mount the headless `POST <endpoint>/oauth/dev-mint` protocol-test endpoint. **Off by default; set `true` explicitly** to enable it (no build-config fallback) |
 | `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
 | `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
 | `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
