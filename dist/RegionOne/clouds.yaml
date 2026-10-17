@@ -10,7 +10,7 @@
 # double to /v3/v3 and break readiness/validation.
 clouds:
   sat0:
-    region_name: SAT0
+    region_name: RegionOne
     interface: public
     auth:
       auth_url: https://keystone.api.regionone.yourcloud.dev
