@@ -98,6 +98,12 @@ public enum ConfigLoader {
         cfg.authFailedAuthPerMinute = int("auth__failed_auth_per_minute") ?? cfg.authFailedAuthPerMinute
         if let b = bool("auth__login_page_enabled") { cfg.authLoginPageEnabled = b }
         cfg.authDefaultDomain = str("auth__default_domain")
+        // federation (Keystone OS-FEDERATION passthrough)
+        if let b = bool("federation__enabled") { cfg.federationEnabled = b }
+        cfg.federationIdP = str("federation__idp")
+        cfg.federationProtocol = str("federation__protocol")
+        if let a = arr("federation__origin_allowlist") { cfg.federationOriginAllowlist = a }
+        if let b = bool("federation__paste_token") { cfg.federationPasteToken = b }
         // oauth (stateless OAuth 2.1 AS, P2)
         cfg.oauthServerSecret = str("oauth__server_secret")
         cfg.oauthCodeTTL = int("oauth__code_ttl") ?? cfg.oauthCodeTTL

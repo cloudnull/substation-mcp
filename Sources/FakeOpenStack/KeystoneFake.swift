@@ -122,8 +122,9 @@ public struct KeystoneFake {
             let expiresISO = token.expiresAt.ISO8601Format()
             let rolesJSON = token.roles.map { "\"\($0)\"" }.joined(separator: ",")
 
+            let fedJSON = token.fedIDP.map { idp in #""OS-FEDERATION":{"identity_provider":"\(idp)","protocol":"\(token.fedProtocol ?? "saml2")","groups":[]}"# } ?? ""
             return Self.jsonResponse(status: .ok, body: """
-            {"token":{"id":"\(token.id)","expires_at":"\(expiresISO)","project":{"id":"\(token.projectID)","name":"\(token.projectName)"},"domain":{"id":"\(token.domainID)","name":"\(token.domainName)"},"user":{"id":"\(token.userID)","name":"\(token.userName)","domain":{"id":"\(token.userDomain)","name":"Default"}},"roles":[\(rolesJSON)],"catalog":\(catalogJSON)}}
+            {"token":{"id":"\(token.id)","expires_at":"\(expiresISO)","project":{"id":"\(token.projectID)","name":"\(token.projectName)"},"domain":{"id":"\(token.domainID)","name":"\(token.domainName)"},"user":{"id":"\(token.userID)","name":"\(token.userName)","domain":{"id":"\(token.userDomain)","name":"Default"},\(fedJSON)},"roles":[\(rolesJSON)],"catalog":\(catalogJSON)}}
             """)
         }
         router.get(authTokens, use: validateHandler)

@@ -41,8 +41,33 @@ public struct OpenStackMCPConfig: Sendable {
     /// `default`. Operators serving a cloud whose users live in a named
     /// domain set this so password login works without typing the domain.
     public var authDefaultDomain: String?
-    // MARK: oauth (stateless OAuth 2.1 AS, P3)
-    /// The shared HS256 secret that signs authorization codes and `stst.at.`
+
+    // MARK: federation (Keystone OS-FEDERATION passthrough)
+    /// Master switch for the Keystone federation passthrough surface. When
+    /// true, the server mounts `GET <endpoint>/oauth/federate` + the websso
+    /// callback and offers a "Federated" method on the login / authorize forms
+    /// (see ``federationPasteToken``). The IdP round-trip happens in the user's
+    /// browser via Keystone's WebSSO route; only works where the cloud's
+    /// Keystone is itself the SAML/OIDC service provider and allows a
+    /// third-party origin.
+    public var federationEnabled: Bool
+    /// The identity-provider name configured in Keystone (OS-FEDERATION
+    /// `identity_providers/{idp}`) used in the IdP-specific WebSSO route.
+    public var federationIdP: String?
+    /// The federation protocol under that IdP: `saml2`, `oidc`, or `kerberos`.
+    public var federationProtocol: String?
+    /// Extra origins (host[:port]) the callback accepts in addition to this
+    /// server's own public URL. Defense-in-depth: Keystone relays the
+    /// unscoped token to the `origin` parameter verbatim, so we never trust a
+    /// foreign origin by default.
+    public var federationOriginAllowlist: [String]
+    /// Enable the paste-token fallback for clouds whose federation SP lives on
+    /// a portal rather than Keystone (e.g. Rackspace Skyline, where the Shibboleth
+    /// SP entityID points at `skyline.api.*`). Adds a "Federated token" field to
+    /// the login / authorize forms: the operator pastes an unscoped (or scoped)
+    /// token they obtained from their portal session; the server exchanges it
+    /// via `methods:["token"]`.
+    public var federationPasteToken: Bool
     /// access tokens. **Recommended for production** (set an operator-chosen
     /// high-entropy value). When left unset with `auth.profile == "oauth"` the
     /// server derives a deterministic dev secret from the resolved issuer
@@ -130,6 +155,11 @@ public struct OpenStackMCPConfig: Sendable {
         authFailedAuthPerMinute: Int = 10,
         authLoginPageEnabled: Bool = true,
         authDefaultDomain: String? = nil,
+        federationEnabled: Bool = false,
+        federationIdP: String? = nil,
+        federationProtocol: String? = nil,
+        federationOriginAllowlist: [String] = [],
+        federationPasteToken: Bool = true,
         oauthServerSecret: String? = nil,
         oauthCodeTTL: Int = 30,
         oauthTokenTTL: Int = 3600,
@@ -174,6 +204,11 @@ public struct OpenStackMCPConfig: Sendable {
         self.authFailedAuthPerMinute = authFailedAuthPerMinute
         self.authLoginPageEnabled = authLoginPageEnabled
         self.authDefaultDomain = authDefaultDomain
+        self.federationEnabled = federationEnabled
+        self.federationIdP = federationIdP
+        self.federationProtocol = federationProtocol
+        self.federationOriginAllowlist = federationOriginAllowlist
+        self.federationPasteToken = federationPasteToken
         self.oauthServerSecret = oauthServerSecret
         self.oauthCodeTTL = oauthCodeTTL
         self.oauthTokenTTL = oauthTokenTTL

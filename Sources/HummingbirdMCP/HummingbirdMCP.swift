@@ -61,6 +61,13 @@ public struct LoginRequest: Sendable {
     /// The region to target (multi-region clouds). When non-empty, the minted
     /// token is used for API calls in this region via catalog endpoint resolution.
     public let region: String?
+    /// A pasted Keystone federation token (OS-FEDERATION unscoped or scoped).
+    /// Present when `method == "federated"`: the operator obtained it from their
+    /// cloud's portal session (e.g. Rackspace Skyline) and pastes it here. The
+    /// server verifies it against the configured IdP and uses it directly (no
+    /// exchange needed for already-scoped tokens; unscoped ones are presented
+    /// as-is and scoped at first use).
+    public let fedToken: String?
 
     public init(
         elicitationId: String,
@@ -71,7 +78,8 @@ public struct LoginRequest: Sendable {
         password: String? = nil,
         userDomain: String? = nil,
         projectName: String? = nil,
-        region: String? = nil
+        region: String? = nil,
+        fedToken: String? = nil
     ) {
         self.elicitationId = elicitationId
         self.method = method
@@ -82,6 +90,7 @@ public struct LoginRequest: Sendable {
         self.userDomain = userDomain
         self.projectName = projectName
         self.region = region
+        self.fedToken = fedToken
     }
 }
 
@@ -175,7 +184,8 @@ public struct MCPRoute: Sendable {
         on router: Router<BasicRequestContext>,
         prm: (@Sendable () -> Data)? = nil,
         login: (@Sendable (LoginRequest) async -> LoginResponse)? = nil,
-        defaultDomain: String? = nil
+        defaultDomain: String? = nil,
+        federationPasteToken: Bool = false
     ) {
         let mcpHandler = self.makeMCPHandler()
         installMCPRoutes(on: router, endpoint: config.endpoint, mcpHandler: mcpHandler)
@@ -183,9 +193,9 @@ public struct MCPRoute: Sendable {
             installMCPRoutes(on: router, endpoint: config.legacyEndpoint, mcpHandler: mcpHandler)
         }
         installPRM(on: router, prm: prm)
-        installLogin(on: router, endpoint: config.endpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain)
+        installLogin(on: router, endpoint: config.endpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain, showFederatedMethod: federationPasteToken)
         if config.legacyEndpoint != config.endpoint {
-            installLogin(on: router, endpoint: config.legacyEndpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain)
+            installLogin(on: router, endpoint: config.legacyEndpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain, showFederatedMethod: federationPasteToken)
         }
     }
 
@@ -329,8 +339,12 @@ public struct MCPRoute: Sendable {
     .footer{text-align:center; margin-top:20px; font-size:12.5px; color:var(--ink-faint)}
     .footer code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft)}
     /* method-filtered groups */
-    .method-fields[data-method="app-cred"] .only-password{display:none}
-    .method-fields[data-method="password"] .only-appcred{display:none}
+    .method-fields[data-method="app-cred"] .only-password,
+    .method-fields[data-method="app-cred"] .only-federated{display:none}
+    .method-fields[data-method="password"] .only-appcred,
+    .method-fields[data-method="password"] .only-federated{display:none}
+    .method-fields[data-method="federated"] .only-appcred,
+    .method-fields[data-method="federated"] .only-password{display:none}
     /* result pages */
     .result{display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px}
     .result .icon{width:56px; height:56px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin-bottom:8px}
@@ -353,7 +367,7 @@ public struct MCPRoute: Sendable {
     /// Exposed as a static function so tests (and the preview tooling) can
     /// render it without a full server. The `endpoint` is shown in the footer
     /// so an operator knows which MCP URL they are authenticating against.
-    static func loginHTML(endpoint: String, cloudName: String? = nil, defaultDomain: String? = nil) -> String {
+    static func loginHTML(endpoint: String, cloudName: String? = nil, defaultDomain: String? = nil, showFederatedMethod: Bool = false) -> String {
         let loginPath = endpoint + "/login"
         let domainValue = (defaultDomain?.isEmpty == false) ? defaultDomain! : "default"
         return """
@@ -389,6 +403,7 @@ public struct MCPRoute: Sendable {
                 <select id="method" name="method" class="field" onchange="substationFilter(this.value)">
                   <option value="app-cred" selected>Application credential</option>
                   <option value="password">User + password</option>
+                  \(showFederatedMethod ? "<option value=\"federated\">Federated token (paste)</option>" : "")
                 </select>
               </div>
 
@@ -444,7 +459,15 @@ public struct MCPRoute: Sendable {
                   <select id="projectSelect" class="field project-select" hidden onchange="substationPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
+                </div>\(showFederatedMethod ? """
+                <div class="group only-federated">
+                  <label for="fedToken">Federated token</label>
+                  <input class="field" id="fedToken" name="fedToken" type="password"
+                         placeholder="paste your unscoped or project-scoped token from your cloud's portal session"
+                         autocomplete="off" spellcheck="false" data-required="federated">
+                  <p class="hint">For clouds whose federation sign-in is handled by a portal (e.g. Rackspace Skyline): sign in there, copy your Keystone token (from your CLI or API session), and paste it here. It must be an OS-FEDERATION token issued by this cloud's configured identity provider.</p>
                 </div>
+                """ : "")
               </div>
 
               <p id="formError" class="form-error" role="alert" hidden></p>
@@ -482,7 +505,7 @@ public struct MCPRoute: Sendable {
                 var v = (inp.value || '').trim();
                 if (v === '') {
                   if (err) {
-                    err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id === 'region' ? 'Region' : inp.id) + ' field.';
+                    err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id === 'region' ? 'Region' : inp.id === 'fedToken' ? 'Federated token' : inp.id) + ' field.';
                     err.hidden = false;
                   }
                   inp.focus();
@@ -622,12 +645,13 @@ public struct MCPRoute: Sendable {
         endpoint: String,
         login: (@Sendable (LoginRequest) async -> LoginResponse)?,
         cloudName: String? = nil,
-        defaultDomain: String? = nil
+        defaultDomain: String? = nil,
+        showFederatedMethod: Bool = false
     ) {
         let loginPath = endpoint + "/login"
         let loginRoutePath = RouterPath(loginPath)
         router.get(loginRoutePath) { _, _ in
-            let html = Self.loginHTML(endpoint: endpoint, cloudName: cloudName, defaultDomain: defaultDomain)
+            let html = Self.loginHTML(endpoint: endpoint, cloudName: cloudName, defaultDomain: defaultDomain, showFederatedMethod: showFederatedMethod)
             return Response(
                 status: .ok,
                 headers: [.contentType: "text/html; charset=utf-8"],
@@ -842,7 +866,8 @@ public struct MCPRoute: Sendable {
             password: fields["password"],
             userDomain: fields["userDomain"],
             projectName: fields["projectName"],
-            region: fields["region"]
+            region: fields["region"],
+            fedToken: fields["fedToken"]
         )
     }
 

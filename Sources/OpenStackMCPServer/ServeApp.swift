@@ -86,6 +86,12 @@ public struct ServeApp: Sendable {
                 cloudName: cloud.name,
                 cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)),
                 defaultDomain: config.authDefaultDomain,
+                federationEnabled: config.federationEnabled,
+                federationPasteToken: config.federationPasteToken,
+                federationIdP: config.federationIdP,
+                federationProtocol: config.federationProtocol,
+                federationOriginAllowlist: config.federationOriginAllowlist,
+                federationPublicBaseURL: rawPublicURL,
                 logger: logger
             )
         } else {
@@ -160,7 +166,8 @@ public struct ServeApp: Sendable {
                 (try? prmDocument.json()) ?? Data()
             },
             login: config.authLoginPageEnabled ? loginPage.handler() : nil,
-            defaultDomain: config.authDefaultDomain
+            defaultDomain: config.authDefaultDomain,
+            federationPasteToken: config.federationEnabled && config.federationPasteToken
         )
 
         // Project-detection endpoint for the login/OAuth "Detect" button.
@@ -277,6 +284,9 @@ public struct ServeApp: Sendable {
         // `<issuer>/.well-known/oauth-authorization-server`.
         if let oauthServer {
             oauthServer.install(on: router)
+            if oauthServer.federationEnabled {
+                oauthServer.installFederation(on: router)
+            }
         }
 
         // Non-MCP routes (spec §7.3).

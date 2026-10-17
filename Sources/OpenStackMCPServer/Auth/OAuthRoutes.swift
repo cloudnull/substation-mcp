@@ -145,7 +145,7 @@ extension OAuthAuthorizationServer {
         }
 
         // Determine whether the caller supplied credentials in the POST body.
-        let hasCreds = !(formFields["appCredId"] ?? "").isEmpty || !(formFields["userName"] ?? "").isEmpty
+        let hasCreds = !(formFields["appCredId"] ?? "").isEmpty || !(formFields["userName"] ?? "").isEmpty || !(formFields["fedToken"] ?? "").isEmpty
 
         if hasCreds {
             do {
@@ -173,7 +173,7 @@ extension OAuthAuthorizationServer {
 
         // No credentials: render the consent / credential form (browser path).
         if postBody == nil {
-            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope, cloudName: cloudName, defaultDomain: defaultDomain)
+            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope, cloudName: cloudName, defaultDomain: defaultDomain, federationEnabled: federationEnabled, federationPasteToken: federationPasteToken)
             return Response(status: .ok, headers: [.contentType: "text/html"], body: .init(byteBuffer: ByteBuffer(string: html)))
         }
 
@@ -194,6 +194,12 @@ extension OAuthAuthorizationServer {
                 password: pw,
                 projectName: (fields["projectName"] ?? "").isEmpty ? nil : fields["projectName"]
             )
+            return try await minter.mint(method: m, region: region, cloudsFile: cloudsFileURL)
+        } else if method == "federated" {
+            // Paste-token path: verify the token is a real OS-FEDERATION token
+            // from the configured IdP (minter does whoami first), then present it.
+            guard let ft = fields["fedToken"], !ft.isEmpty else { return nil }
+            let m = MintMethod.federationToken(tokenID: ft, isScoped: false)
             return try await minter.mint(method: m, region: region, cloudsFile: cloudsFileURL)
         } else {
             let id = fields["appCredId"] ?? ""
@@ -529,7 +535,7 @@ extension OAuthAuthorizationServer {
     /// The OAuth authorization consent page. Matches the `/v1/login` page
     /// styling: Substation logo, IBM Plex Sans, centered card, gold-accented
     /// primary button, and method-filtered form groups (app-cred vs password).
-    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String, cloudName: String? = nil, defaultDomain: String? = nil) -> String {
+    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String, cloudName: String? = nil, defaultDomain: String? = nil, federationEnabled: Bool = false, federationPasteToken: Bool = false) -> String {
         let domainValue = (defaultDomain?.isEmpty == false) ? defaultDomain! : "default"
         func esc(_ s: String) -> String {
             var r = s
@@ -606,8 +612,12 @@ extension OAuthAuthorizationServer {
         .footer{text-align:center; margin-top:20px; font-size:12.5px; color:var(--ink-faint)}
         .footer code{font-family:var(--mono); font-size:11.5px; background:var(--line-soft); padding:2px 6px; border-radius:6px; color:var(--ink-soft)}
         /* method-filtered groups */
-        .method-fields[data-method="app-cred"] .only-password{display:none}
-        .method-fields[data-method="password"] .only-appcred{display:none}
+        .method-fields[data-method="app-cred"] .only-password,
+        .method-fields[data-method="app-cred"] .only-federated{display:none}
+        .method-fields[data-method="password"] .only-appcred,
+        .method-fields[data-method="password"] .only-federated{display:none}
+        .method-fields[data-method="federated"] .only-appcred,
+        .method-fields[data-method="federated"] .only-password{display:none}
         .detect-row{display:flex; align-items:center; gap:10px; margin-top:8px}
         .btn-detect{font-family:var(--font); font-size:12.5px; font-weight:500; color:var(--ink-soft); background:#fff; border:1px solid var(--line); border-radius:8px; padding:7px 12px; cursor:pointer; transition:border-color .15s,background .15s}
         .btn-detect:hover{border-color:var(--focus); background:var(--focus-ring)}
@@ -638,7 +648,9 @@ extension OAuthAuthorizationServer {
                   <label for="method">Method</label>
                   <select id="method" name="method" class="field" onchange="document.getElementById('mf').dataset.method=this.value">
                     <option value="app-cred" selected>Application credential</option>
-                    <option value="password">User + password</option>
+                    <option value="password">User + password</option>\(federationEnabled && federationPasteToken ? """
+                    <option value="federated">Federated token (paste)</option>
+                    """ : "")
                   </select>
                 </div>
                 <div class="group">
@@ -686,7 +698,13 @@ extension OAuthAuthorizationServer {
                   <select id="projectSelect" class="field project-select" hidden onchange="oauthPickProject(this)">
                     <option value="">— choose a detected project —</option>
                   </select>
+                </div>\(federationEnabled && federationPasteToken ? """
+                <div class="group only-federated">
+                  <label for="fedToken">Federated token</label>
+                  <input id="fedToken" name="fedToken" type="password" class="field" autocomplete="off" spellcheck="false">
+                  <p class="hint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Paste an OS-FEDERATION token from your cloud's portal session (e.g. Rackspace Skyline). Must be issued by this cloud's configured identity provider.</p>
                 </div>
+                """ : "")
               </div>
               <button type="submit" class="btn" id="oauthSubmitBtn">Authorize &amp; mint</button>
             </form>

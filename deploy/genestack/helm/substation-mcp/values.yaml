@@ -107,7 +107,18 @@ config:
     # /v1/oauth/authorize. Set to your cloud's end-user domain (e.g.
     # rackspace_cloud_domain); leave empty for Keystone's "default" domain.
     default_domain: ""
-  # The server's ConfigLoader reads these under the `oauth` key prefix, NOT
+  # ── Keystone OS-FEDERATION passthrough (rendered to config.yaml; read as
+  #    `federation.*`). See Sources/OpenStackMCPServer/Config.swift for details.
+  #    Browser-bounce (websso) only works where the cloud's Keystone is itself
+  #    the SAML/OIDC service provider AND allows a third-party origin — this is
+  #    NOT the case for stock Rackspace Skyline (its Shibboleth SP entityID
+  #    points at skyline.api.*), so use paste_token there. ────────────────────
+  federation:
+    enabled: false        # mount /oauth/federate + callback + form methods
+    idp: ""               # OS-FEDERATION identity provider name in Keystone
+    protocol: saml2       # saml2 | oidc | kerberos
+    paste_token: true     # allow pasting a portal-issued token (Skyline fallback)
+    origin_allowlist: []  # extra origins the websso callback accepts (default: self only)
   # `auth`. See Sources/substation-mcp/ConfigLoader.swift line ~101.
   oauth:
     # HS256 signing secret for the authorization server (JWTs + DCR client

@@ -31,7 +31,11 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
 | `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
 | `auth.default_domain` | *(empty → `default`)* | Keystone domain pre-filled in the user-domain field on `/v1/login` and `/v1/oauth/authorize`. Set to your cloud's end-user domain (e.g. `rackspace_cloud_domain`) so password login works without typing it |
-| `clouds.allowed` | all | Names a session may select |
+| `federation.enabled` | `false` | Mount the Keystone OS-FEDERATION passthrough surface (`GET <endpoint>/oauth/federate` + websso callback) and expose "Federated" methods on the login / authorize forms |
+| `federation.idp` | *(empty)* | The OS-FEDERATION identity-provider name configured in Keystone; used in the IdP-specific WebSSO route. Required for the browser-bounce flow |
+| `federation.protocol` | *(empty)* | Federation protocol under that IdP: `saml2`, `oidc`, or `kerberos` |
+| `federation.paste_token` | `true` (when section present) | Add a "Federated token" paste field to the forms — for clouds whose federation SP is a portal, not Keystone (e.g. Rackspace Skyline), where the operator pastes an unscoped/scoped token from their portal session |
+| `federation.origin_allowlist` | `[]` | Extra origins (host[:port]) the websso callback accepts beyond the server's own public URL. Never trust foreign origins by default — Keystone relays the unscoped token to `origin` verbatim |
 | `clouds.file` | search order | Path to `clouds.yaml` |
 | `session.idle_ttl` | `30m` | Idle session timeout |
 | `session.max_lifetime` | `12h` | Maximum session lifetime |
@@ -53,6 +57,15 @@ server:
   port: 8080
   public_url: https://mcp.example.com
   metrics_token: "change-me"
+
+# Keystone OS-FEDERATION passthrough (see oauth.md "Keystone federation" for the full flow).
+# Mount /oauth/federate + websso callback + "Federated token" form methods.
+federation:
+  enabled: false            # flip to true to mount the federation surface
+  idp: ""                   # OS-FEDERATION identity provider name in Keystone (required for WebSSO)
+  protocol: saml2           # saml2 | oidc | kerberos
+  paste_token: true         # add "Federated token" paste field to login/authorize forms
+  origin_allowlist: []      # extra origins the websso callback accepts (default: self only)
 
 policy:
   read_only: false

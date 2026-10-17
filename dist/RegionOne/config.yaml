@@ -27,3 +27,10 @@ policy:
 auth:
   # Domain pre-filled in the user-domain field on /v1/login and /v1/oauth/authorize.
   default_domain: default
+
+federation:
+  enabled: false
+  idp: ""
+  protocol: saml2
+  paste_token: true
+  origin_allowlist: []

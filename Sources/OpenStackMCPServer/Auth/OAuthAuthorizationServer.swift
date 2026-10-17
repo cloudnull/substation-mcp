@@ -106,6 +106,21 @@ public struct OAuthAuthorizationServer: Sendable {
     /// The default Keystone domain pre-filled in the authorize form's user-domain
     /// field (e.g. `rackspace_cloud_domain`). When nil the form defaults to `default`.
     public let defaultDomain: String?
+    // MARK: Federation (OS-FEDERATION passthrough)
+    /// Master switch for the browser-bounce WebSSO flow (`/oauth/federate` + callback).
+    public let federationEnabled: Bool
+    /// Whether the paste-token form field is offered alongside the other methods.
+    public let federationPasteToken: Bool
+    /// OS-FEDERATION identity-provider name used in the IdP-specific websso route.
+    public let federationIdP: String?
+    /// Federation protocol under that IdP: saml2 | oidc | kerberos.
+    public let federationProtocol: String?
+    /// Extra origins (host[:port]) the callback accepts beyond the issuer's own host.
+    public let federationOriginAllowlist: [String]
+    /// Absolute base URL of this server (public_url), used to compute the `origin`
+    /// parameter for the WebSSO route. The caller (ServeApp) supplies it because
+    /// the AS does not otherwise know its public hostname.
+    public let federationPublicBaseURL: String?
     public init(
         secret: String,
         issuer: String,
@@ -122,6 +137,12 @@ public struct OAuthAuthorizationServer: Sendable {
         cloudName: String? = nil,
         cloudsFileURL: URL? = nil,
         defaultDomain: String? = nil,
+        federationEnabled: Bool = false,
+        federationPasteToken: Bool = true,
+        federationIdP: String? = nil,
+        federationProtocol: String? = nil,
+        federationOriginAllowlist: [String] = [],
+        federationPublicBaseURL: String? = nil,
         logger: Logger = Logger(label: "oauth-as")
     ) {
         self.secret = secret
@@ -158,6 +179,12 @@ public struct OAuthAuthorizationServer: Sendable {
         self.cloudName = cloudName
         self.cloudsFileURL = cloudsFileURL
         self.defaultDomain = defaultDomain
+        self.federationEnabled = federationEnabled
+        self.federationPasteToken = federationPasteToken
+        self.federationIdP = federationIdP
+        self.federationProtocol = federationProtocol
+        self.federationOriginAllowlist = federationOriginAllowlist
+        self.federationPublicBaseURL = federationPublicBaseURL
     }
 
     /// The OAuth path prefix, e.g. `/v1/oauth`.

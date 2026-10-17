@@ -146,6 +146,23 @@ public actor LoginMinter {
                     message: "Missing password auth fields"
                 )
             }
+
+        case .federationToken:
+            guard let tid = method.fedTokenID, !tid.isEmpty else {
+                throw OpenStackError(
+                    service: "keystone",
+                    status: 400,
+                    message: "Missing federation token id"
+                )
+            }
+            // Already-scoped tokens must be presented AS-IS: Keystone rejects
+            // a second scope block on a scoped token (400). Unscoped ones may
+            // optionally pick up a project scope here.
+            body = Self.tokenExchangeBody(
+                tokenID: tid,
+                isAlreadyScoped: method.fedTokenIsScoped,
+                projectName: method.fedTokenIsScoped ? nil : method.projectName
+            )
         }
 
         // The token-mint endpoint needs a fresh, clean request:
@@ -388,7 +405,7 @@ public actor LoginMinter {
     /// Resolve the clouds.yaml file for region lookups. When `explicit` is
     /// provided (the serve config's `clouds.file`), it wins; otherwise fall
     /// back to the same search order as `CloudConfig.resolvedFileURL`.
-    static func resolvedCloudsFile(_ explicit: URL?) -> URL? {
+    public static func resolvedCloudsFile(_ explicit: URL?) -> URL? {
         if let explicit { return explicit }
         if let envPath = ProcessInfo.processInfo.environment["OS_CLIENT_CONFIG_FILE"] {
             return URL(fileURLWithPath: envPath)
@@ -401,7 +418,7 @@ public actor LoginMinter {
     /// one cloud entry per region, each with its own `auth_url`. The login and
     /// OAuth forms let the user pick a region; this resolves it to the correct
     /// Keystone endpoint so the token is minted against the right identity API.
-    static func regionAuthURL(region: String, cloudsFile: URL) -> URL? {
+    public static func regionAuthURL(region: String, cloudsFile: URL) -> URL? {
         // Explicit file argument: the caller passes its own already-resolved
         // clouds.yaml path (serve's config.cloudsFile ?? OS_CLIENT_CONFIG_FILE),
         // so this stays correct in containers where the baked-in path is not on
@@ -487,6 +504,138 @@ public actor LoginMinter {
         let body: [String: Any] = ["auth": auth]
         return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
     }
+
+    /// Build a Keystone token-exchange body (`methods: ["token"]`). Used both by
+    /// the WebSSO callback (unscoped → project-scoped) and by the paste-token
+    /// form field. When the presented token is already scoped, NO scope block is
+    /// sent — re-scoping a scoped token makes Keystone reject with 400.
+    private static func tokenExchangeBody(tokenID: String, isAlreadyScoped: Bool, projectName: String?) -> Data {
+        var auth: [String: Any] = [
+            "identity": [
+                "methods": ["token"],
+                "token": ["id": tokenID],
+            ],
+        ]
+        if !isAlreadyScoped, let p = projectName, !p.isEmpty {
+            // Project-name scoping for unscoped fed tokens. Id-based scoping is
+            // available via exchangeUnscopedForScoped which takes an id.
+            auth["scope"] = ["project": ["name": p]]
+        }
+        let body: [String: Any] = ["auth": auth]
+        return (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
+    }
+
+    /// Exchange an **unscoped** federation token for a **project-scoped** one,
+    /// using the project **id** (the picker returns ids, not names; id-based
+    /// scoping is unambiguous across domains).
+    public func exchangeUnscopedForScoped(unscopedTokenID: String, projectID: String, region: String? = nil, cloudsFile: URL? = nil) async throws -> Token {
+        var overrideBase: URL? = nil
+        if let region, !region.isEmpty {
+            guard let file = Self.resolvedCloudsFile(cloudsFile), let url = Self.regionAuthURL(region: region, cloudsFile: file) else {
+                throw OpenStackError(service: "keystone", status: 400, message: "Region '\(region)' is not configured in clouds.yaml")
+            }
+            overrideBase = url
+        }
+        final class SubjectTokenBox: @unchecked Sendable { var value: String? }
+        let box = SubjectTokenBox()
+        let body: [String: Any] = [
+            "auth": [
+                "identity": [
+                    "methods": ["token"],
+                    "token": ["id": unscopedTokenID],
+                ],
+                "scope": ["project": ["id": projectID]],
+            ],
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: body)) ?? Data("{}".utf8)
+        let (status, responseBody, _) = try await transport.request(
+            method: "POST",
+            service: "keystone",
+            path: "/v3/auth/tokens",
+            body: data,
+            tokenOverride: "",
+            overrideBase: overrideBase,
+            captureSubjectToken: { box.value = $0 }
+        )
+        guard status == 201 else {
+            throw OpenStackError.normalize(body: responseBody, status: status, service: "keystone", requestID: nil, hasAccessRules: false)
+        }
+        guard let token = try? Token.decode(from: responseBody, tokenID: box.value) else {
+            throw OpenStackError(service: "keystone", status: 500, message: "Failed to decode exchanged fed token")
+        }
+        return token
+    }
+
+    /// List the projects a federation token can reach, per the OS-FEDERATION spec:
+    /// `GET /v3/auth/projects` (spec requires an *unscoped* token here). Scoped
+    /// tokens do not have this route; callers holding a scoped token already
+    /// know their project.
+    ///
+    /// Before listing, we fetch whoami to verify the token really is a Keystone
+    /// federation token (has `user.OS-FEDERATION`) AND, when `expectedIdP` is
+    /// given, that it came from the configured identity provider. This is the
+    /// trust boundary for Design B (paste-token): without it any pasted token
+    /// would be treated as IdP-issued.
+    public func listFedProjects(fedTokenID: String, expectedIdP: String?, region: String? = nil, cloudsFile: URL? = nil) async throws -> [DetectedProject] {
+        var regionalBase: URL? = nil
+        if let region, !region.isEmpty {
+            guard let file = Self.resolvedCloudsFile(cloudsFile), let url = Self.regionAuthURL(region: region, cloudsFile: file) else {
+                throw OpenStackError(service: "keystone", status: 400, message: "Region '\(region)' is not configured in clouds.yaml")
+            }
+            regionalBase = url
+        }
+        // Step 1: whoami — verifies token + captures OS-FEDERATION block.
+        let (whoamiStatus, whoamiBody, _) = try await transport.request(
+            method: "GET",
+            service: "keystone",
+            path: "/v3/auth/tokens",
+            tokenOverride: fedTokenID,
+            overrideBase: regionalBase
+        )
+        guard whoamiStatus == 200 else {
+            throw OpenStackError.normalize(body: whoamiBody, status: whoamiStatus, service: "keystone", requestID: nil, hasAccessRules: false)
+        }
+        guard let token = try? Token.decode(from: whoamiBody, tokenID: fedTokenID) else {
+            throw OpenStackError(service: "keystone", status: 500, message: "Failed to decode fed token whoami")
+        }
+        guard let fed = token.fedInfo else {
+            throw OpenStackError(service: "keystone", status: 401, message: "not_a_fed_token: presented token is not a Keystone federation token")
+        }
+        if let expectedIdP, !expectedIdP.isEmpty, let actual = fed.identityProvider, actual != expectedIdP {
+            throw OpenStackError(service: "keystone", status: 403, message: "wrong_idp: token from '\(actual)', expected '\(expectedIdP)'")
+        }
+        // Step 2: GET /v3/auth/projects (paged, capped at 10 pages of 100).
+        var projects: [DetectedProject] = []
+        var marker: String? = nil
+        let limit = 100
+        for _ in 0..<10 {
+            var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+            if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
+            let (status, body, _) = try await transport.request(
+                method: "GET",
+                service: "keystone",
+                path: "/v3/auth/projects",
+                query: query,
+                tokenOverride: fedTokenID,
+                overrideBase: regionalBase
+            )
+            guard status == 200 else {
+                throw OpenStackError.normalize(body: body, status: status, service: "keystone", requestID: nil, hasAccessRules: false)
+            }
+            guard let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let arr = obj["projects"] as? [[String: Any]] else { break }
+            for p in arr {
+                guard let id = p["id"] as? String, let name = p["name"] as? String else { continue }
+                // auth/projects returns domain_id (a string), not a domain object.
+                let dom = p["domain_id"] as? String
+                projects.append(DetectedProject(id: id, name: name, domainName: dom))
+            }
+            if arr.count < limit { break }
+            marker = (arr.last as? [String: Any])?["id"] as? String
+            if marker == nil { break }
+        }
+        return projects
+    }
 }
 
 // MARK: - Token decoding
@@ -504,10 +653,46 @@ extension Token {
             let id: String
             let name: String?
         }
+        struct RawGroup: Codable {
+            let id: String?
+            let name: String?
+        }
+        struct RawFedInfo: Codable {
+            let identity_provider: String?
+            let fedProtocol: String?
+            let groupsRaw: [RawGroup]?
+            private enum CodingKeys: String, CodingKey {
+                case identity_provider
+                case fedProtocol = "protocol"
+                case groupsRaw = "groups"
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                identity_provider = try c.decodeIfPresent(String.self, forKey: .identity_provider)
+                fedProtocol = try c.decodeIfPresent(String.self, forKey: .fedProtocol)
+                // Keystone emits groups as an ARRAY OF OBJECTS ([{"id":...}]);
+                // some clouds send plain strings. Accept both.
+                if let strs = try? c.decode([String].self, forKey: .groupsRaw) {
+                    groupsRaw = strs.map { RawGroup(id: $0, name: nil) }
+                } else if let objs = try? c.decode([RawGroup].self, forKey: .groupsRaw) {
+                    groupsRaw = objs
+                } else {
+                    groupsRaw = nil
+                }
+            }
+        }
         struct RawIdentityRef: Codable {
             let id: String
             let name: String?
             let domain: RawDomain?
+            // Keystone's OS-FEDERATION extension nests this under `user` on
+            // federation tokens. The JSON key has a dash, so map it via
+            // CodingKeys. Optional — non-federation tokens omit it.
+            private enum CodingKeys: String, CodingKey {
+                case id, name, domain
+                case fedInfo = "OS-FEDERATION"
+            }
+            let fedInfo: RawFedInfo?
         }
         struct RawCatalogEndpoint: Codable {
             let region: String?
@@ -615,6 +800,13 @@ extension Token {
                 endpoints: endpoints
             )
         }
+        let fedInfo: FedInfo? = user.fedInfo.map {
+            FedInfo(
+                identityProvider: $0.identity_provider,
+                protocolName: $0.fedProtocol,
+                groups: ($0.groupsRaw ?? []).compactMap { $0.name ?? $0.id }
+            )
+        }
 
         return Token(
             id: id,
@@ -623,7 +815,8 @@ extension Token {
             domain: domain,
             user: IdentityRef(id: user.id, name: user.name, domain: user.domain?.name),
             roles: (raw.roles ?? []).compactMap { $0.name },
-            catalog: catalogEntries
+            catalog: catalogEntries,
+            fedInfo: fedInfo
         )
     }
 

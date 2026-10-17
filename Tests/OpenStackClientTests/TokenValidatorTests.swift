@@ -312,8 +312,9 @@ struct LoginMinterTests {
         let server = TestServer()
         try server.start()
         defer { server.stop() }
-        server.addHandler("/v3/auth/tokens") { _ in
-            (400, #"{"error":{"code":400,"message":"bad","title":"Bad Request"}}"#, [("Content-Type", "application/json")])
+        server.addHandler("/v3/auth/tokens") { req in
+            _ = req
+            return (400, #"{"error":{"code":400,"message":"bad","title":"Bad Request"}}"#, [("Content-Type", "application/json")])
         }
         let transport = Transport(
             cloud: CloudEntry(name: "test", authURL: server.baseURL),
@@ -429,6 +430,166 @@ struct LoginMinterTests {
         #expect(ac["secret"] as? String == nastySecret,
                 "app-cred secret did not round-trip through JSON escaping: \(String(describing: ac["secret"]))")
         #expect(ac["id"] as? String == "ac-1")
+    }
+
+    // MARK: - OS-FEDERATION passthrough
+
+    /// A Keystone federation token carries `user.OS-FEDERATION` with the IdP,
+    /// protocol, and groups. `Token.decode` must surface it in `fedInfo`.
+    @Test func decodeCapturesFederationBlock() async throws {
+        let body = """
+        {
+          "token": {
+            "id": "tok-fed",
+            "expires_at": "2026-10-02T13:03:34.000000Z",
+            "methods": ["mapped"],
+            "user": {
+              "id": "u-fed",
+              "name": "fed-user@example.com",
+              "domain": {"id": "rackspace_cloud_domain", "name": "rackspace_cloud_domain"},
+              "OS-FEDERATION": {
+                "identity_provider": "rackspace",
+                "protocol": "SAML",
+                "groups": [{"id": "g1"}]
+              }
+            },
+            "roles": [],
+            "catalog": []
+          }
+        }
+        """
+        let token = try Token.decode(from: Data(body.utf8), tokenID: "tok-fed")
+        #expect(token.fedInfo != nil, "federation block must be captured")
+        #expect(token.fedInfo?.identityProvider == "rackspace")
+        #expect(token.fedInfo?.protocolName == "SAML")
+    }
+
+    /// A non-federation token has no `user.OS-FEDERATION` block; `fedInfo`
+    /// must be nil (not a crash or a spurious value).
+    @Test func decodeNonFederationTokenHasNilFedInfo() async throws {
+        let token = try Token.decode(from: Data(#"{"token":{"id":"t","expires_at":"2026-10-02T13:03:34.000000Z","project":{"id":"p","name":"p"},"user":{"id":"u","name":"u"},"roles":["admin"],"catalog":[]}}"#.utf8), tokenID: "t")
+        #expect(token.fedInfo == nil)
+    }
+
+    /// `exchangeUnscopedForScoped` must send `methods:["token"]` with the
+    /// unscoped token id AND a project-id scope block — never a name-based
+    /// scope (the picker returns ids).
+    @Test func exchangeUnscopedForScopedSendsTokenMethodAndProjectScope() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        let capturedBody = Box<Data>(Data())
+        server.addHandler("/v3/auth/tokens") { req in
+            capturedBody.value = req.body
+            return (201, #"{"token":{"id":"tok-scoped","expires_at":"2026-10-02T13:03:34.000000Z","project":{"id":"proj-x","name":"Proj X"},"user":{"id":"u","name":"u"},"roles":["member"],"catalog":[]}}"#, [("Content-Type", "application/json"), ("X-Subject-Token", "tok-scoped")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        _ = try await minter.exchangeUnscopedForScoped(unscopedTokenID: "unscoped-123", projectID: "proj-x")
+
+        let obj = try JSONSerialization.jsonObject(with: capturedBody.value) as! [String: Any]
+        let auth = obj["auth"] as! [String: Any]
+        let identity = auth["identity"] as! [String: Any]
+        #expect(identity["methods"] as? [String] == ["token"])
+        let tok = identity["token"] as! [String: Any]
+        #expect(tok["id"] as? String == "unscoped-123")
+        let scope = auth["scope"] as! [String: Any]
+        let proj = scope["project"] as! [String: Any]
+        #expect(proj["id"] as? String == "proj-x", "must scope by project id, not name")
+        #expect(proj["name"] == nil, "must NOT also carry a name")
+    }
+
+    /// `listFedProjects` must reject a token whose `OS-FEDERATION.identity_provider`
+    /// does not match `expectedIdP` (the paste-token trust boundary).
+    @Test func listFedProjectsRejectsWrongIdP() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        // whoami for the presented token: a fed token from IdP "other-cloud".
+        server.addHandler("/v3/auth/tokens") { req in
+            guard req.method == "GET" else { return (405, "", [("Content-Type", "text/plain")]) }
+            return (200, #"{"token":{"id":"tok-fed","expires_at":"2026-10-02T13:03:34.000000Z","user":{"id":"u","name":"u","OS-FEDERATION":{"identity_provider":"other-cloud","protocol":"SAML"}},"roles":[],"catalog":[]}}"#, [("Content-Type", "application/json")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "tok-fed" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        do {
+            _ = try await minter.listFedProjects(fedTokenID: "tok-fed", expectedIdP: "rackspace")
+            #expect(false, "must throw wrong_idp")
+        } catch let err as OpenStackError {
+            #expect(err.status == 403)
+            #expect(err.message.contains("wrong_idp"))
+        }
+    }
+
+    /// `listFedProjects` must accept a token from the configured IdP and return
+    /// the projects from `GET /v3/auth/projects`.
+    @Test func listFedProjectsAcceptsConfiguredIdP() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        server.addHandler("/v3/auth/tokens") { req in
+            guard req.method == "GET" else { return (405, "", [("Content-Type", "text/plain")]) }
+            return (200, #"{"token":{"id":"tok-fed","expires_at":"2026-10-02T13:03:34.000000Z","user":{"id":"u","name":"u","OS-FEDERATION":{"identity_provider":"rackspace","protocol":"SAML"}},"roles":[],"catalog":[]}}"#, [("Content-Type", "application/json")])
+        }
+        server.addHandler("/v3/auth/projects") { req in
+            _ = req
+            return (200, #"{"projects":[{"id":"p1","name":"One","domain_id":"d1"},{"id":"p2","name":"Two","domain_id":"d1"}]}"#, [("Content-Type", "application/json")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "tok-fed" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        let projects = try await minter.listFedProjects(fedTokenID: "tok-fed", expectedIdP: "rackspace")
+        #expect(projects.count == 2)
+        #expect(projects[0].id == "p1" && projects[0].name == "One")
+        #expect(projects[1].id == "p2" && projects[1].name == "Two")
+    }
+
+    /// `listFedProjects` must reject a non-federation token (no
+    /// `user.OS-FEDERATION` block at all) with `not_a_fed_token`.
+    @Test func listFedProjectsRejectsNonFedToken() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        server.addHandler("/v3/auth/tokens") { req in
+            guard req.method == "GET" else { return (405, "", [("Content-Type", "text/plain")]) }
+            return (200, #"{"token":{"id":"tok-nofed","expires_at":"2026-10-02T13:03:34.000000Z","user":{"id":"u","name":"u"},"roles":[],"catalog":[]}}"#, [("Content-Type", "application/json")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "tok-nofed" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        do {
+            _ = try await minter.listFedProjects(fedTokenID: "tok-nofed", expectedIdP: "rackspace")
+            #expect(false, "must throw not_a_fed_token")
+        } catch let err as OpenStackError {
+            #expect(err.status == 401)
+            #expect(err.message.contains("not_a_fed_token"))
+        }
     }
 }
 

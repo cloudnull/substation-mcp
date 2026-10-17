@@ -36,8 +36,11 @@ public actor FakeState {
         public let userDomain: String
         public let roles: [String]
         public let expiresAt: Date
+        /// When set, this is a Keystone OS-FEDERATION token. The fake's whoami
+        /// response includes the `user.OS-FEDERATION` block with these values.
+        public let fedIDP: String? = nil
+        public let fedProtocol: String? = nil
     }
-
     // MARK: - Resources
 
     public struct FakeServer: Sendable, Identifiable {
@@ -1802,6 +1805,13 @@ public actor FakeState {
         )
         tokens[tokenID] = expired
         return true
+    }
+
+    /// Test-only hook: insert an arbitrary token directly into the store.
+    /// Used by federation E2E tests that need a token with specific fields
+    /// (e.g. `fedInfo`) that `mintToken` cannot produce.
+    public func injectToken(_ token: FakeToken) {
+        tokens[token.id] = token
     }
 
     // MARK: - Keystone catalog (services + endpoints)

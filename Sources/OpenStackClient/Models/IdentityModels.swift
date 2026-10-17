@@ -22,6 +22,11 @@ public struct Token: Sendable, Codable {
     public let user: IdentityRef
     public let roles: [String]
     public let catalog: [CatalogEntry]
+    /// OS-FEDERATION block from the token (`methods: ["mapped"]`). Present only
+    /// when the token was issued via Keystone federation (unscoped WebSSO token
+    /// or a scoped token exchanged from one). Used by the login path to verify
+    /// a pasted/exchanged token really came from the configured IdP.
+    public let fedInfo: FedInfo?
 
     public init(
         id: String,
@@ -30,7 +35,8 @@ public struct Token: Sendable, Codable {
         domain: IdentityRef,
         user: IdentityRef,
         roles: [String],
-        catalog: [CatalogEntry]
+        catalog: [CatalogEntry],
+        fedInfo: FedInfo? = nil
     ) {
         self.id = id
         self.expiresAt = expiresAt
@@ -39,9 +45,22 @@ public struct Token: Sendable, Codable {
         self.user = user
         self.roles = roles
         self.catalog = catalog
+        self.fedInfo = fedInfo
     }
 }
 
+/// The `user.OS-FEDERATION` block carried by a Keystone federation token.
+public struct FedInfo: Sendable, Codable, Equatable {
+    public let identityProvider: String?
+    public let protocolName: String?
+    public let groups: [String]?
+
+    public init(identityProvider: String?, protocolName: String?, groups: [String]?) {
+        self.identityProvider = identityProvider
+        self.protocolName = protocolName
+        self.groups = groups
+    }
+}
 /// A single entry in the Keystone service catalog.
 public struct CatalogEntry: Sendable, Codable, Equatable {
     public let type: String
@@ -120,18 +139,36 @@ public struct MintMethod: Sendable {
     public var domain: String?
     public var password: String?
     public var projectName: String?
+    /// The token id for `federationToken` mints (an unscoped or project-scoped
+    /// federation token obtained outside substation, e.g. pasted from a portal
+    /// session). Reused verbatim as the `methods:["token"]` exchange input.
+    public var fedTokenID: String?
+    /// True when the presented federation token is already project-scoped —
+    /// the minter must not add a scope block in that case (Keystone rejects a
+    /// re-scope of a scoped token with 400). Unscoped tokens get an optional
+    /// `projectName` scope applied.
+    public var fedTokenIsScoped: Bool
 
     public enum Kind: Sendable {
         case applicationCredential
         case password
+        case federationToken
     }
 
     public static func applicationCredential(id: String, secret: [Int8]) -> MintMethod {
-        MintMethod(kind: .applicationCredential, appCredID: id, appCredSecret: secret, userID: nil, domain: nil, password: nil, projectName: nil)
+        MintMethod(kind: .applicationCredential, appCredID: id, appCredSecret: secret, userID: nil, domain: nil, password: nil, projectName: nil, fedTokenID: nil, fedTokenIsScoped: false)
     }
 
     public static func password(userID: String, domain: String?, password: String, projectName: String?) -> MintMethod {
-        MintMethod(kind: .password, appCredID: nil, appCredSecret: nil, userID: userID, domain: domain, password: password, projectName: projectName)
+        MintMethod(kind: .password, appCredID: nil, appCredSecret: nil, userID: userID, domain: domain, password: password, projectName: projectName, fedTokenID: nil, fedTokenIsScoped: false)
+    }
+
+    /// Exchange / present a Keystone federation token (`methods: ["token"]`).
+    /// Used both by the WebSSO callback (unscoped → project-scoped exchange)
+    /// and by the paste-token form field (already-scoped tokens pass through;
+    /// unscoped ones are project-scoped here).
+    public static func federationToken(tokenID: String, isScoped: Bool, projectName: String? = nil) -> MintMethod {
+        MintMethod(kind: .federationToken, appCredID: nil, appCredSecret: nil, userID: nil, domain: nil, password: nil, projectName: projectName, fedTokenID: tokenID, fedTokenIsScoped: isScoped)
     }
 }
 

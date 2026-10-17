@@ -2,6 +2,17 @@
 
 ## Current State
 
+- **Keystone OS-FEDERATION passthrough** (2026-10-17). Two routes: Route A
+  (browser WebSSO bounce via `GET /v1/oauth/federate` → Keystone
+  `OS-FEDERATION/…/websso` → callback → project picker → code mint) and
+  Route B (paste-token fallback on `/v1/login` + `/v1/oauth/authorize` for
+  portal-based clouds like Skyline). Five new config keys (`federation.*`)
+  in `config.yaml`, helm chart, and `ConfigLoader`. All three federation
+  routes gated by `federation.enabled`. Relay-state store is single-use with
+  a 300 s TTL. Callback verifies origin allowlist, relay freshness, and IdP
+  identity before rendering anything. 670 tests green (incl. 7 Federation E2E
+  tests pinning router wiring against the fake Keystone). Full flow doc in
+  `docs/oauth.md` "Keystone federation" section.
 - **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to regionone Genestack
   cluster (172.16.27.67), namespace `openstack`, image
   `ghcr.io/cloudnull/substation-mcp:latest` (tagged `0.2.0` + SHA), helm release

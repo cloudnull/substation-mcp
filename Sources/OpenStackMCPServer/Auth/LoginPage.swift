@@ -42,6 +42,18 @@ public struct LoginPage: Sendable {
                     password: req.password ?? "",
                     projectName: req.projectName
                 )
+            case "federated":
+                // Paste-token path (Route B): the operator pasted a token from
+                // their cloud's portal session. We verify it is really an
+                // OS-FEDERATION token and present it. A scoped fed token is used
+                // directly; an unscoped one is presented without a scope block —
+                // downstream calls will fail with "unscoped" if they need a
+                // project, which is acceptable for read-only / whoami-style use.
+                guard let ft = req.fedToken, !ft.isEmpty else {
+                    logger.warning("Login mint failed", metadata: ["reason": .string("missing_fed_token")])
+                    return LoginResponse(tokenID: "", storePath: "", completion: false, region: nil)
+                }
+                method = MintMethod.federationToken(tokenID: ft, isScoped: false)
             default: // "app-cred" (default)
                 guard let id = req.appCredId, let secret = req.secret, !id.isEmpty, !secret.isEmpty else {
                     logger.warning("Login mint failed", metadata: [

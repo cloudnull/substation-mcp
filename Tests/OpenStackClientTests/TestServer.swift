@@ -95,7 +95,7 @@ final class TestServer: @unchecked Sendable {
                 let channel = context.channel
 
                 Task {
-                    let handler = server.handlers[path]
+                    let handler = server.handlers[path.split(separator: "?").first.map(String.init) ?? path]
                     let (status, responseBody, respHeaders): (Int, String, [(String, String)])
                     do {
                         if let handler {
@@ -104,7 +104,7 @@ final class TestServer: @unchecked Sendable {
                             (status, responseBody, respHeaders) = (404, "not found", [("Content-Type", "text/plain")])
                         }
                     } catch {
-                        (status, responseBody, respHeaders) = (500, "server error: \(error)", [("Content-Type", "text/plain")])
+                        (status, responseBody, respHeaders) = (500, #"{"error":{"code":500,"message":"handler threw: \#(error)","title":"Internal Server Error"}}"#, [("Content-Type", "application/json")])
                     }
 
                     let statusText: String
