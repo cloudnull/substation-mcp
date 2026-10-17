@@ -13,17 +13,21 @@ public typealias NetPort = OSPort
 public struct RequestIdentity: Sendable {
     public let vt: ValidatedToken
     public let whoami: Whoami
+    /// The region preference selected during login (multi-region clouds).
+    public let region: String?
     /// The cloud name this session is bound to. Used to scope resource URIs
     /// (`openstack://{cloud}/{region}/{resource}/{id}`) so a client can only
     /// read the cloud it is authenticated against.
     public let cloudName: String
 
-    public init(vt: ValidatedToken, whoami: Whoami, cloudName: String) {
+    public init(vt: ValidatedToken, whoami: Whoami, region: String? = nil, cloudName: String) {
         self.vt = vt
         self.whoami = whoami
+        self.region = region
         self.cloudName = cloudName
     }
-}
+ }
+
 
 /// The tool registry: maps the MCP tools to OpenStack client calls.
 ///
@@ -361,6 +365,7 @@ public struct ToolRegistry: Sendable {
 
     func resolveRegion(_ params: CallTool.Parameters) async throws -> String {
         if let region = argOptional(params, "region"), !region.isEmpty { return region }
+        if let pref = identity.region, !pref.isEmpty { return pref }
         return await client.defaultRegion(identity.vt)
     }
 
@@ -1076,7 +1081,7 @@ public struct ToolRegistry: Sendable {
         }
 
         if dryRun {
-            var result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
+            let result: [String: JSONValue] = ["dry_run": .bool(true), "resource": .string(d.name), "region": .string(region),
                 "message": .string("Spec is valid. Resource would be created in \(region).")]
             let (text, val) = resultText(result)
             return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)

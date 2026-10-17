@@ -36,7 +36,7 @@ final class MemcachedPromiseBox: @unchecked Sendable {
 /// (made in `channelActive`, before any data can arrive) exactly once and
 /// removes itself from the pipeline. All handler callbacks run on the
 /// channel's event loop, so the fragment buffer needs no locking.
-final class MemcachedLineHandler: ChannelInboundHandler, RemovableChannelHandler {
+final class MemcachedLineHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
     /// Must be created on the channel's event loop (see
@@ -94,8 +94,9 @@ final class MemcachedLineHandler: ChannelInboundHandler, RemovableChannelHandler
         guard !settled else { return }
         settled = true
         if let error { promise.fail(error) } else if let reply { promise.succeed(reply) }
+        let channel = context.channel
         context.pipeline.removeHandler(self).whenComplete { _ in
-            context.channel.close()
+            _ = channel.close()
         }
     }
 }

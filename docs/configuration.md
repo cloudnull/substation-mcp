@@ -30,7 +30,7 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |
 | `auth.failed_auth_per_minute` | `10` | Per-source-IP auth-failure rate limit |
 | `auth.login_page_enabled` | `true` | Serve the `/v1/login` page |
-| `clouds.default` | first in `clouds.yaml` | Default cloud |
+| `auth.default_domain` | *(empty → `default`)* | Keystone domain pre-filled in the user-domain field on `/v1/login` and `/v1/oauth/authorize`. Set to your cloud's end-user domain (e.g. `rackspace_cloud_domain`) so password login works without typing it |
 | `clouds.allowed` | all | Names a session may select |
 | `clouds.file` | search order | Path to `clouds.yaml` |
 | `session.idle_ttl` | `30m` | Idle session timeout |

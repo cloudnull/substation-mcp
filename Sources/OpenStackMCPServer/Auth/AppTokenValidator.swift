@@ -42,6 +42,7 @@ public struct AppTokenValidator: TokenValidating {
                 tokenID: vt.token.id,
                 projectID: vt.token.project.id,
                 scopes: vt.scopes.map { $0.rawValue },
+                region: nil, // The per-request validator doesn't know the login-time selection
                 raw: raw
             )
         } catch {

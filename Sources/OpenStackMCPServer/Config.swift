@@ -35,7 +35,12 @@ public struct OpenStackMCPConfig: Sendable {
     public var authTokenCacheTTL: Int        // seconds
     public var authFailedAuthPerMinute: Int
     public var authLoginPageEnabled: Bool
-
+    /// The default Keystone domain name pre-filled in the user-domain field on
+    /// the `/v1/login` and `/v1/oauth/authorize` pages (e.g. `default`,
+    /// `rackspace_cloud_domain`). When unset, both forms fall back to
+    /// `default`. Operators serving a cloud whose users live in a named
+    /// domain set this so password login works without typing the domain.
+    public var authDefaultDomain: String?
     // MARK: oauth (stateless OAuth 2.1 AS, P3)
     /// The shared HS256 secret that signs authorization codes and `stst.at.`
     /// access tokens. **Recommended for production** (set an operator-chosen
@@ -124,6 +129,7 @@ public struct OpenStackMCPConfig: Sendable {
         authTokenCacheTTL: Int = 60,
         authFailedAuthPerMinute: Int = 10,
         authLoginPageEnabled: Bool = true,
+        authDefaultDomain: String? = nil,
         oauthServerSecret: String? = nil,
         oauthCodeTTL: Int = 30,
         oauthTokenTTL: Int = 3600,
@@ -167,6 +173,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.authTokenCacheTTL = authTokenCacheTTL
         self.authFailedAuthPerMinute = authFailedAuthPerMinute
         self.authLoginPageEnabled = authLoginPageEnabled
+        self.authDefaultDomain = authDefaultDomain
         self.oauthServerSecret = oauthServerSecret
         self.oauthCodeTTL = oauthCodeTTL
         self.oauthTokenTTL = oauthTokenTTL

@@ -90,11 +90,13 @@ public struct LoginResponse: Sendable {
     public let tokenID: String
     public let storePath: String
     public let completion: Bool
+    public let region: String?
 
-    public init(tokenID: String, storePath: String, completion: Bool) {
+    public init(tokenID: String, storePath: String, completion: Bool, region: String? = nil) {
         self.tokenID = tokenID
         self.storePath = storePath
         self.completion = completion
+        self.region = region
     }
 }
 
@@ -172,7 +174,8 @@ public struct MCPRoute: Sendable {
     public func install(
         on router: Router<BasicRequestContext>,
         prm: (@Sendable () -> Data)? = nil,
-        login: (@Sendable (LoginRequest) async -> LoginResponse)? = nil
+        login: (@Sendable (LoginRequest) async -> LoginResponse)? = nil,
+        defaultDomain: String? = nil
     ) {
         let mcpHandler = self.makeMCPHandler()
         installMCPRoutes(on: router, endpoint: config.endpoint, mcpHandler: mcpHandler)
@@ -180,9 +183,9 @@ public struct MCPRoute: Sendable {
             installMCPRoutes(on: router, endpoint: config.legacyEndpoint, mcpHandler: mcpHandler)
         }
         installPRM(on: router, prm: prm)
-        installLogin(on: router, endpoint: config.endpoint, login: login, cloudName: cloudName)
+        installLogin(on: router, endpoint: config.endpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain)
         if config.legacyEndpoint != config.endpoint {
-            installLogin(on: router, endpoint: config.legacyEndpoint, login: login, cloudName: cloudName)
+            installLogin(on: router, endpoint: config.legacyEndpoint, login: login, cloudName: cloudName, defaultDomain: defaultDomain)
         }
     }
 
@@ -350,8 +353,9 @@ public struct MCPRoute: Sendable {
     /// Exposed as a static function so tests (and the preview tooling) can
     /// render it without a full server. The `endpoint` is shown in the footer
     /// so an operator knows which MCP URL they are authenticating against.
-    static func loginHTML(endpoint: String, cloudName: String? = nil) -> String {
+    static func loginHTML(endpoint: String, cloudName: String? = nil, defaultDomain: String? = nil) -> String {
         let loginPath = endpoint + "/login"
+        let domainValue = (defaultDomain?.isEmpty == false) ? defaultDomain! : "default"
         return """
         <!DOCTYPE html>
         <html lang="en">
@@ -410,22 +414,23 @@ public struct MCPRoute: Sendable {
                 <div class="group only-password">
                   <label for="userDomain">Domain</label>
                   <input class="field" id="userDomain" name="userDomain" type="text"
-                         value="default" placeholder="e.g. default" autocomplete="off" spellcheck="false"
+                         value="\(domainValue)" placeholder="e.g. \(domainValue)" autocomplete="off" spellcheck="false"
                          data-required="password">
-                  <p class="hint">The domain the user belongs to (default <code>default</code>; use <code>service</code> for service users).</p>
+                  <p class="hint">The domain the user belongs to (default <code>\(domainValue)</code>; use <code>service</code> for service users).</p>
+                </div>
+                <div class="group">
+                <label for="region">Region <span class="opt">required for password auth</span></label>
+                <input class="field" id="region" name="region" type="text" list="regionList"
+                       placeholder="e.g. IAD3, RegionOne" autocomplete="off" spellcheck="false"
+                       data-required="password" oninput="updateFooterCloudName(this.value)">
+                <datalist id="regionList"></datalist>
+                <p class="hint" id="regionHint">Selects which region the minted token will target.</p>
                 </div>
                 <div class="group only-password">
                   <label for="password">Password</label>
                   <input class="field" id="password" name="password" type="password"
                          placeholder="••••••••••••••••" autocomplete="off"
                          data-required="password">
-                </div>
-                <div class="group">
-                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
-                  <input class="field" id="region" name="region" type="text" list="regionList"
-                         placeholder="e.g. IAD3, RegionOne" autocomplete="off" spellcheck="false">
-                  <datalist id="regionList"></datalist>
-                  <p class="hint" id="regionHint">Selects which region the minted token will target. Leave blank to use the default.</p>
                 </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">optional</span></label>
@@ -448,7 +453,7 @@ public struct MCPRoute: Sendable {
               <input type="hidden" name="elicitationId" value="E1">
             </form>
 
-            <p class="footer">Serving <code>\(endpoint)</code>\(cloudName.map { " · cloud <code>\($0)</code>" } ?? "") · token is stored for this session only</p>
+            <p class="footer">Serving <code>\(endpoint)</code>\(cloudName.map { " · cloud <code id=\"footerCloudName\">\($0)</code>" } ?? "") · token is stored for this session only</p>
           </main>
           <script>
             // Show/hide the field group for the selected method. Fields are
@@ -477,7 +482,7 @@ public struct MCPRoute: Sendable {
                 var v = (inp.value || '').trim();
                 if (v === '') {
                   if (err) {
-                    err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id) + ' field.';
+                    err.textContent = 'Please fill in the ' + (inp.id === 'secret' ? 'Secret' : inp.id === 'appCredId' ? 'Application credential ID' : inp.id === 'userDomain' ? 'Domain' : inp.id === 'userName' ? 'User' : inp.id === 'password' ? 'Password' : inp.id === 'region' ? 'Region' : inp.id) + ' field.';
                     err.hidden = false;
                   }
                   inp.focus();
@@ -510,7 +515,8 @@ public struct MCPRoute: Sendable {
               var sel = document.getElementById('projectSelect');
               var user = (document.getElementById('userName').value || '').trim();
               var domain = (document.getElementById('userDomain').value || '').trim();
-              var pw = document.getElementById('password').value || '';
+              var region = (document.getElementById('region').value || '').trim();
+              var pw = (document.getElementById('password') ? document.getElementById('password').value : '') || '';
               if (!user || !pw) {
                 if (status) { status.textContent = 'Enter user and password first'; status.className = 'detect-status err'; }
                 return;
@@ -521,7 +527,7 @@ public struct MCPRoute: Sendable {
               fetch('\(endpoint)/login/detect-projects', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user: user, domain: domain, password: pw })
+                      body: JSON.stringify({ user: user, domain: domain, password: pw, region: region })
               }).then(function(r) {
                 return r.json().then(function(j) { return { ok: r.ok, j: j }; });
               }).then(function(res) {
@@ -555,18 +561,16 @@ public struct MCPRoute: Sendable {
               if (target && selectEl.value) { target.value = selectEl.value; }
             }
             // initialise the field filter on load (defaults to app-cred) and
-            // fetch the configured regions for the Region datalist.
             document.addEventListener('DOMContentLoaded', function() {
               var sel = document.getElementById('method');
               if (sel) { substationFilter(sel.value); }
-              // Populate the region datalist from the server.
+              
               fetch('\(endpoint)/login/regions').then(function(r) { return r.json(); })
                 .then(function(j) {
                   var dl = document.getElementById('regionList');
                   var hint = document.getElementById('regionHint');
                   if (!dl || !j || !j.regions) { return; }
                   if (!j.regions.length) {
-                    // Single-region cloud — dim the field so it's clear it's not needed.
                     var inp = document.getElementById('region');
                     if (inp) { inp.style.opacity = '0.5'; inp.placeholder = 'single-region cloud — leave blank'; }
                     return;
@@ -577,10 +581,11 @@ public struct MCPRoute: Sendable {
                     dl.appendChild(opt);
                   }
                   if (hint) { hint.textContent = 'Configured: ' + j.regions.join(', '); }
-                  // Pre-fill the region field with the server's default region.
                   var regionInp = document.getElementById('region');
-                  if (regionInp && j.default) { regionInp.value = j.default; }
-                  // Warn when the typed value doesn't match a known region.
+                  if (regionInp && j.default) { 
+                    regionInp.value = j.default; 
+                    updateFooterCloudName(j.default);
+                  }
                   if (regionInp) {
                     regionInp.addEventListener('input', function() {
                       var val = (this.value || '').trim().toUpperCase();
@@ -594,8 +599,18 @@ public struct MCPRoute: Sendable {
                       }
                     });
                   }
-                }).catch(function() { /* regions endpoint unavailable — field stays free-text */ });
+                }).catch(function() {});
             });
+
+            function updateFooterCloudName(val) {
+              var cloudEl = document.getElementById('footerCloudName');
+              if (cloudEl) {
+                var baseName = '\(cloudName ?? "cloud")'.replace(/-\\w+$/, '');
+                cloudEl.textContent = baseName + '-' + (val.trim() || 'default');
+              }
+            }
+            window.updateFooterCloudName = updateFooterCloudName;
+
           </script>
         </body>
         </html>
@@ -606,12 +621,13 @@ public struct MCPRoute: Sendable {
         on router: Router<BasicRequestContext>,
         endpoint: String,
         login: (@Sendable (LoginRequest) async -> LoginResponse)?,
-        cloudName: String? = nil
+        cloudName: String? = nil,
+        defaultDomain: String? = nil
     ) {
         let loginPath = endpoint + "/login"
         let loginRoutePath = RouterPath(loginPath)
         router.get(loginRoutePath) { _, _ in
-            let html = Self.loginHTML(endpoint: endpoint, cloudName: cloudName)
+            let html = Self.loginHTML(endpoint: endpoint, cloudName: cloudName, defaultDomain: defaultDomain)
             return Response(
                 status: .ok,
                 headers: [.contentType: "text/html; charset=utf-8"],
@@ -967,6 +983,14 @@ public struct MCPRoute: Sendable {
         body: Data?,
         identity: ValidatedIdentity
     ) async -> Response {
+        // Extract regional preference from the initialize request body.
+        var sessionRegion: String? = nil
+        if let bodyData = body,
+           let json = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+           let region = json["region"] as? String {
+            sessionRegion = region
+        }
+
         let sessionID = UUID().uuidString
         let transport = StatefulHTTPServerTransport(
             sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
@@ -982,7 +1006,15 @@ public struct MCPRoute: Sendable {
         )
 
         do {
-            let server = await serverFactory(identity)
+            // Inject the session region into the identity before passing it to the server factory.
+            let identityWithRegion = ValidatedIdentity(
+                tokenID: identity.tokenID,
+                projectID: identity.projectID,
+                scopes: identity.scopes,
+                region: sessionRegion,
+                raw: identity.raw
+            )
+            let server = await serverFactory(identityWithRegion)
             try await server.start(transport: transport)
             let session = MCPSession(
                 server: server,

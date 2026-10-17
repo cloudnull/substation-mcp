@@ -84,6 +84,8 @@ public struct ServeApp: Sendable {
                 sharedReplayCacheOverride: config.oauthReplayStoreEndpointParsed,
                 replayStoreFailOpen: config.oauthReplayStoreFailOpen,
                 cloudName: cloud.name,
+                cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)),
+                defaultDomain: config.authDefaultDomain,
                 logger: logger
             )
         } else {
@@ -115,7 +117,7 @@ public struct ServeApp: Sendable {
             routeValidator = appValidator
         }
 
-        let loginPage = LoginPage(minter: minter, logger: logger)
+        let loginPage = LoginPage(minter: minter, logger: logger, cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)))
 
         let serverFactory = wiring.makeServerFactory(
             policy: policy,
@@ -157,7 +159,8 @@ public struct ServeApp: Sendable {
             prm: {
                 (try? prmDocument.json()) ?? Data()
             },
-            login: config.authLoginPageEnabled ? loginPage.handler() : nil
+            login: config.authLoginPageEnabled ? loginPage.handler() : nil,
+            defaultDomain: config.authDefaultDomain
         )
 
         // Project-detection endpoint for the login/OAuth "Detect" button.
@@ -168,7 +171,7 @@ public struct ServeApp: Sendable {
         if config.authLoginPageEnabled {
             let detectLimiter = FailedAuthLimiter(limitPerMinute: config.authFailedAuthPerMinute)
             let detectPath = "\(config.serverEndpoint)/login/detect-projects"
-            router.post(RouterPath(detectPath)) { [maxBodyBytes = config.serverMaxBodyBytes, minter, logger, limiter = detectLimiter] request, _ in
+            router.post(RouterPath(detectPath)) { [maxBodyBytes = config.serverMaxBodyBytes, minter, logger, limiter = detectLimiter, cloudsFileURL = config.cloudsFile.flatMap(URL.init(fileURLWithPath:))] request, _ in
                 // Rate-limit per client IP so brute-force credential guessing is bounded.
                 let forwardedName = HTTPField.Name("X-Forwarded-For")!
                 let sourceIP: String = {
@@ -204,8 +207,9 @@ public struct ServeApp: Sendable {
                                      body: .init(byteBuffer: ByteBuffer(string: #"{"error":"missing user or password"}"#)))
                 }
                 let domain = (obj["domain"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                let region = (obj["region"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 do {
-                    let projects = try await minter.detectProjects(user: user, domain: domain, password: password)
+                    let projects = try await minter.detectProjects(user: user, domain: domain, password: password, region: region, cloudsFile: cloudsFileURL)
                     let payload: [[String: Any]] = projects.map { p in
                         var o: [String: Any] = ["id": p.id, "name": p.name]
                         if let d = p.domainName { o["domain"] = d }

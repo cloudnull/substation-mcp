@@ -148,7 +148,7 @@ public struct Secret: Sendable, Codable, Identifiable {
         let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         // Last non-empty path segment.
-        var parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
         if parts.isEmpty { return "" }
         return String(parts.last ?? "")
     }

@@ -23,15 +23,18 @@ public struct ValidatedIdentity: Sendable {
     public let projectID: String
     /// The scopes granted to the token (e.g. `openstack:read`, `openstack:write`).
     public let scopes: [String]
+    /// The region preference selected during login (multi-region clouds).
+    public let region: String?
     /// An opaque, `Sendable` payload the caller can use to build the per-request
     /// MCP server (e.g. a decoded OpenStack `Token`). `nil` when the caller only
     /// needs the fields above.
     public let raw: AnyTokenPayload?
 
-    public init(tokenID: String, projectID: String, scopes: [String], raw: AnyTokenPayload? = nil) {
+    public init(tokenID: String, projectID: String, scopes: [String], region: String? = nil, raw: AnyTokenPayload? = nil) {
         self.tokenID = tokenID
         self.projectID = projectID
         self.scopes = scopes
+        self.region = region
         self.raw = raw
     }
 }

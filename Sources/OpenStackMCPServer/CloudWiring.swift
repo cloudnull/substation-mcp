@@ -52,7 +52,8 @@ public struct CloudWiring: Sendable {
             transport: transport,
             cache: cache,
             servedProjects: config.servedProjects,
-            tokenCacheTTL: .seconds(config.authTokenCacheTTL)
+            tokenCacheTTL: .seconds(config.authTokenCacheTTL),
+            cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:))
         )
         let client = OpenStackClient(
             cloud: cloud,
@@ -92,16 +93,25 @@ public struct CloudWiring: Sendable {
             let scopes = identity.scopes.compactMap { TokenScope(rawValue: $0) }
             do {
                 let vt = try validatedToken(fromRaw: identity.raw, scopes: scopes)
+                
+                // Validate that the session region preference actually exists in the token catalog.
+                // If it's missing or invalid, we nullify it so the ToolRegistry falls back
+                // to the authoritative default.
+                let availableRegions = vt.token.regions()
+                let validatedRegion = (identity.region != nil && availableRegions.contains(identity.region!)) 
+                                      ? identity.region 
+                                      : nil
+                
                 let whoami = Whoami(
                     project: vt.token.project,
                     domain: vt.token.domain,
                     roles: vt.token.roles,
                     scopes: vt.scopes,
                     expiresAt: vt.token.expiresAt,
-                    regions: vt.token.regions(),
+                    regions: availableRegions,
                     services: vt.token.serviceMap()
                 )
-                let identity = RequestIdentity(vt: vt, whoami: whoami, cloudName: cloudName)
+                let identity = RequestIdentity(vt: vt, whoami: whoami, region: validatedRegion, cloudName: cloudName)
                 let registry = ToolRegistry(
                     client: clientCopy,
                     catalog: catalog,
@@ -138,7 +148,8 @@ public struct CloudWiring: Sendable {
                     scopes: vt.scopes,
                     expiresAt: vt.token.expiresAt
                 )
-                let identity = RequestIdentity(vt: vt, whoami: whoami, cloudName: cloudName)
+                // In the fallback case, the catalog is empty, so any region preference is invalid.
+                let identity = RequestIdentity(vt: vt, whoami: whoami, region: nil, cloudName: cloudName)
                 let registry = ToolRegistry(
                     client: clientCopy,
                     catalog: catalog,

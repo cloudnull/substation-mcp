@@ -103,7 +103,10 @@ config:
     token_cache_ttl: 60
     failed_auth_per_minute: 10
     login_page_enabled: true
-  # ── OAuth 2.1 AS settings (rendered to config.yaml; read as `oauth.*`) ────
+    # Domain pre-filled in the user-domain field on /v1/login and
+    # /v1/oauth/authorize. Set to your cloud's end-user domain (e.g.
+    # rackspace_cloud_domain); leave empty for Keystone's "default" domain.
+    default_domain: ""
   # The server's ConfigLoader reads these under the `oauth` key prefix, NOT
   # `auth`. See Sources/substation-mcp/ConfigLoader.swift line ~101.
   oauth:

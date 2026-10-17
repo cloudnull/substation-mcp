@@ -2344,14 +2344,14 @@ public actor NameResolver {
     private static func looksLikeUUID(_ s: String) -> Bool {
         guard s.count == 36 else { return false }
         let hexChars: Set<Character> = ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f","A","B","C","D","E","F"]
-        var idx = 0
+
         for (i, ch) in s.enumerated() {
             if i == 8 || i == 13 || i == 18 || i == 23 {
                 if ch != "-" { return false }
             } else {
                 if !hexChars.contains(ch) { return false }
             }
-            idx = i
+
         }
         return true
     }

@@ -222,15 +222,17 @@ public struct OAuthAccessToken: Sendable, Equatable {
     public let expiresAt: Int
     public let clientID: String?  // oauth client_id (when issued to one)
     public let issuer: String
+    public let region: String?    // rgn (login-time region selection)
 
     public init(tokenID: String, projectID: String, scopes: [String],
-                expiresAt: Int, clientID: String?, issuer: String) {
+                expiresAt: Int, clientID: String?, issuer: String, region: String? = nil) {
         self.tokenID = tokenID
         self.projectID = projectID
         self.scopes = scopes
         self.expiresAt = expiresAt
         self.clientID = clientID
         self.issuer = issuer
+        self.region = region
     }
 }
 
@@ -254,7 +256,8 @@ extension VerifiedJWT {
             scopes: scopes,
             expiresAt: exp,
             clientID: string("client_id"),
-            issuer: issuer ?? ""
+            issuer: issuer ?? "",
+            region: string("rgn").flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 }

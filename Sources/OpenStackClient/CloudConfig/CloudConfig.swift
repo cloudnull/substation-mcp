@@ -92,7 +92,7 @@ public struct CloudConfig: Sendable {
 
     // MARK: - Search order
 
-    private static func resolvedFileURL(explicit: URL?) -> URL? {
+    public static func resolvedFileURL(explicit: URL?) -> URL? {
         if let explicit { return explicit }
         var candidates: [URL] = [
             URL(fileURLWithPath: "./clouds.yaml"),

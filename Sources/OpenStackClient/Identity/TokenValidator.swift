@@ -11,6 +11,7 @@ public actor TokenValidator {
     private let tokenCacheTTL: Duration
     private let policy: PolicyRoles
     private let logger: Logger
+    private let cloudsFileURL: URL?
 
     public init(
         transport: Transport,
@@ -18,7 +19,8 @@ public actor TokenValidator {
         servedProjects: Set<String>,
         tokenCacheTTL: Duration = .seconds(60),
         policy: PolicyRoles = PolicyRoles(),
-        logger: Logger = Logger(label: "token-validator")
+        logger: Logger = Logger(label: "token-validator"),
+        cloudsFileURL: URL? = nil
     ) {
         self.transport = transport
         self.cache = cache
@@ -26,10 +28,17 @@ public actor TokenValidator {
         self.tokenCacheTTL = tokenCacheTTL
         self.policy = policy
         self.logger = logger
+        self.cloudsFileURL = cloudsFileURL
     }
 
     /// Validate a presented token ID. Returns the validated token with derived scopes.
-    public func validate(_ tokenID: String) async throws -> ValidatedToken {
+    ///
+    /// - Parameter region: The region the client logged in via. When non-nil, the
+    ///   whoami call is made against that region's Keystone endpoint (resolved from
+    ///   `cloudsFile`) instead of the standing/default transport target. This ensures
+    ///   the service catalog reflects the selected region's endpoints — required for
+    ///   multi-region clouds where each region has its own auth_url and catalog.
+    public func validate(_ tokenID: String, region: String? = nil) async throws -> ValidatedToken {
         let key = CacheKey(tokenID: tokenID, region: "_auth_", resource: "__token__", suffix: "")
 
         if let cached = await cache.get(key, ttl: tokenCacheTTL, as: Token.self) {
@@ -37,11 +46,21 @@ public actor TokenValidator {
             return ValidatedToken(token: cached, scopes: scopes)
         }
 
+        // Resolve the regional Keystone base when a region was selected at login.
+        var overrideBase: URL? = nil
+        if let region, !region.isEmpty {
+            let file = LoginMinter.resolvedCloudsFile(cloudsFileURL)
+            if let file, let url = LoginMinter.regionAuthURL(region: region, cloudsFile: file) {
+                overrideBase = url
+            }
+        }
+
         let (status, body, _) = try await transport.request(
             method: "GET",
             service: "keystone",
             path: "/v3/auth/tokens",
-            tokenOverride: tokenID
+            tokenOverride: tokenID,
+            overrideBase: overrideBase
         )
 
         guard status == 200 else {
@@ -90,7 +109,7 @@ public actor LoginMinter {
     }
 
     /// Mint a token using the given method.
-    public func mint(method: MintMethod, region: String? = nil, domainScoped: Bool = false) async throws -> Token {
+    public func mint(method: MintMethod, region: String? = nil, domainScoped: Bool = false, cloudsFile: URL? = nil) async throws -> Token {
         let body: Data
 
         let id = method.appCredID
@@ -161,9 +180,14 @@ public actor LoginMinter {
         // own auth_url) can be selected from the login/OAuth form.
         var overrideBase: URL? = nil
         if let region, !region.isEmpty {
-            if let regionURL = Self.regionAuthURL(region: region) {
-                overrideBase = regionURL
+            guard let file = Self.resolvedCloudsFile(cloudsFile), let regionURL = Self.regionAuthURL(region: region, cloudsFile: file) else {
+                throw OpenStackError(
+                    service: "keystone",
+                    status: 400,
+                    message: "Region '\(region)' is not configured in clouds.yaml"
+                )
             }
+            overrideBase = regionURL
         }
         let (status, responseBody, _) = try await transport.request(
             method: "POST",
@@ -216,27 +240,53 @@ public actor LoginMinter {
     /// - Throws: `OpenStackError` if the credentials are invalid or Keystone
     ///   rejects the mint/list. The thrown message is intentionally not echoed
     ///   to the browser (it may quote credential material).
-    public func detectProjects(user: String, domain: String?, password: String) async throws -> [DetectedProject] {
-        // Mint an UNSCOPED token — exactly the same shape the working login
-        // uses (verified: Rackspace accepts unscoped for this account but the
-        // domain-scope variant is rejected). The user's own domain is passed
-        // through when supplied; otherwise it is omitted from the body entirely
-        // (matching a login where the operator left Domain blank).
-        let effectiveDomain = (domain?.isEmpty == false) ? domain! : nil
-        // 1. Mint an unscoped token. The mint RESPONSE BODY carries
-        //    `token.user.id` — that is the Keystone user id we need for the
-        //    project-listing call below. (whoami / identity:validate_token is
-        //    denied for these accounts, so the mint body is the only reliable
-        //    source of the user id.)
+    public func detectProjects(user: String, domain: String?, password: String, region: String? = nil, cloudsFile: URL? = nil) async throws -> [DetectedProject] {
+        // Live-verified against Rackspace IAD3 (user cloudnull @ rackspace_cloud_domain):
+        //   - unscoped mint WITHOUT user.domain            → 400 "Expecting to find domain in user"
+        //   - unscoped mint WITH user.domain (the real one) → 201; token id from X-Subject-Token
+        //   - unscoped mint with WRONG user domain ("default") → 401
+        //   - DOMAIN-SCOPED mint                            → 401
+        //   - PROJECT-SCOPED mint                           → 401
+        //   - GET /v3/projects (admin listing) with that token      → 403 identity:list_projects
+        //   - GET /v3/users/{user_id}/projects (user id = fdff75…
+        //     taken from the MINT RESPONSE, not the token header)    → 200, projects
+        //
+        // Consequences baked into this implementation:
+        //   1. The caller's domain is REQUIRED — substituting "default" or omitting it
+        //      makes Keystone reject valid credentials with a 401.
+        //   2. Mint unscoped only — scoped variants are rejected by these endpoints.
+        //   3. The user id for the per-user listing MUST come from the mint response
+        //      body (`token.user.id`), never from the X-Subject-Token header (they differ).
+        //   4. The listing MUST hit the same regional Keystone as the mint: tokens are
+        //      not portable across regions and catalog region tags don't match form values.
+        guard let d = (domain?.isEmpty == false) ? domain : nil else {
+            throw OpenStackError(service: "keystone", status: 400,
+                                  message: "domain_required: user domain is required for project detection")
+        }
+        // Resolve the region's Keystone endpoint up front so mint AND the project
+        // listing below use the exact same regional auth_url.
+        var regionalBase: URL? = nil
+        if let region, !region.isEmpty {
+            guard let file = Self.resolvedCloudsFile(cloudsFile), let url = Self.regionAuthURL(region: region, cloudsFile: file) else {
+                throw OpenStackError(service: "keystone", status: 400,
+                                      message: "Region '\(region)' is not configured in clouds.yaml")
+            }
+            regionalBase = url
+        }
+        // 1. Mint an UNSCOPED token carrying the user's domain — exactly the shape the
+        //    working /login path uses. No scope block at all.
         let token: Token
         do {
-            token = try await mint(method: .password(userID: user, domain: effectiveDomain, password: password, projectName: nil))
+            token = try await mint(
+                method: .password(userID: user, domain: d, password: password, projectName: nil),
+                region: region,
+                domainScoped: false,
+                cloudsFile: Self.resolvedCloudsFile(cloudsFile)
+            )
         } catch {
-            // Re-throw with a clear stage marker so the caller can distinguish
-            // "bad credentials" (mint failed) from "no permission to list"
-            // (list failed). The raw error is deliberately NOT interpolated
-            // into the message: it may quote credential material, and the
-            // caller matches on the "mint_failed" substring only.
+            // Mint failed: credentials/domain/region problem. The raw error is
+            // deliberately NOT echoed (it may quote credential material); the
+            // caller matches on the "mint_failed" substring.
             throw OpenStackError(service: "keystone", status: 401,
                                   message: "mint_failed")
         }
@@ -248,7 +298,7 @@ public actor LoginMinter {
         //      identity:list_projects role (e.g. many community OpenStacks).
         //    We try the member-friendly per-user endpoint first, then fall back
         //    to the global listing, so detection works across clouds without
-        //    cloud-specific branching.
+        // We will use the loop below to try candidate paths.
         let userID = token.user.id
         guard !userID.isEmpty, userID != "unknown" else {
             throw OpenStackError(service: "keystone", status: 500,
@@ -258,7 +308,7 @@ public actor LoginMinter {
         var lastError: Error? = nil
         for path in candidatePaths {
             do {
-                return try await self.listProjects(token: token, path: path)
+                return try await self.listProjects(token: token, path: path, baseOverride: regionalBase)
             } catch {
                 // Only fall through to the next endpoint when this one was
                 // rejected (403/404). A transport-level failure (network, 5xx)
@@ -286,7 +336,14 @@ public actor LoginMinter {
     }
 
     /// Page through a Keystone project-listing endpoint and decode the results.
-    private func listProjects(token: Token, path: String) async throws -> [DetectedProject] {
+    ///
+    /// `baseOverride` must be the SAME Keystone URL the token was minted
+    /// against (the selected region's auth_url). Catalog-based endpoint
+    /// selection is unreliable here: Rackspace's unscoped token catalogs do
+    /// not tag identity endpoints with the region in a way that matches the
+    /// form value, and hitting the wrong regional endpoint would either leak
+    /// another region's projects or fail outright.
+    private func listProjects(token: Token, path: String, baseOverride: URL?) async throws -> [DetectedProject] {
         var projects: [DetectedProject] = []
         var marker: String? = nil
         let limit = 100
@@ -298,7 +355,8 @@ public actor LoginMinter {
                 service: "keystone",
                 path: path,
                 query: query,
-                tokenOverride: token.id
+                tokenOverride: token.id,
+                overrideBase: baseOverride
             )
             guard status == 200 else {
                 let normalized = OpenStackError.normalize(body: body, status: status, service: "keystone", requestID: nil, hasAccessRules: false)
@@ -319,7 +377,7 @@ public actor LoginMinter {
             }
             // Next-page marker: last project id (Keystone's default sort).
             if arr.count < limit { break }
-            marker = arr.last?["id"] as? String
+            marker = (arr.last as? [String: Any])?["id"] as? String
             if marker == nil { break }
         }
         return projects
@@ -327,15 +385,32 @@ public actor LoginMinter {
 
     // MARK: - Region → Keystone auth URL lookup
 
+    /// Resolve the clouds.yaml file for region lookups. When `explicit` is
+    /// provided (the serve config's `clouds.file`), it wins; otherwise fall
+    /// back to the same search order as `CloudConfig.resolvedFileURL`.
+    static func resolvedCloudsFile(_ explicit: URL?) -> URL? {
+        if let explicit { return explicit }
+        if let envPath = ProcessInfo.processInfo.environment["OS_CLIENT_CONFIG_FILE"] {
+            return URL(fileURLWithPath: envPath)
+        }
+        return CloudConfig.resolvedFileURL(explicit: nil)
+    }
+
     /// Look up the Keystone `auth_url` for a named region from the process's
     /// clouds.yaml. Multi-region clouds (e.g. Rackspace IAD3/DFW3/SJC3) have
     /// one cloud entry per region, each with its own `auth_url`. The login and
     /// OAuth forms let the user pick a region; this resolves it to the correct
     /// Keystone endpoint so the token is minted against the right identity API.
-    static func regionAuthURL(region: String) -> URL? {
-        let url = URL(fileURLWithPath: ProcessInfo.processInfo.environment["OS_CLIENT_CONFIG_FILE"] ?? "clouds.yaml")
-        let config = CloudConfig.load(file: url)
-        return config.clouds.first { $0.regionName == region }?.authURL
+    static func regionAuthURL(region: String, cloudsFile: URL) -> URL? {
+        // Explicit file argument: the caller passes its own already-resolved
+        // clouds.yaml path (serve's config.cloudsFile ?? OS_CLIENT_CONFIG_FILE),
+        // so this stays correct in containers where the baked-in path is not on
+        // CloudConfig's default search list.
+        guard let config = try? CloudConfig.loadStrict(file: cloudsFile) else {
+            return nil
+        }
+        // Match against regionName OR the cloud name itself (some configs use the name as region).
+        return config.clouds.first { $0.regionName == region || $0.name == region }?.authURL
     }
 
     // MARK: - JSON body builders

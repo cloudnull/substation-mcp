@@ -102,7 +102,7 @@ public struct TopologyBuilder: Sendable {
         func routersOnSubnet(_ subnetID: String) -> [Router] {
             let attachedRouterIDs: Set<String> = Set(ports.filter { p in
                 guard let owner = p.deviceOwner, owner.hasPrefix("network:router_interface"),
-                      let dev = p.deviceID else { return false }
+                      let _ = p.deviceID else { return false }
                 return p.fixedIPs.contains(where: { $0.subnetID == subnetID })
             }.compactMap { $0.deviceID })
             let byPort = routers.filter { attachedRouterIDs.contains($0.id) }

@@ -97,6 +97,7 @@ public enum ConfigLoader {
         cfg.authTokenCacheTTL = int("auth__token_cache_ttl") ?? cfg.authTokenCacheTTL
         cfg.authFailedAuthPerMinute = int("auth__failed_auth_per_minute") ?? cfg.authFailedAuthPerMinute
         if let b = bool("auth__login_page_enabled") { cfg.authLoginPageEnabled = b }
+        cfg.authDefaultDomain = str("auth__default_domain")
         // oauth (stateless OAuth 2.1 AS, P2)
         cfg.oauthServerSecret = str("oauth__server_secret")
         cfg.oauthCodeTTL = int("oauth__code_ttl") ?? cfg.oauthCodeTTL

@@ -39,6 +39,7 @@ struct OAuthCodeGrant: Sendable {
     let keystoneTokenID: String   // "osk"
     let projectID: String         // "prj"
     let keystoneExpiry: Date      // "kexp"
+    let region: String?           // "rgn" (the login-time region selection)
 }
 
 /// Errors a token / authorize request can fail with, mapped to RFC 6749 §5.2
@@ -99,7 +100,12 @@ public struct OAuthAuthorizationServer: Sendable {
     public let codeReplayStore: CodeReplayStore
     /// The cloud name shown in the authorize page footer (e.g. "rackspace-iad3").
     public let cloudName: String?
-
+    /// Explicit clouds.yaml path for regional endpoint resolution at mint time.
+    /// When nil, `LoginMinter` falls back to the process env var / default search order.
+    public let cloudsFileURL: URL?
+    /// The default Keystone domain pre-filled in the authorize form's user-domain
+    /// field (e.g. `rackspace_cloud_domain`). When nil the form defaults to `default`.
+    public let defaultDomain: String?
     public init(
         secret: String,
         issuer: String,
@@ -114,6 +120,8 @@ public struct OAuthAuthorizationServer: Sendable {
         sharedReplayCacheOverride: (host: String, port: Int)? = nil,
         replayStoreFailOpen: Bool = true,
         cloudName: String? = nil,
+        cloudsFileURL: URL? = nil,
+        defaultDomain: String? = nil,
         logger: Logger = Logger(label: "oauth-as")
     ) {
         self.secret = secret
@@ -148,6 +156,8 @@ public struct OAuthAuthorizationServer: Sendable {
         }
         self.logger = logger
         self.cloudName = cloudName
+        self.cloudsFileURL = cloudsFileURL
+        self.defaultDomain = defaultDomain
     }
 
     /// The OAuth path prefix, e.g. `/v1/oauth`.
@@ -252,7 +262,8 @@ public struct OAuthAuthorizationServer: Sendable {
         scope: String,
         keystoneTokenID: String,
         projectID: String,
-        keystoneTokenExpiry: Date
+        keystoneTokenExpiry: Date,
+        region: String? = nil
     ) -> String? {
         let now = Int(Date().timeIntervalSince1970)
         // A code can never outlive the Keystone token it wraps.
@@ -270,6 +281,7 @@ public struct OAuthAuthorizationServer: Sendable {
             "osk": .string(keystoneTokenID),
             "prj": .string(projectID),
             "kexp": .int(Int(keystoneTokenExpiry.timeIntervalSince1970)),
+            "rgn": .string(region ?? "")
         ]
         return signJWT(claims: claims, secret: secret)
     }
@@ -302,7 +314,8 @@ public struct OAuthAuthorizationServer: Sendable {
             scope: jwt.string("sco") ?? "",
             keystoneTokenID: osk,
             projectID: prj,
-            keystoneExpiry: Date(timeIntervalSince1970: TimeInterval(kexp))
+            keystoneExpiry: Date(timeIntervalSince1970: TimeInterval(kexp)),
+            region: jwt.string("rgn").flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -314,7 +327,8 @@ public struct OAuthAuthorizationServer: Sendable {
         projectID: String,
         scopes: [String],
         clientID: String,
-        keystoneTokenExpiry: Date
+        keystoneTokenExpiry: Date,
+        region: String? = nil
     ) -> String {
         let now = Int(Date().timeIntervalSince1970)
         let exp = min(now + tokenTTL, Int(keystoneTokenExpiry.timeIntervalSince1970))
@@ -328,6 +342,7 @@ public struct OAuthAuthorizationServer: Sendable {
             "osk": .string(keystoneTokenID),
             "prj": .string(projectID),
             "sco": .string(scopes.joined(separator: " ")),
+            "rgn": .string(region ?? "")
         ]
         let jwt = signJWT(claims: claims, secret: secret) ?? ""
         return OAuthAccessTokenPrefix + jwt
@@ -347,7 +362,7 @@ public struct OAuthAuthorizationServer: Sendable {
             guard let at = verified.asOAuthAccessToken() else {
                 throw TokenValidationError(message: "Access token JWT missing required claims")
             }
-            let vt = try await validator.validate(at.tokenID)
+            let vt = try await validator.validate(at.tokenID, region: at.region)
             let resolvedScopes: [String]
             if at.scopes.isEmpty {
                 resolvedScopes = vt.scopes.map { $0.rawValue }
@@ -360,6 +375,7 @@ public struct OAuthAuthorizationServer: Sendable {
                 tokenID: vt.token.id,
                 projectID: vt.token.project.id,
                 scopes: resolvedScopes,
+                region: at.region,
                 raw: AnyTokenPayload(data: try JSONEncoder().encode(vt.token))
             )
         } catch let e as OAuthJWTError {

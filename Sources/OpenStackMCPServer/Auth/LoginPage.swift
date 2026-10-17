@@ -15,13 +15,16 @@ import OpenStackClient
 public struct LoginPage: Sendable {
     private let minter: LoginMinter
     private let logger: Logger
+    private let cloudsFileURL: URL?
 
     public init(
         minter: LoginMinter,
-        logger: Logger = Logger(label: "login-page")
+        logger: Logger = Logger(label: "login-page"),
+        cloudsFileURL: URL? = nil
     ) {
         self.minter = minter
         self.logger = logger
+        self.cloudsFileURL = cloudsFileURL
     }
 
     /// The `login:` closure for `MCPRoute.install`.
@@ -45,7 +48,7 @@ public struct LoginPage: Sendable {
                         "elicitationId": "\(req.elicitationId)",
                         "reason": "missing-app-cred-fields",
                     ])
-                    return LoginResponse(tokenID: "", storePath: "", completion: false)
+                    return LoginResponse(tokenID: "", storePath: "", completion: false, region: nil)
                 }
                 method = MintMethod.applicationCredential(
                     id: id,
@@ -54,7 +57,7 @@ public struct LoginPage: Sendable {
             }
 
             do {
-                let token = try await minter.mint(method: method, region: region)
+                let token = try await minter.mint(method: method, region: region, cloudsFile: cloudsFileURL)
                 // The secret has been consumed by the minter. The minted token
                 // is display-only: it is shown on the completion page (its
                 // intended surface) but NEVER stored server-side — there is no
@@ -73,7 +76,8 @@ public struct LoginPage: Sendable {
                 return LoginResponse(
                     tokenID: token.id,
                     storePath: "display-only",
-                    completion: true
+                    completion: true,
+                    region: region
                 )
             } catch {
                 // Log the mint failure with the structured error only — never
@@ -90,7 +94,8 @@ public struct LoginPage: Sendable {
                 return LoginResponse(
                     tokenID: "",
                     storePath: "",
-                    completion: false
+                    completion: false,
+                    region: nil
                 )
             }
         }

@@ -155,7 +155,8 @@ extension OAuthAuthorizationServer {
                 guard let code = mintCode(
                     clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge,
                     scope: scope, keystoneTokenID: token.id, projectID: token.project.id,
-                    keystoneTokenExpiry: token.expiresAt
+                    keystoneTokenExpiry: token.expiresAt,
+                    region: formFields["region"].flatMap { $0.isEmpty ? nil : $0 }
                 ) else {
                     return Response(status: .internalServerError, headers: [.contentType: "application/json"], body: .init(byteBuffer: ByteBuffer(string: #"{"error":"mint_failed"}"#)))
                 }
@@ -172,7 +173,7 @@ extension OAuthAuthorizationServer {
 
         // No credentials: render the consent / credential form (browser path).
         if postBody == nil {
-            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope, cloudName: cloudName)
+            let html = authorizeHTML(clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge, state: state, scope: scope, cloudName: cloudName, defaultDomain: defaultDomain)
             return Response(status: .ok, headers: [.contentType: "text/html"], body: .init(byteBuffer: ByteBuffer(string: html)))
         }
 
@@ -193,13 +194,13 @@ extension OAuthAuthorizationServer {
                 password: pw,
                 projectName: (fields["projectName"] ?? "").isEmpty ? nil : fields["projectName"]
             )
-            return try await minter.mint(method: m, region: region)
+            return try await minter.mint(method: m, region: region, cloudsFile: cloudsFileURL)
         } else {
             let id = fields["appCredId"] ?? ""
             let secret = fields["secret"] ?? ""
             guard !id.isEmpty, !secret.isEmpty else { return nil }
             let m = MintMethod.applicationCredential(id: id, secret: Array(secret.utf8).map { Int8(bitPattern: $0) })
-            return try await minter.mint(method: m, region: region)
+            return try await minter.mint(method: m, region: region, cloudsFile: cloudsFileURL)
         }
     }
     // MARK: - Token endpoint
@@ -270,7 +271,7 @@ extension OAuthAuthorizationServer {
         // shared replay-store endpoint (spec §6.5).
         let vt: ValidatedToken
         do {
-            vt = try await tokenValidator.validate(grant.keystoneTokenID)
+            vt = try await tokenValidator.validate(grant.keystoneTokenID, region: grant.region)
         } catch {
             var reason = "token_validate"
             if let osErr = error as? OpenStackError { reason = "keystone-\(osErr.status)-\(osErr.code ?? "generic")" }
@@ -302,7 +303,8 @@ extension OAuthAuthorizationServer {
                 projectID: vt.token.project.id,
                 scopes: scopes,
                 clientID: grant.clientID,
-                keystoneTokenExpiry: vt.token.expiresAt
+                keystoneTokenExpiry: vt.token.expiresAt,
+                region: grant.region
             )
             let now = Int(Date().timeIntervalSince1970)
             let exp = min(now + tokenTTL, Int(vt.token.expiresAt.timeIntervalSince1970))
@@ -527,7 +529,8 @@ extension OAuthAuthorizationServer {
     /// The OAuth authorization consent page. Matches the `/v1/login` page
     /// styling: Substation logo, IBM Plex Sans, centered card, gold-accented
     /// primary button, and method-filtered form groups (app-cred vs password).
-    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String, cloudName: String? = nil) -> String {
+    func authorizeHTML(clientID: String, redirectURI: String, codeChallenge: String, state: String, scope: String, cloudName: String? = nil, defaultDomain: String? = nil) -> String {
+        let domainValue = (defaultDomain?.isEmpty == false) ? defaultDomain! : "default"
         func esc(_ s: String) -> String {
             var r = s
             r = r.replacingOccurrences(of: "&", with: "&amp;")   // must be first
@@ -659,18 +662,19 @@ extension OAuthAuthorizationServer {
                 </div>
                 <div class="group only-password">
                   <label for="userDomain">Domain</label>
-                  <input id="userDomain" name="userDomain" type="text" class="field" value="default">
+                  <input id="userDomain" name="userDomain" type="text" class="field" value="\(esc(domainValue))">
+                </div>
+                <div class="group">
+                  <label for="region">Region <span class="opt">required for password auth</span></label>
+                  <input id="region" name="region" type="text" class="field" list="oauthRegionList"
+                         placeholder="e.g. IAD3, DFW3, RegionOne" autocomplete="off" spellcheck="false"
+                         data-required="password" oninput="oauthRegionChange(this)" onchange="oauthRegionChange(this)">
+                  <datalist id="oauthRegionList"></datalist>
+                  <p class="hint" id="oauthRegionHint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Selects which region the minted token will target.</p>
                 </div>
                 <div class="group only-password">
                   <label for="password">Password</label>
                   <input id="password" name="password" type="password" class="field" autocomplete="current-password">
-                </div>
-                <div class="group">
-                  <label for="region">Region <span class="opt">optional — multi-region clouds only</span></label>
-                  <input id="region" name="region" type="text" class="field" list="oauthRegionList"
-                         placeholder="e.g. IAD3, DFW3, RegionOne" autocomplete="off" spellcheck="false">
-                  <datalist id="oauthRegionList"></datalist>
-                  <p class="hint" id="oauthRegionHint" style="font-size:12px;color:var(--ink-faint);margin:6px 0 0">Selects which region the minted token will target. Leave blank to use the default.</p>
                 </div>
                 <div class="group only-password">
                   <label for="projectName">Project <span class="opt">(required for write access)</span></label>
@@ -686,10 +690,16 @@ extension OAuthAuthorizationServer {
               </div>
               <button type="submit" class="btn" id="oauthSubmitBtn">Authorize &amp; mint</button>
             </form>
-            <p class="footer">Sign in to mint a Keystone token.\(cloudName.map { " · cloud <code>\(esc($0))</code>" } ?? "") The authorization code is single-use and expires in 30 seconds.</p>
+            <p class="footer">Sign in to mint a Keystone token.\(cloudName.map { " · cloud <code id=\"oauthCloudFooter\">\(esc($0))</code>" } ?? "") The authorization code is single-use and expires in 30 seconds.</p>
           </div>
         <script>
-          // Detect projects for the entered user (password method only). The
+          // Live-update the footer cloud label when a region is typed/selected.
+          function oauthRegionChange(el) {
+            var el2 = document.getElementById('oauthCloudFooter');
+            if (!el2) return;
+            var v = (el && el.value || '').trim();
+            el2.textContent = v ? v.toLowerCase() : '\(cloudName.map { esc($0) } ?? "")';
+          }
           // project field is hidden for application credentials — they are
           // bound to a single project at creation, so there is nothing to detect.
           function oauthDetectProjects() {
@@ -698,6 +708,7 @@ extension OAuthAuthorizationServer {
             var sel = document.getElementById('projectSelect');
             var user = (document.getElementById('userName').value || '').trim();
             var domain = (document.getElementById('userDomain').value || '').trim();
+            var region = (document.getElementById('region').value || '').trim();
             var pw = (document.getElementById('password') ? document.getElementById('password').value : '') || '';
             if (!user || !pw) {
               if (status) { status.textContent = 'Enter user and password first'; status.className = 'detect-status err'; }
@@ -709,7 +720,7 @@ extension OAuthAuthorizationServer {
             fetch('\(endpoint)/login/detect-projects', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user: user, domain: domain, password: pw })
+              body: JSON.stringify({ user: user, domain: domain, password: pw, region: region })
             }).then(function(r) {
               return r.json().then(function(j) { return { ok: r.ok, j: j }; });
             }).then(function(res) {

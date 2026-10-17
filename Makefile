@@ -189,6 +189,20 @@ container-run:
 			$(IMAGE) ; \
 	fi
 
+## container-run-bg: start the named dev container in the background, publishing HOST_PORT:CONT_PORT.
+##   Override CONTAINER/HOST_PORT/CONT_PORT as needed.
+container-run-bg:
+	$(require-runtime)
+	if [ "$(RUNTIME)" = "container" ]; then \
+		container run --name $(CONTAINER) --rm \
+			-p $(HOST_PORT):$(CONT_PORT) -c 4 -m 1G -d \
+			$(IMAGE) ; \
+	else \
+		$(RUNTIME) run --rm --name $(CONTAINER) -d \
+			-p $(HOST_PORT):$(CONT_PORT) \
+			$(IMAGE) ; \
+	fi
+
 ## container-logs: tail the logs of the named container.
 container-logs:
 	$(require-runtime)
