@@ -132,7 +132,7 @@ public struct OAuthAuthorizationServer: Sendable {
         tokenValidator: TokenValidator,
         codeReplayStore: CodeReplayStore = CodeReplayStore(ttl: 300),
         sharedReplayCache: Bool = false,
-        sharedReplayCacheOverride: (host: String, port: Int)? = nil,
+        sharedReplayCacheOverride: [(host: String, port: Int)]? = nil,
         replayStoreFailOpen: Bool = true,
         cloudName: String? = nil,
         cloudsFileURL: URL? = nil,
@@ -155,17 +155,17 @@ public struct OAuthAuthorizationServer: Sendable {
         self.tokenValidator = tokenValidator
         // Shared (memcached) replay store when requested: the endpoint is
         // discovered from each token's Keystone service catalog (spec §6.5)
-        // unless an explicit override is configured. On any cache failure it
-        // either falls back to the local store (fail-open, the default) or
-        // rejects the code (fail-closed).
+        // unless an explicit override is configured. Multi-server pools are
+        // routed via Rendezvous Hashing (HRW) so every replica agrees on which
+        // server holds a given key without any shared state. On any cache
+        // failure it either falls back to the local store (fail-open, the
+        // default) or rejects the code (fail-closed).
         if sharedReplayCache {
-            let override = sharedReplayCacheOverride
             self.codeReplayStore = CodeReplayStore(
                 shared: SharedCodeReplayStore(
                     client: MemcachedClient(logger: Logger(label: "oauth-as.memcached")),
                     resolver: ReplayStoreEndpointResolver(
-                        overrideHost: override?.host,
-                        overridePort: override?.port
+                        overrideServers: sharedReplayCacheOverride ?? []
                     ),
                     issuer: issuer
                 ),

@@ -101,9 +101,10 @@ struct ReplayStoreEndpointResolverTests {
     func catalogResolution() async throws {
         let resolver = ReplayStoreEndpointResolver()
         let vt = makeVT(catalog: [computeCatalogEntry(), memcachedCatalogEntry(host: "10.0.0.5", port: 11211)])
-        let (host, port) = try await resolver.resolve(vt)
-        #expect(host == "10.0.0.5")
-        #expect(port == 11211)
+        let servers = try await resolver.resolve(vt)
+        #expect(servers.count == 1)
+        #expect(servers[0].host == "10.0.0.5")
+        #expect(servers[0].port == 11211)
     }
 
     @Test("throws noEndpoint when the catalog has no memcached entry")
@@ -124,13 +125,28 @@ struct ReplayStoreEndpointResolverTests {
     @Test("explicit override wins over the catalog")
     func overrideWins() async throws {
         let resolver = ReplayStoreEndpointResolver(
-            overrideHost: "127.0.0.1",
-            overridePort: 11999
+            overrideServers: [(host: "127.0.0.1", port: 11999)]
         )
         let vt = makeVT(catalog: [memcachedCatalogEntry(host: "10.0.0.5", port: 11211)])
-        let (host, port) = try await resolver.resolve(vt)
-        #expect(host == "127.0.0.1")
-        #expect(port == 11999)
+        let servers = try await resolver.resolve(vt)
+        #expect(servers.count == 1)
+        #expect(servers[0].host == "127.0.0.1")
+        #expect(servers[0].port == 11999)
+    }
+
+    @Test("multi-server override is returned in order")
+    func multiServerOverride() async throws {
+        let resolver = ReplayStoreEndpointResolver(
+            overrideServers: [
+                (host: "10.0.0.1", port: 11211),
+                (host: "10.0.0.2", port: 11211),
+                (host: "10.0.0.3", port: 11211),
+            ]
+        )
+        let vt = makeVT(catalog: [])
+        let servers = try await resolver.resolve(vt)
+        #expect(servers.count == 3)
+        #expect(servers.map(\.host) == ["10.0.0.1", "10.0.0.2", "10.0.0.3"])
     }
 
     @Test("internal interface is preferred when the cloud advertises it")
@@ -144,9 +160,10 @@ struct ReplayStoreEndpointResolverTests {
                 CatalogEndpoint(region: "RegionOne", interface: "internal", url: URL(string: "http://internal.mem:11211")!),
             ]
         )])
-        let (host, port) = try await resolver.resolve(vt)
-        #expect(host == "internal.mem")
-        #expect(port == 11211)
+        let servers = try await resolver.resolve(vt)
+        #expect(servers.count == 1)
+        #expect(servers[0].host == "internal.mem")
+        #expect(servers[0].port == 11211)
     }
 }
 
@@ -258,26 +275,58 @@ struct ConfigReplayStoreTests {
         let cfg = OpenStackMCPConfig()
         #expect(cfg.oauthReplayStore == "local")
         #expect(cfg.oauthReplayStoreEndpoint == nil)
-        #expect(cfg.oauthReplayStoreEndpointParsed == nil)
+        #expect(cfg.oauthReplayStoreEndpoints == nil)
     }
 
-    @Test("endpoint override parses host:port")
+    @Test("single endpoint parses to one-element array")
     func endpointParsed() {
         var cfg = OpenStackMCPConfig()
         cfg.oauthReplayStore = "memcached"
         cfg.oauthReplayStoreEndpoint = "10.0.0.9:11211"
-        let parsed = cfg.oauthReplayStoreEndpointParsed
-        #expect(parsed?.host == "10.0.0.9")
-        #expect(parsed?.port == 11211)
+        let parsed = cfg.oauthReplayStoreEndpoints
+        #expect(parsed?.count == 1)
+        #expect(parsed?[0].host == "10.0.0.9")
+        #expect(parsed?[0].port == 11211)
     }
 
-    @Test("malformed endpoint parses to nil (catalog discovery takes over)")
+    @Test("comma-separated multi-server list parses to all valid entries")
+    func multiServerParsed() {
+        var cfg = OpenStackMCPConfig()
+        cfg.oauthReplayStore = "memcached"
+        cfg.oauthReplayStoreEndpoint = "10.0.0.1:11211,10.0.0.2:11211,10.0.0.3:11311"
+        let parsed = cfg.oauthReplayStoreEndpoints
+        #expect(parsed?.count == 3)
+        #expect(parsed?[0].host == "10.0.0.1")
+        #expect(parsed?[0].port == 11211)
+        #expect(parsed?[1].host == "10.0.0.2")
+        #expect(parsed?[1].port == 11211)
+        #expect(parsed?[2].host == "10.0.0.3")
+        #expect(parsed?[2].port == 11311)
+    }
+
+    @Test("whitespace around comma-separated entries is trimmed")
+    func whitespaceTrimmed() {
+        var cfg = OpenStackMCPConfig()
+        cfg.oauthReplayStoreEndpoint = " 10.0.0.1:11211 , 10.0.0.2:11211 "
+        let parsed = cfg.oauthReplayStoreEndpoints
+        #expect(parsed?.count == 2)
+        #expect(parsed?[0].host == "10.0.0.1")
+        #expect(parsed?[1].host == "10.0.0.2")
+    }
+
+    @Test("malformed entries are skipped; all-malformed gives nil (catalog takes over)")
     func endpointMalformed() {
         var cfg = OpenStackMCPConfig()
         cfg.oauthReplayStoreEndpoint = "no-port"
-        #expect(cfg.oauthReplayStoreEndpointParsed == nil)
+        #expect(cfg.oauthReplayStoreEndpoints == nil)
         var cfg2 = OpenStackMCPConfig()
         cfg2.oauthReplayStoreEndpoint = "host:99999"
-        #expect(cfg2.oauthReplayStoreEndpointParsed == nil)
+        #expect(cfg2.oauthReplayStoreEndpoints == nil)
+        // Mixed valid + malformed: only the valid entry survives.
+        var cfg3 = OpenStackMCPConfig()
+        cfg3.oauthReplayStoreEndpoint = "bad-entry,10.0.0.7:11211"
+        let parsed3 = cfg3.oauthReplayStoreEndpoints
+        #expect(parsed3?.count == 1)
+        #expect(parsed3?[0].host == "10.0.0.7")
     }
 }

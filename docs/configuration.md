@@ -24,7 +24,7 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `oauth.code_ttl` | `30s` | Authorization-code JWT lifetime |
 | `oauth.token_ttl` | `3600s` | Max access-token lifetime (capped at Keystone token expiry) |
 | `oauth.replay_store` | `local` | Code-replay store: `local` (single replica) or `memcached` (shared; endpoint from the token's Keystone catalog, service type `memcached`) |
-| `oauth.replay_store_endpoint` | unset | `host:port` override for the shared replay cache (non-catalog deployments) |
+| `oauth.replay_store_endpoint` | unset | Single `host:port` or comma-separated list (`h1:p,h2:p,…`) for multi-server pools. Multi-server lists are routed via **Rendezvous Hashing** (HRW): each key maps deterministically to exactly one server by FNV-1a64 score — adding/removing a node remaps only ~1/N of keys, same algorithm oslo.cache / pymemcache use. Malformed entries are skipped silently. When set, overrides Keystone catalog discovery |
 | `oauth.replay_store_fail_open` | `true` | On a shared replay-store failure: fall back to the local store (`true`) or reject the code (`false`). Ignored unless `replay_store = memcached` |
 | `oauth.dev_mint_enabled` | `false` | Mount the headless `POST <endpoint>/oauth/dev-mint` protocol-test endpoint. **Off by default; set `true` explicitly** to enable it (no build-config fallback) |
 | `auth.token_cache_ttl` | `60s` | Max age of cached validated-token entry |

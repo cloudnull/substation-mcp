@@ -36,7 +36,26 @@ config:
     # Production MUST set this (zero-config dev secret is not for prod).
     server_secret: ""
     keystone_url: ""
-  clouds:
+  oauth:
+    # HS256 signing secret (REQUIRED for release builds; inject via k8s Secret).
+    server_secret: ""
+    # ── Shared authorization-code replay store ─────────────────────────────────
+    # Set to "memcached" when running more than one replica so an authorization
+    # code redeemed on any pod is rejected cluster-wide. Default "local" is
+    # sufficient for a single-replica deployment.
+    replay_store: local
+    # Comma-separated list of memcached servers (host:port, e.g.
+    # "10.0.0.1:11211,10.0.0.2:11211"). When set, this overrides Keystone
+    # catalog discovery. Multi-server pools use Rendezvous Hashing (HRW) so
+    # each key maps deterministically to exactly one server without shared
+    # state — the same algorithm oslo.cache / pymemcache use for their
+    # memcached pools. Leave empty to auto-discover from the token's
+    # Keystone service catalog (service type "memcached").
+    replay_store_endpoint: ""
+    # true = degrade to local enforcement if the cache is unreachable (default);
+    # false = reject the code on any cache error (stronger, but outages block
+    # logins).
+    replay_store_fail_open: true
     # Default cloud name (must match a key under `clouds:` in the clouds
     # section below).
     default: mycloud

@@ -171,7 +171,10 @@ public actor SharedCodeReplayStore: CodeReplayRecording {
     /// (replay, `EXISTS`). Throws `ReplayStoreError` / `MemcachedError` —
     /// `CodeReplayStore.seen(_:vt:)` converts that to local-store use.
     public func record(_ jti: String, vt: ValidatedToken) async throws -> Bool {
-        let (host, port) = try await resolver.resolve(vt)
+        let servers = try await resolver.resolve(vt)
+        guard let (host, port) = RendezvousHashRouter.route(key: keyPrefix + jti, servers: servers) else {
+            throw ReplayStoreError.noEndpoint
+        }
         let stored = try await client.add(
             key: keyPrefix + jti,
             value: "1",
@@ -187,39 +190,38 @@ public actor SharedCodeReplayStore: CodeReplayRecording {
 
 // MARK: - Endpoint discovery from the token catalog
 
-/// Resolves the memcached `host:port` from a validated token's Keystone
+/// Resolves the memcached server list from a validated token's Keystone
 /// service catalog — the same mechanism (and interface preference) the server
 /// uses for Nova/Neutron/Cinder (spec §6.5), so a `memcached` service with an
 /// internal endpoint is reachable exactly like any other internal-network
 /// service.
+///
+/// An explicit override (`oauth.replay_store_endpoint`) wins over the catalog
+/// when set; it may be a single `host:port` or a comma-separated list for
+/// multi-server deployments (routed via ``RendezvousHashRouter``).
 public actor ReplayStoreEndpointResolver {
     /// The Keystone service type that advertises the shared replay cache.
     public static let serviceType = "memcached"
 
     private let preferredInterface: String
-    private let overrideHost: String?
-    private let overridePort: Int?
+    /// Explicit override servers. When non-empty, the catalog is not consulted.
+    private let overrideServers: [(host: String, port: Int)]
 
     public init(
         preferredInterface: String = "public",
-        overrideHost: String? = nil,
-        overridePort: Int? = nil
+        overrideServers: [(host: String, port: Int)] = []
     ) {
         self.preferredInterface = preferredInterface
-        self.overrideHost = overrideHost
-        self.overridePort = overridePort
+        self.overrideServers = overrideServers
     }
 
-    /// Resolve the endpoint for this token's catalog. An explicit override
-    /// (host AND port both set) wins over the catalog. Probes the catalog's
-    /// advertised regions in order (the resolver filters by exact region
-    /// match and regions are cloud-specific). Throws
-    /// `ReplayStoreError.noEndpoint` when the catalog has no `memcached`
-    /// entry and no override is configured.
-    public func resolve(_ vt: ValidatedToken) throws -> (host: String, port: Int) {
-        if let host = overrideHost, !host.isEmpty, let port = overridePort, port > 0 {
-            return (host, port)
-        }
+    /// Resolve the server list for this token's catalog. An explicit override
+    /// (one or more valid `host:port` pairs) wins over the catalog. Probes the
+    /// catalog's advertised regions in order. Throws
+    /// ``ReplayStoreError/noEndpoint`` when neither source yields a usable
+    /// server.
+    public func resolve(_ vt: ValidatedToken) throws -> [(host: String, port: Int)] {
+        if !overrideServers.isEmpty { return overrideServers }
         let resolver = EndpointResolver(
             catalog: ServiceCatalog(entries: vt.token.catalog),
             preferredInterface: preferredInterface
@@ -237,10 +239,66 @@ public actor ReplayStoreEndpointResolver {
                 guard let host = url.host, !host.isEmpty, let port = url.port else {
                     throw ReplayStoreError.badEndpoint(url: url.absoluteString)
                 }
-                return (host, port)
+                return [(host: host, port: port)]
             }
         }
         throw ReplayStoreError.noEndpoint
+    }
+}
+
+/// Deterministically routes a memcached key to exactly one server in a
+/// multi-server pool using **Rendezvous Hashing** (HRW / Highest Random
+/// Weight) — the same algorithm used by pymemcache's `HashClient` and
+/// oslo.cache's memcached backend.
+///
+/// For each candidate server we compute a stable 64-bit hash of
+/// `"node-key"` and pick the server with the highest score. This has two
+/// properties modulo hashing does not have:
+///
+/// 1. When a server is removed only ~1/N of keys remap (vs 100%).
+/// 2. Adding a server also remaps only ~1/N of existing keys.
+///
+/// The hash is FNV-1a 64-bit chosen because:
+/// - It is trivially implementable (no external dependency).
+/// - It is stable across languages and platforms (unlike Swift's built-in
+///   `Hasher`, which is randomly seeded per process and would break
+///   cross-replica agreement).
+/// - Its avalanche quality is more than sufficient for picking among the
+///   small number of memcached nodes (≤ dozens in practice).
+///
+/// Ties are broken deterministically by lexicographic node label so every
+/// replica agrees on the winner without sharing any state.
+public struct RendezvousHashRouter: Sendable {
+    /// Compute the FNV-1a 64-bit hash of `data`.
+    private static func fnv1a64(_ data: [UInt8]) -> UInt64 {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325   // offset basis
+        for b in data {
+            h ^= UInt64(b)
+            h = h &* 0x0000_0100_0000_01B3      // prime
+        }
+        return h
+    }
+
+    /// Pick the winning server for `key` among `servers`. Returns nil when
+    /// `servers` is empty.
+    public static func route(
+        key: String,
+        servers: [(host: String, port: Int)]
+    ) -> (host: String, port: Int)? {
+        guard !servers.isEmpty else { return nil }
+        if servers.count == 1 { return servers[0] }
+        var bestIdx = 0
+        var bestScore: UInt64 = 0
+        for (i, s) in servers.enumerated() {
+            let label = "\(s.host):\(s.port)"
+            let payload = Array((label + "-" + key).utf8)
+            let score = fnv1a64(payload)
+            if score > bestScore || (score == bestScore && label > "\(servers[bestIdx].host):\(servers[bestIdx].port)") {
+                bestScore = score
+                bestIdx = i
+            }
+        }
+        return servers[bestIdx]
     }
 }
 

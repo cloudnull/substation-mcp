@@ -126,7 +126,25 @@ config:
     # without it. Set to a random value >= 256 bits (e.g.
     # `openssl rand -base64 48`). Injected via k8s Secret, not this file.
     server_secret: ""
-  clouds:
+    # ── Shared authorization-code replay store (multi-replica deployments) ───
+    # "local" (default): in-memory, single-replica semantics — sufficient for
+    # a single pod. Set to "memcached" when running more than one replica so
+    # an authorization code redeemed on any pod is rejected on all others.
+    replay_store: local
+    # Comma-separated list of memcached server addresses (host:port). When set,
+    # overrides the Keystone catalog discovery (service type "memcached").
+    # Multi-server pools are routed deterministically via Rendezvous Hashing
+    # (HRW / Highest Random Weight), the same algorithm pymemcache and oslo.cache
+    # use: each key maps to exactly one server by score = FNV-1a64("node-key"),
+    # highest wins. Adding or removing a server remaps only ~1/N of keys.
+    # Leave empty to discover from the token's Keystone service catalog.
+    replay_store_endpoint: ""
+    # true (default): if the shared store is unreachable, degrade to local
+    # enforcement for that exchange (never breaks login; weakens replay
+    # protection to single-replica until the cache recovers).
+    # false: reject the code on any shared-store error (stronger guarantee,
+    # but a memcached outage blocks logins).
+    replay_store_fail_open: true
     # Name of the default cloud in clouds.yaml (see cloudsClouds below).
     default: mycloud
     # Names a session may select (empty = all).
@@ -178,21 +196,21 @@ config:
 # The clouds.yaml is rendered into a Secret (not a ConfigMap) because it may
 # contain the application-credential secret. The Deployment mounts it
 # read-only at /etc/openstack/clouds.yaml.
-clouds:
-  mycloud:
-    auth:
-      auth_url: "https://keystone.example.com/v3"
-      # Application credential (for the /v1/login URL-mode page + token
-      # minting). When appCred.enabled is true, the chart fills these from
-      # appCred.id / appCred.secret. Otherwise they stay empty and the
-      # server relies on the Bearer token each MCP client presents (which
-      # the server validates per-request; no server-side app-cred needed
-      # for read-only operations).
-      application_credential_id: ""
-      application_credential_secret: ""
-    region_name: "RegionOne"
-    interface: public
-    verify: true
+clouds: {}
+#  mycloud:
+#    auth:
+#      auth_url: "https://keystone.example.com/v3"
+#      # Application credential (for the /v1/login URL-mode page + token
+#      # minting). When appCred.enabled is true, the chart fills these from
+#      # appCred.id / appCred.secret. Otherwise they stay empty and the
+#      # server relies on the Bearer token each MCP client presents (which
+#      # the server validates per-request; no server-side app-cred needed
+#      # for read-only operations).
+#      application_credential_id: ""
+#      application_credential_secret: ""
+#    region_name: "RegionOne"
+#    interface: public
+#    verify: true
 
 # ── Service user + application credential (REQUIRED deployment step) ──────────
 #

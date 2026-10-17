@@ -36,8 +36,12 @@ seen by another: run a **single replica** for strict single-use, or enable the
 ```yaml
 oauth:
   replay_store: memcached
+  # Single server:
+  # replay_store_endpoint: "memcached.openstack.svc.cluster.local:11211"
+  # Multi-server pool (comma-separated, routed via Rendezvous Hashing):
+  # replay_store_endpoint: "10.0.0.1:11211,10.0.0.2:11211,10.0.0.3:11211"
   # optional — only needed when the cloud's catalog has no `memcached` service
-  replay_store_endpoint: "memcached.openstack.svc.cluster.local:11211"
+  replay_store_endpoint: ""
 ```
 
 - **Endpoint discovery**: the memcached endpoint is resolved from each token's
@@ -53,9 +57,22 @@ oauth:
   ```
 
   No credential is needed for the cache — the endpoint lives on the internal
-  network. `oauth.replay_store_endpoint` (`host:port`) overrides the catalog
-  for non-catalog deployments; when it is unset **and** the catalog has no
+  network. `oauth.replay_store_endpoint` overrides the catalog for non-catalog
+  deployments; it accepts a single `host:port` or a comma-separated list for
+  multi-server pools (see below). When it is unset **and** the catalog has no
   `memcached` entry, the store degrades to instance-local enforcement.
+- **Multi-server routing (Rendezvous Hashing / HRW)**: when
+  `replay_store_endpoint` lists two or more servers, each replay key is routed
+  to exactly one server deterministically using the Highest Random Weight
+  algorithm — the same scheme pymemcache's `HashClient` and oslo.cache use for
+  their memcached pools. For every candidate node the score is
+  `FNV-1a64("host:port" + "-" + key)`; the node with the highest score wins.
+  Ties are broken lexicographically by node label so every replica agrees
+  without shared state. Adding or removing a server remaps only ~1/N of keys
+  (vs 100% with modulo hashing), which matters when a node is replaced during
+  a rolling upgrade. The Keystone catalog always advertises at most one
+  endpoint per service type, so multi-server routing applies only via the
+  explicit override.
 - **Semantics**: a redeemed `jti` is recorded with memcached NO_OVERWRITE
   (`add`), so the *first* replica to redeem a code wins and a replay is
   rejected cluster-wide. Keys are namespaced `stst:<issuer-fingerprint>:<jti>`,
@@ -64,7 +81,8 @@ oauth:
   protocol error) degrades that one exchange to the local store with a
   warning log — a memcached outage never breaks the OAuth flow; it only
   narrows replay enforcement to the handling replica until the cache is
-  reachable again.
+  reachable again. Set `replay_store_fail_open: false` to reject the code
+  instead, trading availability for a stricter single-use guarantee.
 
 ## Endpoints
 

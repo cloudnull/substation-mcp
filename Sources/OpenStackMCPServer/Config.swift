@@ -293,16 +293,26 @@ public struct OpenStackMCPConfig: Sendable {
         return "dev-" + sha256Hex("substation-oauth-dev" + oauthIssuerResolved)
     }
 
-    /// Parse `oauth.replay_store_endpoint` (`host:port`) into a tuple, or nil
-    /// when unset/malformed. Malformed values are treated as unset (the token
-    /// catalog then provides the endpoint).
-    var oauthReplayStoreEndpointParsed: (host: String, port: Int)? {
+    /// Parse `oauth.replay_store_endpoint` into a list of `(host, port)` pairs,
+    /// or nil when unset/malformed. Accepts a single `host:port` or a
+    /// comma-separated list (`host1:port1,host2:port2,…`) for multi-server
+    /// deployments using Rendezvous Hashing (HRW) to route each key to one
+    /// server deterministically — the same algorithm pymemcache and oslo.cache
+    /// use for their memcached pools. Malformed entries are skipped silently;
+    /// if no valid entry remains the result is nil (the Keystone catalog then
+    /// provides the endpoint).
+    var oauthReplayStoreEndpoints: [(host: String, port: Int)]? {
         guard let raw = oauthReplayStoreEndpoint, !raw.isEmpty else { return nil }
-        let parts = raw.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, let host = parts.first, !host.isEmpty,
-              let port = Int(parts[1]), (1...65535).contains(port)
-        else { return nil }
-        return (host: String(host), port: port)
+        var out: [(host: String, port: Int)] = []
+        for part in raw.split(separator: ",") {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            let hp = trimmed.split(separator: ":", omittingEmptySubsequences: false)
+            guard hp.count == 2, let host = hp.first, !host.isEmpty,
+                  let port = Int(hp[1]), (1...65535).contains(port)
+            else { continue }
+            out.append((host: String(host), port: port))
+        }
+        return out.isEmpty ? nil : out
     }
 
     /// The issuer the AS advertises. Defaults to

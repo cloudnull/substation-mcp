@@ -81,7 +81,7 @@ public struct ServeApp: Sendable {
                 minter: minter,
                 tokenValidator: wiring.validator,
                 sharedReplayCache: config.oauthReplayStore == "memcached",
-                sharedReplayCacheOverride: config.oauthReplayStoreEndpointParsed,
+                sharedReplayCacheOverride: config.oauthReplayStoreEndpoints,
                 replayStoreFailOpen: config.oauthReplayStoreFailOpen,
                 cloudName: cloud.name,
                 cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)),
