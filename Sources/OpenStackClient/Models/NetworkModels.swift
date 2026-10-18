@@ -234,6 +234,7 @@ public struct OSPort: Sendable, Codable, Identifiable {
     public var extraDHCPOpts: [ExtraDHCPOpt]
     public var portSecurityEnabled: Bool
     public var projectID: String
+    public var qosPolicyID: String?
 
     public init(
         id: String,
@@ -247,7 +248,8 @@ public struct OSPort: Sendable, Codable, Identifiable {
         deviceOwner: String? = nil,
         extraDHCPOpts: [ExtraDHCPOpt] = [],
         portSecurityEnabled: Bool = true,
-        projectID: String = ""
+        projectID: String = "",
+        qosPolicyID: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -261,6 +263,7 @@ public struct OSPort: Sendable, Codable, Identifiable {
         self.extraDHCPOpts = extraDHCPOpts
         self.portSecurityEnabled = portSecurityEnabled
         self.projectID = projectID
+        self.qosPolicyID = qosPolicyID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -270,6 +273,7 @@ public struct OSPort: Sendable, Codable, Identifiable {
         case deviceID = "device_id"
         case deviceOwner = "device_owner"
         case projectID = "project_id"
+        case qosPolicyID = "qos_policy_id"
     }
 }
 

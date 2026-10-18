@@ -21,7 +21,9 @@ enum PlacementEntries {
             // Both return the raw placement payload (resource-class maps are
             // open-ended, so they are passed through unmodeled).
             actions: [
-                ActionSpec(name: "allocations", adminOnly: true, params: []),
+                ActionSpec(name: "allocations", adminOnly: true, params: [
+                    ParamSpec(name: "consumer_uuid", description: "Optional: narrow to allocations made by one consumer (server uuid)")
+                ]),
                 ActionSpec(name: "candidates", adminOnly: true, params: [
                     ParamSpec(name: "resources", required: true, description: "Placement resource syntax, e.g. \"VCPU:2,MEMORY_MB:4096\" (groups separated by ';')"),
                     ParamSpec(name: "limit", type: "integer", description: "Max candidates to return"),
@@ -31,7 +33,7 @@ enum PlacementEntries {
             links: [],
             createSchema: nil,
             updateSchema: nil,
-            listFilters: ["name"],
+            listFilters: ["name", "type"],
             idField: "uuid",
             nameField: "name",
             statusField: nil,

@@ -2,6 +2,27 @@
 
 ## Current State
 
+- **QoS + CloudFormation + write_roles** (2026-10-18). Catalog 64 → **65**:
+  **qos_policy** (full verbs + `add_rule`/`remove_rule` actions + `qos_policy`
+  attach/detach link on ports) and **qos_rule_type** (list) → Neutron `qos`
+  extension; rules are create-only via PUT (live Neutron rejects rules on POST
+  — pinned by a fake test); delete of an in-use policy is refused.
+  **cfn_stack is no longer 501**: full `CloudFormationService` (AWS-query
+  POST + XML parse, `RawJSONValue`-free; `xmlMember` is nesting-aware for
+  `<member>` inside `<member>`). Errors: `OpenStackError.normalize` now decodes
+  AWS `<ErrorResponse>` XML and maps `<Code>` to status (ValidationError→400,
+  AccessDenied/AuthFailure→403, Throttling→429). **`policy.write_roles`** config
+  key (default `[admin]`) wired ConfigLoader → ServerConfig → TokenValidator
+  (was planned in the phase-1 spec, never plumbed; Rackspace writer role is
+  `creator`). Docs + helm values updated. Fake coverage: HeatCFNFake (AWS-query
+  XML, form+query params), NeutronFake qos routes, SharedState mutators;
+  client + MCP-level lifecycle tests. **703 tests green.** Live IAD3 E2E
+  (keystone_token dev serve): `qos_rule_type`/`qos_policy`/`cfn_stack`/`stack`
+  lists PASS; mutations blocked by **cloud policy, not code** — direct curl
+  with the same token reproduces `PolicyNotAuthorized rule:create_policy`, and
+  heat-cfn rejects every Keystone-derived signing shape with `AccessDenied`
+  (needs cloud-issued AWS keys; native Heat `stack` works). Note on
+  `cfn_stack.phase1Note` records this.
 - **Cloud-admin catalog surface** (2026-10-17, `49b4709`). Three gaps closed as
   resources/actions under the existing verbs (still 20 tools; 63 → **64**
   descriptors): **hypervisor** (list w/ `with_servers`, get, `statistics` +

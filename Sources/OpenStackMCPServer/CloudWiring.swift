@@ -53,6 +53,7 @@ public struct CloudWiring: Sendable {
             cache: cache,
             servedProjects: config.servedProjects,
             tokenCacheTTL: .seconds(config.authTokenCacheTTL),
+            policy: PolicyRoles(writeRoles: config.policyWriteRoles),
             cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:))
         )
         let client = OpenStackClient(

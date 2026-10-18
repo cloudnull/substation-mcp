@@ -307,6 +307,9 @@ public struct NeutronFake {
             let portBody = Self.objectForKey("port", in: body) ?? body
             let name = Self.extractString("name", from: portBody)
             let adminStateUp = Self.extractBool("admin_state_up", from: portBody)
+            // qos_policy_id: explicit null clears; absent is a no-op.
+            let qosSet = Self.extractString("qos_policy_id", from: portBody)
+            let qosClear = portBody.contains("\"qos_policy_id\":null")
             var securityGroups: [String]? = nil
             if let arr = Self.arrayForValue("security_groups", in: portBody) {
                 // Neutron accepts string arrays and/or id-object arrays; the
@@ -328,6 +331,12 @@ public struct NeutronFake {
             if let groups = securityGroups {
                 port.securityGroups = groups
                 _ = await state.setPortSecurityGroups(portID: id, groups: groups, projectID: token.projectID)
+            }
+            if qosSet != nil || qosClear {
+                guard let updated = await state.setPortQoSPolicy(portID: id, policyID: qosSet, projectID: token.projectID) else {
+                    return Self.notFound(message: "Port \(id) could not be found.")
+                }
+                port = updated
             }
             return Self.jsonResponse(status: .ok, body: """
             {"port":\(Self.portJSON(port))}
@@ -770,6 +779,145 @@ public struct NeutronFake {
             {"quota":{"project_id":"\(pid)","network":10,"subnet":10,"port":50,"security_group":10,"security_group_rule":100,"floatingip":10,"router":10}}
             """)
         }
+
+        // MARK: - QoS policies (extension `qos`)
+
+        router.get("\(base)/qos/rule-types") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  await state.validateToken(tokenID) != nil else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"rule_types":[{"type":"bandwidth_limit"},{"type":"dscp_marking"},{"type":"minimum_bandwidth"}]}
+            """)
+        }
+
+        router.get("\(base)/qos/policies") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let policies = await state.qosPolicies.filter { $0.projectID == token.projectID }
+            let items = policies.map { Self.qosPolicyJSON($0) }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"policies":[\(items)]}
+            """)
+        }
+
+        router.get("\(base)/qos/policies/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard let policy = await state.getQoSPolicy(id: id, projectID: token.projectID) else {
+                return Self.notFound(message: "QoS policy \(id) could not be found.")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"policy":\(Self.qosPolicyJSON(policy))}
+            """)
+        }
+
+        router.post("\(base)/qos/policies") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let body = try await Self.readBody(req)
+            let policyBody = Self.objectForKey("policy", in: body) ?? body
+            // Live Neutron rejects rules on POST; mirror that exactly.
+            if policyBody.contains("\"rules\"") {
+                return Self.neutronError(status: .badRequest, type: "HTTPBadRequest", message: "Attribute 'rules' not allowed in POST")
+            }
+            guard let name = Self.extractString("name", from: policyBody), !name.isEmpty else {
+                return Self.neutronError(status: .badRequest, type: "HTTPBadRequest", message: "Missing required field 'name'")
+            }
+            let policy = await state.createQoSPolicy(projectID: token.projectID, name: name,
+                                                     description: Self.extractString("description", from: policyBody) ?? "",
+                                                     shared: Self.extractBool("shared", from: policyBody) ?? false)
+            return Self.jsonResponse(status: .created, body: """
+            {"policy":\(Self.qosPolicyJSON(policy))}
+            """)
+        }
+
+        router.put("\(base)/qos/policies/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let policyBody = Self.objectForKey("policy", in: body) ?? body
+            guard let policy = await state.updateQoSPolicy(id: id, projectID: token.projectID,
+                                                           name: Self.extractString("name", from: policyBody),
+                                                           description: Self.extractString("description", from: policyBody),
+                                                           shared: Self.extractBool("shared", from: policyBody)) else {
+                return Self.notFound(message: "QoS policy \(id) could not be found.")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"policy":\(Self.qosPolicyJSON(policy))}
+            """)
+        }
+
+        router.delete("\(base)/qos/policies/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard await state.deleteQoSPolicy(id: id, projectID: token.projectID) else {
+                return Self.notFound(message: "QoS policy \(id) could not be found.")
+            }
+            return Self.jsonResponse(status: .noContent, body: "")
+        }
+
+        router.post("\(base)/qos/policies/:id/rules") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            let body = try await Self.readBody(req)
+            let ruleBody = Self.objectForKey("rule", in: body) ?? body
+            guard let type = Self.extractString("type", from: ruleBody), !type.isEmpty else {
+                return Self.neutronError(status: .badRequest, type: "HTTPBadRequest", message: "Missing required field 'type'")
+            }
+            let known = ["bandwidth_limit", "dscp_marking", "minimum_bandwidth"]
+            guard known.contains(type) else {
+                return Self.neutronError(status: .badRequest, type: "HTTPBadRequest", message: "Invalid rule type '\(type)'")
+            }
+            guard let policy = await state.addQoSRule(policyID: id, projectID: token.projectID, type: type, body: ruleBody) else {
+                return Self.notFound(message: "QoS policy \(id) could not be found.")
+            }
+            return Self.jsonResponse(status: .created, body: """
+            {"policy":\(Self.qosPolicyJSON(policy))}
+            """)
+        }
+
+        router.delete("\(base)/qos/policies/:id/rules/:ruleId") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.neutronError(status: .unauthorized, type: "Unauthorized", message: "Unauthorized")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            let ruleID = ctx.parameters.get("ruleId") ?? ""
+            guard let policy = await state.removeQoSRule(policyID: id, ruleID: ruleID, projectID: token.projectID) else {
+                return Self.notFound(message: "QoS policy \(id) or rule \(ruleID) could not be found.")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"policy":\(Self.qosPolicyJSON(policy))}
+            """)
+        }
+    }
+
+    static func qosPolicyJSON(_ policy: FakeState.FakeQoSPolicy) -> String {
+        let rules = policy.rules.map { rule in
+            let body = rule.body.hasSuffix("}") ? String(rule.body.dropFirst().dropLast()) : rule.body
+            return "{\(body),\"id\":\"\(rule.id)\",\"project_id\":\"\(policy.projectID)\"}"
+        }.joined(separator: ",")
+        return """
+        {"id":"\(policy.id)","name":"\(policy.name)","description":"\(policy.description)","shared":\(policy.shared),"project_id":"\(policy.projectID)","rules":[\(rules)],"tags":[]}
+        """
     }
 
     // MARK: - Request helpers
@@ -940,6 +1088,8 @@ public struct NeutronFake {
         parts.append("\"extra_dhcp_opts\":[\(dhcpOpts)]")
         parts.append("\"port_security_enabled\":\(port.portSecurityEnabled)")
         parts.append("\"project_id\":\"\(port.projectID)\"")
+        let qos = port.qosPolicyID.map { "\"\($0)\"" } ?? "null"
+        parts.append("\"qos_policy_id\":\(qos)")
         return "{" + parts.joined(separator: ",") + "}"
     }
 

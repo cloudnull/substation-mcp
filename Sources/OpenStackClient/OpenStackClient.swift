@@ -180,6 +180,12 @@ public actor OpenStackClient {
             .region(region)
     }
 
+    /// Region-bound Heat-CFN (CloudFormation) client (phase 2 — IAD3 gap-fill).
+    public func cloudFormation(region: String? = nil) -> CloudFormationRegion {
+        CloudFormationService(cloud: cloud, transport: transport, cache: cache, logger: logger)
+            .region(region)
+    }
+
     // MARK: - Identity
 
     /// The distinct regions advertised in the token's service catalog.

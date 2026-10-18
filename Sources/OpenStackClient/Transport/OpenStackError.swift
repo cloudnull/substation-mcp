@@ -38,7 +38,24 @@ public struct OpenStackError: Error, Sendable, Equatable {
         var code: String?
         var message: String
 
-        if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+        if let body, let text = String(data: body, encoding: .utf8),
+           text.contains("<Error>"), let codeRange = text.range(of: "<Code>"),
+           let codeEnd = text[codeRange.upperBound...].range(of: "</Code>") {
+            // AWS-query XML (heat-cfn): <ErrorResponse><Error><Code>…<Message>…
+            // The XML <Code> carries the real status semantics (see below).
+            code = String(text[codeRange.upperBound..<codeEnd.lowerBound])
+            var msg = "HTTP \(status)"
+            if let msgRange = text.range(of: "<Message>"),
+               let msgEnd = text[msgRange.upperBound...].range(of: "</Message>") {
+                msg = String(text[msgRange.upperBound..<msgEnd.lowerBound])
+                    .replacingOccurrences(of: "&lt;", with: "<")
+                    .replacingOccurrences(of: "&gt;", with: ">")
+                    .replacingOccurrences(of: "&quot;", with: "\"")
+                    .replacingOccurrences(of: "&apos;", with: "'")
+                    .replacingOccurrences(of: "&amp;", with: "&")
+            }
+            message = msg
+        } else if let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
             if let neutronErr = json["NeutronError"] as? [String: Any] {
                 // Neutron: {"NeutronError": {"type": ..., "message": ...}}
                 code = neutronErr["type"] as? String
@@ -97,11 +114,21 @@ public struct OpenStackError: Error, Sendable, Equatable {
             }
         }
 
-        let retriable = (status == 429 || status == 502 || status == 503 || status == 504)
+        // AWS-query XML (heat-cfn) carries its own status semantics in the
+        // <Code>; the transport status is not authoritative.
+        var effectiveStatus = status
+        switch code {
+        case "AccessDenied", "AuthFailure": effectiveStatus = max(status, 403)
+        case "ValidationError": effectiveStatus = 400
+        case "Throttling": effectiveStatus = max(status, 429)
+        default: break
+        }
+
+        let retriable = (effectiveStatus == 429 || effectiveStatus == 502 || effectiveStatus == 503 || effectiveStatus == 504)
 
         return OpenStackError(
             service: service,
-            status: status,
+            status: effectiveStatus,
             code: code,
             message: message,
             requestID: requestID,

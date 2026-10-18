@@ -38,6 +38,7 @@ public struct LinkExecutor: Sendable {
         case "floating_ip": return try await attachFloatingIP(vt, fipID: source, targetType: targetType, target: target, params: params, region: region, wait: wait)
         case "router_interface": return try await attachRouterInterface(vt, routerID: source, targetType: targetType, target: target, region: region)
         case "router_gateway": return try await attachRouterGateway(vt, routerID: source, target: target, params: params, region: region)
+        case "qos_policy": return try await attachQoSPolicy(vt, portID: source, policyID: target, region: region)
         case "image":
             throw OpenStackError(
                 service: "mcp", status: 400, code: "unsupportedLink",
@@ -68,6 +69,7 @@ public struct LinkExecutor: Sendable {
         case "floating_ip": return try await detachFloatingIP(vt, fipID: source, region: region, wait: wait)
         case "router_interface": return try await detachRouterInterface(vt, routerID: source, target: target, region: region)
         case "router_gateway": return try await detachRouterGateway(vt, routerID: source, region: region)
+        case "qos_policy": return try await detachQoSPolicy(vt, portID: source, region: region)
         case "image":
             throw OpenStackError(
                 service: "mcp", status: 400, code: "unsupportedLink",
@@ -547,6 +549,41 @@ public struct LinkExecutor: Sendable {
             "link": .string("router_gateway"),
             "operation": .string("detach"),
             "router": .string(routerID),
+            "region": .string(region),
+        ]
+    }
+
+    // MARK: - qos_policy (port ← policy, extension `qos`)
+
+    private func attachQoSPolicy(_ vt: ValidatedToken, portID: String, policyID: String, region: String) async throws -> [String: JSONValue] {
+        let ns = await client.network(region: region)
+        // Validate both ends exist (404s propagate).
+        _ = try await ns.getPort(vt, id: portID)
+        let policy = try await ns.getQoSPolicy(vt, id: policyID)
+        let updated = try await ns.updatePortQoSPolicy(vt, portID: portID, policyID: policyID)
+        logger.info("qos policy attached", metadata: ["port": .string(portID), "policy": .string(policyID)])
+        return [
+            "link": .string("qos_policy"),
+            "operation": .string("attach"),
+            "port": .string(portID),
+            "qos_policy": .string(policy.id),
+            "qos_policy_id": .string(updated.qosPolicyID ?? policyID),
+            "region": .string(region),
+        ]
+    }
+
+    private func detachQoSPolicy(_ vt: ValidatedToken, portID: String, region: String) async throws -> [String: JSONValue] {
+        let ns = await client.network(region: region)
+        let port = try await ns.getPort(vt, id: portID)
+        guard port.qosPolicyID != nil else {
+            throw OpenStackError(service: "mcp", status: 404, code: "noQoSPolicy", message: "Port \(portID) has no QoS policy")
+        }
+        _ = try await ns.updatePortQoSPolicy(vt, portID: portID, policyID: nil)
+        logger.info("qos policy detached", metadata: ["port": .string(portID)])
+        return [
+            "link": .string("qos_policy"),
+            "operation": .string("detach"),
+            "port": .string(portID),
             "region": .string(region),
         ]
     }

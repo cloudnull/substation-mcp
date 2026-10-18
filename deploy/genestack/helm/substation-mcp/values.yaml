@@ -166,6 +166,10 @@ config:
       - domain
     max_list_limit: 200
     max_calls_per_minute: 120
+    # Roles that grant openstack:write scope. Default admin-only; add the
+    # cloud's writer role (e.g. creator/member) when it is not admin.
+    write_roles:
+      - admin
   client:
     request_timeout: 60
     # AsyncHTTPClient's concurrent HTTP/1.1 connections-per-host soft limit.

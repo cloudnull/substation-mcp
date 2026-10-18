@@ -680,4 +680,93 @@ struct NetworkServiceTests {
             #expect(!page1IDs.contains(item.id))
         }
     }
+
+    // MARK: - QoS policies
+
+    @Test("qos rule types list the seeded types", .timeLimit(.minutes(2)))
+    func qosRuleTypes() async throws {
+        let (handle, vt, network, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = network.region("RegionOne")
+        let types = try await region.listQoSRuleTypes(vt)
+        #expect(Set(types.map(\.type)) == ["bandwidth_limit", "dscp_marking", "minimum_bandwidth"])
+    }
+
+    @Test("qos policy lifecycle: create, add rule, attach to port, detach, delete", .timeLimit(.minutes(2)))
+    func qosPolicyLifecycle() async throws {
+        let (handle, vt, network, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = network.region("RegionOne")
+
+        let created = try await region.createQoSPolicy(vt, name: "gold", description: "1 Gbps class")
+        #expect(created.name == "gold")
+        #expect(created.rules.isEmpty)
+
+        let withRule = try await region.addQoSRule(vt, policyID: created.id, rule: QoSRuleSpec(
+            type: "bandwidth_limit",
+            attributes: ["max_kbps": .int(1000), "max_burst_kbps": .int(100)]
+        ))
+        #expect(withRule.rules.count == 1)
+        guard case .object(let rule)? = withRule.rules.first,
+              case .int(let kbps)? = rule["max_kbps"] else {
+            Issue.record("rule attributes not passed through: \(withRule.rules)")
+            return
+        }
+        #expect(kbps == 1000)
+        guard case .string(let ruleID)? = rule["id"] else { Issue.record("missing rule id"); return }
+
+        // Attach to the seeded port, verify, detach, verify.
+        let ports = try await region.listPorts(vt)
+        guard let port = ports.first else {
+            Issue.record("fake must seed at least one port")
+            return
+        }
+        let attached = try await region.updatePortQoSPolicy(vt, portID: port.id, policyID: created.id)
+        #expect(attached.qosPolicyID == created.id)
+        let detached = try await region.updatePortQoSPolicy(vt, portID: port.id, policyID: nil)
+        #expect(detached.qosPolicyID == nil)
+
+        // Re-attach: delete must be refused while in use, allowed after detach.
+        _ = try await region.updatePortQoSPolicy(vt, portID: port.id, policyID: created.id)
+        do {
+            try await region.deleteQoSPolicy(vt, id: created.id)
+            Issue.record("Expected failure deleting an in-use policy")
+        } catch let e as OpenStackError {
+            #expect(e.status == 404 || e.status == 409)
+        }
+        _ = try await region.updatePortQoSPolicy(vt, portID: port.id, policyID: nil)
+        try await region.deleteQoSPolicy(vt, id: created.id)
+        let remaining = try await region.listQoSPolicies(vt)
+        #expect(!remaining.contains { $0.id == created.id })
+    }
+
+    @Test("qos policy update changes metadata", .timeLimit(.minutes(2)))
+    func qosPolicyUpdate() async throws {
+        let (handle, vt, network, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = network.region("RegionOne")
+
+        let created = try await region.createQoSPolicy(vt, name: "silver")
+        let updated = try await region.updateQoSPolicy(vt, id: created.id, name: "silver-2", shared: true)
+        #expect(updated.name == "silver-2")
+        #expect(updated.shared == true)
+        let got = try await region.getQoSPolicy(vt, id: created.id)
+        #expect(got.name == "silver-2")
+    }
+
+    @Test("qos remove_rule drops the rule from the policy", .timeLimit(.minutes(2)))
+    func qosRemoveRule() async throws {
+        let (handle, vt, network, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = network.region("RegionOne")
+
+        let created = try await region.createQoSPolicy(vt, name: "dscp")
+        let withRule = try await region.addQoSRule(vt, policyID: created.id, rule: QoSRuleSpec(type: "dscp_marking", attributes: ["dscp_mark": .int(26)]))
+        guard case .object(let rule)? = withRule.rules.first, case .string(let ruleID)? = rule["id"] else {
+            Issue.record("missing rule id"); return
+        }
+        let after = try await region.removeQoSRule(vt, policyID: created.id, ruleID: ruleID)
+        #expect(after.rules.isEmpty)
+    }
 }

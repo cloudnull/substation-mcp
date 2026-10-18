@@ -302,6 +302,68 @@ enum NetworkEntries {
             nameField: "name"
         ),
 
+        // MARK: - qos_policy (extension `qos`)
+
+        ResourceDescriptor(
+            name: "qos_policy",
+            service: .network,
+            verbs: [.list, .get, .create, .update, .delete],
+            actions: [
+                ActionSpec(name: "add_rule", params: [
+                    ParamSpec(name: "type", required: true, description: "Rule type (see os_list qos_rule_type), e.g. bandwidth_limit / dscp_marking / minimum_bandwidth"),
+                    ParamSpec(name: "attributes", type: "object", description: "Rule attributes, e.g. {\"max_kbps\":1000,\"max_burst_kbps\":100} or {\"dscp_mark\":26}")
+                ]),
+                ActionSpec(name: "remove_rule", destructive: true, params: [
+                    ParamSpec(name: "rule_id", required: true, description: "Rule id (from os_get qos_policy rules[].id)")
+                ]),
+            ],
+            links: [
+                LinkSpec(
+                    kind: "qos_policy",
+                    source: .init(resource: "port"),
+                    target: .init(resource: "qos_policy"),
+                    params: [],
+                    preconditions: ["neutron extension `qos` is available"]
+                ),
+            ],
+            createSchema: .init(
+                type: "object",
+                properties: [
+                    "name": .init(type: "string", description: "Policy name"),
+                    "description": .init(type: "string"),
+                    "shared": .init(type: "boolean", description: "Share across projects (admin)")
+                ],
+                required: ["name"]
+            ),
+            updateSchema: .init(type: "object", properties: [
+                "name": .init(type: "string"),
+                "description": .init(type: "string"),
+                "shared": .init(type: "boolean")
+            ]),
+            listFilters: ["name", "shared"],
+            idField: "id",
+            nameField: "name",
+            statusField: nil,
+            terminalStates: [],
+            defaultListFields: ["id", "name", "shared"],
+            phase1Note: "Rules cannot be set at create time (Neutron rejects `rules` on POST); create the policy then os_action add_rule. Attach to a port via os_attach(port -> qos_policy) — os_update port does not take qos_policy_id. Requires the neutron `qos` extension."
+        ),
+
+        // MARK: - qos_rule_type (extension `qos`, discovery)
+
+        ResourceDescriptor(
+            name: "qos_rule_type",
+            service: .network,
+            verbs: [.list],
+            listFilters: ["type"],
+            idField: "type",
+            nameField: "type",
+            statusField: nil,
+            terminalStates: [],
+            defaultListFields: ["type"],
+            phase1Note: "Discovery-only: the rule types the cloud supports, with their attribute schemas. Feed `type` + attributes into os_action(qos_policy, add_rule)."
+        ),
+
         // MARK: - quota (network)
 
         ResourceDescriptor(

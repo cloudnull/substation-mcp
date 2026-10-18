@@ -12,3 +12,4 @@ dist/
 .validation-plan.md
 .omp/
 wip/
+tmp/

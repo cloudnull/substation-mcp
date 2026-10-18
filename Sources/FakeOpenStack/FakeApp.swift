@@ -37,6 +37,7 @@ public enum FakeApp {
         MessagingFake.registerRoutes(router, state: state)
         ReservationFake.registerRoutes(router, state: state)
         BackupFake.registerRoutes(router, state: state)
+        HeatCFNFake.registerRoutes(router, state: state)
 
         // Use a continuation to get the port after the server binds
         let portBox = PortBox()

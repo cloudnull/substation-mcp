@@ -127,6 +127,8 @@ public struct OpenStackMCPConfig: Sendable {
     public var policyDenyResources: [String]
     public var policyMaxListLimit: Int
     public var policyMaxCallsPerMinute: Int
+    /// Roles that grant `openstack:write` scope (default: admin only).
+    public var policyWriteRoles: [String]
 
     // MARK: client
     public var clientRequestTimeout: Int     // seconds
@@ -181,6 +183,7 @@ public struct OpenStackMCPConfig: Sendable {
         ],
         policyMaxListLimit: Int = 200,
         policyMaxCallsPerMinute: Int = 1024,
+        policyWriteRoles: [String] = ["admin"],
         clientRequestTimeout: Int = 60,
         clientMaxConnectionsPerHost: Int = 16,
         logLevel: String = "info",
@@ -228,6 +231,7 @@ public struct OpenStackMCPConfig: Sendable {
         self.policyDenyResources = policyDenyResources
         self.policyMaxListLimit = policyMaxListLimit
         self.policyMaxCallsPerMinute = policyMaxCallsPerMinute
+        self.policyWriteRoles = policyWriteRoles
         self.clientRequestTimeout = clientRequestTimeout
         self.clientMaxConnectionsPerHost = clientMaxConnectionsPerHost
         self.logLevel = logLevel

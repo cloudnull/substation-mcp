@@ -115,6 +115,17 @@ func yamlArrayFlattens() {
     #expect(cfg.policyDenyResources == ["project", "user", "role"])
 }
 
+@Test("policy.write_roles defaults to admin and is configurable")
+func writeRolesConfig() {
+    #expect(OpenStackMCPConfig().policyWriteRoles == ["admin"])
+    let resolved = ConfigLoader.resolve(
+        cli: [:],
+        env: [:],
+        yaml: ["policy__write_roles": "admin,creator,member"]
+    )
+    #expect(ConfigLoader.read(resolved).policyWriteRoles == ["admin", "creator", "member"])
+}
+
 @Test("log.audit is configurable and defaults true")
 func logAuditConfig() {
     #expect(OpenStackMCPConfig().logAudit == true)

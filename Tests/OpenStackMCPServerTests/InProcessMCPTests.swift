@@ -1248,4 +1248,134 @@ struct InProcessMCPTests {
         #expect(data["can_delete"] as? Bool == true, "gateway-only router with no interfaces should be deletable, got: \(data)")
         #expect(((data["dependents"] as? [Any]) ?? []).isEmpty, "no dependents expected, got: \(data)")
     }
+
+    // MARK: - QoS policies (Neutron extension `qos`)
+
+    @Test("qos_policy lifecycle through the verb tools")
+    func qosPolicyLifecycle() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let types = try await bundle.mcpClient.callTool(name: "os_list", arguments: ["resource": .string("qos_rule_type")])
+        #expect(types.isError != true, "qos_rule_type list failed: \(firstText(types.content) ?? "")")
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("qos_policy"),
+            "spec": .object(["name": .string("gold"), "description": .string("1 Gbps class")]),
+        ])
+        #expect(created.isError != true, "create qos_policy failed: \(firstText(created.content) ?? "")")
+        let policyID = ((try? parseResult(created))?["data"] as? [String: Any])?["id"] as? String
+        #expect(policyID != nil)
+
+        let addRule = try await bundle.mcpClient.callTool(name: "os_action", arguments: [
+            "resource": .string("qos_policy"),
+            "id_or_name": .string(policyID!),
+            "action": .string("add_rule"),
+            "params": .object([
+                "type": .string("bandwidth_limit"),
+                "attributes": .object(["max_kbps": .int(1000), "max_burst_kbps": .int(100)]),
+            ]),
+        ])
+        #expect(addRule.isError != true, "add_rule failed: \(firstText(addRule.content) ?? "")")
+        let rules = ((try? parseResult(addRule))?["data"] as? [String: Any])?["rules"] as? [[String: Any]]
+        #expect(rules?.count == 1, "expected 1 rule, got: \(String(describing: rules))")
+        #expect(rules?.first?["max_kbps"] as? Int == 1000)
+        let ruleID = rules?.first?["id"] as? String
+        #expect(ruleID != nil)
+
+        let removed = try await bundle.mcpClient.callTool(name: "os_action", arguments: [
+            "resource": .string("qos_policy"),
+            "id_or_name": .string(policyID!),
+            "action": .string("remove_rule"),
+            "params": .object(["rule_id": .string(ruleID!)]),
+        ])
+        #expect(removed.isError != true, "remove_rule failed: \(firstText(removed.content) ?? "")")
+
+        let deleted = try await bundle.mcpClient.callTool(name: "os_delete", arguments: [
+            "resource": .string("qos_policy"),
+            "id_or_name": .string(policyID!),
+        ])
+        #expect(deleted.isError != true, "delete qos_policy failed: \(firstText(deleted.content) ?? "")")
+    }
+
+    @Test("port attach/detach of a qos_policy via os_attach/os_detach")
+    func qosPortAttachDetach() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("qos_policy"),
+            "spec": .object(["name": .string("attach-gold")]),
+        ])
+        #expect(created.isError != true, "create failed: \(firstText(created.content) ?? "")")
+        let policyID = ((try? parseResult(created))?["data"] as? [String: Any])?["id"] as? String
+
+        let attached = try await bundle.mcpClient.callTool(name: "os_attach", arguments: [
+            "link": .string("qos_policy"),
+            "source_type": .string("port"),
+            "source": .string("port-001"),
+            "target_type": .string("qos_policy"),
+            "target": .string(policyID!),
+        ])
+        #expect(attached.isError != true, "attach failed: \(firstText(attached.content) ?? "")")
+
+        let detached = try await bundle.mcpClient.callTool(name: "os_detach", arguments: [
+            "link": .string("qos_policy"),
+            "source_type": .string("port"),
+            "source": .string("port-001"),
+            "target_type": .string("qos_policy"),
+            "target": .string(policyID!),
+        ])
+        #expect(detached.isError != true, "detach failed: \(firstText(detached.content) ?? "")")
+    }
+
+    // MARK: - CloudFormation (heat-cfn)
+
+    @Test("cfn_stack lifecycle through the verb tools")
+    func cfnStackLifecycle() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("cfn_stack"),
+            "spec": .object([
+                "name": .string("mcp-stack"),
+                "template_body": .string("{\"ROSTemplateFormatVersion\":\"2010-09-09\",\"Parameters\":{\"Env\":{\"Type\":\"String\"}}}"),
+                "parameters": .object(["Env": .string("prod")]),
+            ]),
+        ])
+        #expect(created.isError != true, "create cfn_stack failed: \(firstText(created.content) ?? "")")
+
+        let listed = try await bundle.mcpClient.callTool(name: "os_list", arguments: ["resource": .string("cfn_stack")])
+        #expect(listed.isError != true, "list cfn_stack failed: \(firstText(listed.content) ?? "")")
+
+        let got = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("cfn_stack"),
+            "id_or_name": .string("mcp-stack"),
+        ])
+        #expect(got.isError != true, "get cfn_stack failed: \(firstText(got.content) ?? "")")
+        let data = (try? parseResult(got))?["data"]
+        let params = (data as? [String: Any])?["Parameters"] as? [[String: Any]]
+        #expect(params?.first?["ParameterKey"] as? String == "Env", "describe must return parameters, got: \(String(describing: data)) RAW: \(firstText(got.content) ?? "")")
+
+        let validated = try await bundle.mcpClient.callTool(name: "os_action", arguments: [
+            "resource": .string("cfn_stack"),
+            "id_or_name": .string("mcp-stack"),
+            "action": .string("validate_template"),
+            "params": .object(["template_body": .string("{\"ROSTemplateFormatVersion\":\"2010-09-09\",\"Parameters\":{\"KeyName\":{\"Type\":\"String\"}}}")]),
+        ])
+        #expect(validated.isError != true, "validate_template failed: \(firstText(validated.content) ?? "")")
+
+        let deleted = try await bundle.mcpClient.callTool(name: "os_delete", arguments: [
+            "resource": .string("cfn_stack"),
+            "id_or_name": .string("mcp-stack"),
+        ])
+        #expect(deleted.isError != true, "delete cfn_stack failed: \(firstText(deleted.content) ?? "")")
+    }
 }

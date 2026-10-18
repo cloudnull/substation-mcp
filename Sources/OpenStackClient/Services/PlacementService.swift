@@ -76,11 +76,12 @@ public struct PlacementRegion: Sendable {
     public func listResourceProviders(
         _ vt: ValidatedToken,
         name: String? = nil,
+        type: String? = nil,
         limit: Int? = nil,
         marker: String? = nil
     ) async throws -> [PlacementResourceProvider] {
         let region = try resolveRegion(vt)
-        let suffix = "f:name=\(name ?? ""):l:\(limit ?? 0):m:\(marker ?? "")"
+        let suffix = "f:name=\(name ?? ""),type=\(type ?? ""):l:\(limit ?? 0):m:\(marker ?? "")"
         let key = CacheKey(tokenID: vt.token.id, region: region, resource: "placement", suffix: suffix)
         if let cached = await cache.get(key, ttl: .seconds(120), as: [PlacementResourceProvider].self) {
             return cached
@@ -88,6 +89,7 @@ public struct PlacementRegion: Sendable {
 
         var query: [URLQueryItem] = []
         if let name { query.append(URLQueryItem(name: "name", value: name)) }
+        if let type { query.append(URLQueryItem(name: "type", value: type)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
@@ -140,9 +142,14 @@ public struct PlacementRegion: Sendable {
     /// (`GET /resource_providers/{uuid}/allocations`). Returns the raw JSON
     /// object: allocations are keyed by consumer (server) uuid with an
     /// arbitrary resource-class → amount map, so they are not modeled.
-    public func providerAllocations(_ vt: ValidatedToken, uuid: String) async throws -> RawJSONValue {
+    /// `consumerUUID` optionally narrows to one consumer (server): the
+    /// `consumer_uuid` query returns the same envelope filtered to allocations
+    /// made by that consumer on this provider.
+    public func providerAllocations(_ vt: ValidatedToken, uuid: String, consumerUUID: String? = nil) async throws -> RawJSONValue {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/resource_providers/\(uuid)/allocations")
+        var query: [URLQueryItem] = []
+        if let consumerUUID { query.append(URLQueryItem(name: "consumer_uuid", value: consumerUUID)) }
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/resource_providers/\(uuid)/allocations", query: query)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "placement", requestID: result.requestID, hasAccessRules: false)
         }

@@ -487,6 +487,20 @@ public struct NetworkRegion: Sendable {
         return decoded.port
     }
 
+    /// Set or clear a port's QoS policy (`qos_policy_id` on PUT /ports/{id}).
+    /// Explicitly sends `null` to clear — Neutron ignores absent keys.
+    public func updatePortQoSPolicy(_ vt: ValidatedToken, portID: String, policyID: String?) async throws -> OSPort {
+        let region = try resolveRegion(vt)
+        let value = policyID.map { "\"\($0)\"" } ?? "null"
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/ports/\(portID)", body: Data("{\"port\":{\"qos_policy_id\":\(value)}}".utf8))
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        await cache.invalidate(resource: "port", tokenID: vt.token.id, region: region)
+        struct Envelope: Decodable { let port: OSPort }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).port
+    }
+
     public func deletePort(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
         let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/ports/\(id)")
@@ -1109,6 +1123,114 @@ public struct NetworkRegion: Sendable {
         let body = "{\"subnet_id\":\"\(subnetID)\"}".data(using: .utf8)
         return try await req(vt, r, method: "PUT", path: "\(basePath)/routers/\(routerID)/remove_router_interface", body: body)
     }
+
+    // MARK: - QoS policies (extension-gated: alias `qos`)
+
+    /// List QoS policies.
+    public func listQoSPolicies(_ vt: ValidatedToken, filters: [String: String] = [:]) async throws -> [QoSPolicy] {
+        let region = try resolveRegion(vt)
+        var query: [URLQueryItem] = filters.map { URLQueryItem(name: $0.key, value: $0.value) }
+        if let limit = filters["limit"] { query.removeAll { $0.name == "limit" }; query.append(URLQueryItem(name: "limit", value: limit)) }
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/qos/policies", query: query)
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policies: [QoSPolicy] }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policies
+    }
+
+    /// Get one QoS policy (includes its rules).
+    public func getQoSPolicy(_ vt: ValidatedToken, id: String) async throws -> QoSPolicy {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/qos/policies/\(id)")
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policy: QoSPolicy }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policy
+    }
+
+    /// Create a QoS policy. Neutron rejects `rules` on POST (verified live on
+    /// IAD3: "Attribute 'rules' not allowed in POST") — rules are added with
+    /// `addQoSRule` afterwards.
+    public func createQoSPolicy(_ vt: ValidatedToken, name: String, description: String? = nil, shared: Bool? = nil) async throws -> QoSPolicy {
+        let region = try resolveRegion(vt)
+        var parts: [String] = ["\"name\":\"\(name)\""]
+        if let description {
+            let escaped = description.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            parts.append("\"description\":\"\(escaped)\"")
+        }
+        if let shared { parts.append("\"shared\":\(shared ? "true" : "false")") }
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/qos/policies", body: Data("{\"\(policyKey)\":{\(parts.joined(separator: ","))}}".utf8))
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policy: QoSPolicy }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policy
+    }
+
+    /// Update a QoS policy's metadata (name/description/shared).
+    public func updateQoSPolicy(_ vt: ValidatedToken, id: String, name: String? = nil, description: String? = nil, shared: Bool? = nil) async throws -> QoSPolicy {
+        let region = try resolveRegion(vt)
+        var parts: [String] = []
+        if let name { parts.append("\"name\":\"\(name)\"") }
+        if let description {
+            let escaped = description.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            parts.append("\"description\":\"\(escaped)\"")
+        }
+        if let shared { parts.append("\"shared\":\(shared ? "true" : "false")") }
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/qos/policies/\(id)", body: Data("{\"\(policyKey)\":{\(parts.joined(separator: ","))}}".utf8))
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policy: QoSPolicy }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policy
+    }
+
+    /// Delete a QoS policy.
+    public func deleteQoSPolicy(_ vt: ValidatedToken, id: String) async throws {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/qos/policies/\(id)")
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+    }
+
+    /// Add a rule to a policy (`POST /qos/policies/{id}/rules`).
+    public func addQoSRule(_ vt: ValidatedToken, policyID: String, rule: QoSRuleSpec) async throws -> QoSPolicy {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/qos/policies/\(policyID)/rules", body: Data("{\"\(ruleKey)\":\(rule.body())}".utf8))
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policy: QoSPolicy }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policy
+    }
+
+    /// Remove a rule from a policy (`DELETE /qos/policies/{id}/rules/{ruleID}`).
+    public func removeQoSRule(_ vt: ValidatedToken, policyID: String, ruleID: String) async throws -> QoSPolicy {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/qos/policies/\(policyID)/rules/\(ruleID)")
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let policy: QoSPolicy }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).policy
+    }
+
+    /// List the QoS rule types the cloud supports (`/qos/rule-types`).
+    public func listQoSRuleTypes(_ vt: ValidatedToken) async throws -> [QoSRuleType] {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/qos/rule-types")
+        guard (200...299).contains(result.status) else {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "network", requestID: result.requestID, hasAccessRules: false)
+        }
+        struct Envelope: Decodable { let rule_types: [QoSRuleType] }
+        return try JSONDecoder().decode(Envelope.self, from: result.body).rule_types
+    }
+
+    private let policyKey = "policy"
+    private let ruleKey = "rule"
 
     // MARK: - Private helpers
 

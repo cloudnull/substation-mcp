@@ -71,10 +71,12 @@ struct CatalogCompletenessTests {
             "reservation", "allocation",
             "backup", "schedule",
             "cfn_stack",
+            // Neutron QoS (2)
+            "qos_policy", "qos_rule_type",
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 63, "Expected 63 resources (52 + 11 IAD3 gap-fill), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 65, "Expected 65 resources (63 + 2 QoS), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -337,9 +339,9 @@ struct CatalogCompletenessTests {
         #expect(catalog.resources(for: .compute).count == 10, "Expected 10 compute resources, got \(catalog.resources(for: .compute).count)")
     }
 
-    @Test("network has 9 resources")
+    @Test("network has 11 resources")
     func networkCount() {
-        #expect(catalog.resources(for: .network).count == 9, "Expected 9 network resources, got \(catalog.resources(for: .network).count)")
+        #expect(catalog.resources(for: .network).count == 11, "Expected 11 network resources, got \(catalog.resources(for: .network).count)")
     }
 
     @Test("blockStorage has 5 resources")
@@ -481,11 +483,22 @@ struct CatalogCompletenessTests {
         #expect(catalog.descriptor("schedule")!.service == .backup)
     }
 
-    @Test("cloudformation cfn_stack is registered but phase-1 (501 by design)")
+    @Test("cloudformation cfn_stack has the full stack lifecycle")
     func cloudFormationCount() {
         #expect(catalog.resources(for: .cloudformation).count == 1)
         let c = catalog.descriptor("cfn_stack")!
         #expect(c.service == .cloudformation)
-        #expect(c.phase1Note != nil)
+        #expect(c.verbs == [.list, .get, .create, .update, .delete])
+        #expect(c.actions.map(\.name).contains("validate_template"))
+    }
+
+    @Test("qos_policy has full verbs + rule actions; qos_rule_type is list-only")
+    func qosDescriptors() {
+        let p = catalog.descriptor("qos_policy")!
+        #expect(p.verbs == [.list, .get, .create, .update, .delete])
+        #expect(Set(p.actions.map(\.name)) == ["add_rule", "remove_rule"])
+        #expect(p.links.map(\.kind) == ["qos_policy"])
+        let t = catalog.descriptor("qos_rule_type")!
+        #expect(t.verbs == [.list])
     }
 }

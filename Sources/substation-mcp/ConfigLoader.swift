@@ -127,6 +127,7 @@ public enum ConfigLoader {
         if let a = arr("policy__deny_resources") { cfg.policyDenyResources = a }
         cfg.policyMaxListLimit = int("policy__max_list_limit") ?? cfg.policyMaxListLimit
         cfg.policyMaxCallsPerMinute = int("policy__max_calls_per_minute") ?? cfg.policyMaxCallsPerMinute
+        if let a = arr("policy__write_roles") { cfg.policyWriteRoles = a }
         // client
         cfg.clientRequestTimeout = int("client__request_timeout") ?? cfg.clientRequestTimeout
         cfg.clientMaxConnectionsPerHost = int("client__max_connections_per_host") ?? cfg.clientMaxConnectionsPerHost

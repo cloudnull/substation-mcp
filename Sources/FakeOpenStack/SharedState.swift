@@ -183,6 +183,7 @@ public actor FakeState {
         public var deviceOwner: String?
         public var extraDHCPOpts: [FakeExtraDHCPOpt]
         public var portSecurityEnabled: Bool
+        public var qosPolicyID: String?
     }
 
     public struct FakeFixedIP: Sendable {
@@ -839,6 +840,74 @@ public actor FakeState {
     public private(set) var freezerSchedules: [FakeFreezerSchedule] = []
     public private(set) var zaqarQueues: [String: [String]] = [:]  // projectID -> [queue names]
     public private(set) var shareAccesses: [FakeShareAccess] = []
+    public private(set) var qosPolicies: [FakeQoSPolicy] = []
+    public private(set) var cfnStacks: [FakeCFNStack] = []
+
+    // MARK: - Neutron QoS fake state
+
+    /// A QoS rule. Attributes are raw JSON text (type-specific keys), kept as
+    /// a pre-rendered object body so the fake can echo arbitrary rule shapes.
+    public struct FakeQoSRule: Sendable, Identifiable {
+        public let id: String
+        public var type: String
+        /// Rendered JSON object WITHOUT the enclosing braces, e.g.
+        /// `"type":"bandwidth_limit","max_kbps":1000`.
+        public var body: String
+
+        public init(id: String, type: String, body: String) {
+            self.id = id
+            self.type = type
+            self.body = body
+        }
+    }
+
+    public struct FakeQoSPolicy: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var description: String
+        public var shared: Bool
+        public var rules: [FakeQoSRule]
+
+        public init(id: String, projectID: String, name: String, description: String = "", shared: Bool = false, rules: [FakeQoSRule] = []) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.description = description
+            self.shared = shared
+            self.rules = rules
+        }
+    }
+
+    // MARK: - CloudFormation (heat-cfn) fake state
+
+    public struct FakeCFNStack: Sendable, Identifiable {
+        public let id: String
+        public let projectID: String
+        public var name: String
+        public var status: String
+        public var statusReason: String?
+        public var creationTime: String
+        public var deletionTime: String?
+        public var templateDescription: String
+        public var templateBody: String?
+        public var parameters: [(key: String, value: String)]
+        public var tags: [(key: String, value: String)]
+
+        public init(id: String, projectID: String, name: String, status: String = "CREATE_COMPLETE", statusReason: String? = nil, creationTime: String = "2026-01-01T00:00:00Z", deletionTime: String? = nil, templateDescription: String = "", templateBody: String? = nil, parameters: [(key: String, value: String)] = [], tags: [(key: String, value: String)] = []) {
+            self.id = id
+            self.projectID = projectID
+            self.name = name
+            self.status = status
+            self.statusReason = statusReason
+            self.creationTime = creationTime
+            self.deletionTime = deletionTime
+            self.templateDescription = templateDescription
+            self.templateBody = templateBody
+            self.parameters = parameters
+            self.tags = tags
+        }
+    }
 
     // MARK: - Manila (shared file systems) fake state
 
@@ -1335,6 +1404,9 @@ public actor FakeState {
     private var sgRuleIDCounter = 0
     private var fipIDCounter = 0
     private var agIDCounter = 0
+    private var qosIDCounter = 0
+    private var qosRuleIDCounter = 0
+    private var cfnIDCounter = 0
     private var volIDCounter = 0
     private var containerIDCounter = 0
     private var objectIDCounter = 0
@@ -2538,6 +2610,96 @@ public actor FakeState {
         let idx = addressGroups.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
         addressGroups.remove(at: idx)
+        return true
+    }
+
+    // MARK: - Neutron QoS
+
+    public func setPortQoSPolicy(portID: String, policyID: String?, projectID: String) -> FakePort? {
+        guard let idx = ports.firstIndex(where: { $0.id == portID && $0.projectID == projectID }) else { return nil }
+        if let policyID, !qosPolicies.contains(where: { $0.id == policyID }) { return nil }
+        ports[idx].qosPolicyID = policyID
+        return ports[idx]
+    }
+
+    public func createQoSPolicy(projectID: String, name: String, description: String, shared: Bool) -> FakeQoSPolicy {
+        qosIDCounter += 1
+        let policy = FakeQoSPolicy(id: "qos-\(qosIDCounter)", projectID: projectID, name: name, description: description, shared: shared)
+        qosPolicies.append(policy)
+        return policy
+    }
+
+    public func getQoSPolicy(id: String, projectID: String) -> FakeQoSPolicy? {
+        qosPolicies.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func updateQoSPolicy(id: String, projectID: String, name: String?, description: String?, shared: Bool?) -> FakeQoSPolicy? {
+        guard let idx = qosPolicies.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { qosPolicies[idx].name = name }
+        if let description { qosPolicies[idx].description = description }
+        if let shared { qosPolicies[idx].shared = shared }
+        return qosPolicies[idx]
+    }
+
+    public func deleteQoSPolicy(id: String, projectID: String) -> Bool {
+        guard let idx = qosPolicies.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return false }
+        // Neutron refuses to delete a policy still in use by a port.
+        if ports.contains(where: { $0.qosPolicyID == id }) { return false }
+        qosPolicies.remove(at: idx)
+        return true
+    }
+
+    public func addQoSRule(policyID: String, projectID: String, type: String, body: String) -> FakeQoSPolicy? {
+        guard let idx = qosPolicies.firstIndex(where: { $0.id == policyID && $0.projectID == projectID }) else { return nil }
+        qosRuleIDCounter += 1
+        qosPolicies[idx].rules.append(FakeQoSRule(id: "qosrule-\(qosRuleIDCounter)", type: type, body: body))
+        return qosPolicies[idx]
+    }
+
+    public func removeQoSRule(policyID: String, ruleID: String, projectID: String) -> FakeQoSPolicy? {
+        guard let idx = qosPolicies.firstIndex(where: { $0.id == policyID && $0.projectID == projectID }),
+              let rIdx = qosPolicies[idx].rules.firstIndex(where: { $0.id == ruleID }) else { return nil }
+        qosPolicies[idx].rules.remove(at: rIdx)
+        return qosPolicies[idx]
+    }
+
+    // MARK: - CloudFormation (heat-cfn)
+
+    public func createCFNStack(projectID: String, name: String, templateBody: String?, parameters: [(key: String, value: String)], tags: [(key: String, value: String)]) -> FakeCFNStack {
+        cfnIDCounter += 1
+        let stack = FakeCFNStack(
+            id: "cfn-\(cfnIDCounter)",
+            projectID: projectID,
+            name: name,
+            templateBody: templateBody,
+            parameters: parameters,
+            tags: tags
+        )
+        cfnStacks.append(stack)
+        return stack
+    }
+
+    public func listCFNStacks(projectID: String) -> [FakeCFNStack] {
+        cfnStacks.filter { $0.projectID == projectID }
+    }
+
+    public func describeCFNStacks(projectID: String, name: String?) -> [FakeCFNStack] {
+        if let name { return cfnStacks.filter { $0.projectID == projectID && $0.name == name } }
+        return listCFNStacks(projectID: projectID)
+    }
+
+    public func updateCFNStack(name: String, projectID: String, templateBody: String?, parameters: [(key: String, value: String)]) -> FakeCFNStack? {
+        guard let idx = cfnStacks.firstIndex(where: { $0.name == name && $0.projectID == projectID }) else { return nil }
+        if let templateBody { cfnStacks[idx].templateBody = templateBody }
+        if !parameters.isEmpty { cfnStacks[idx].parameters = parameters }
+        cfnStacks[idx].status = "UPDATE_COMPLETE"
+        return cfnStacks[idx]
+    }
+
+    public func deleteCFNStack(name: String, projectID: String) -> Bool {
+        let idx = cfnStacks.firstIndex { $0.name == name && $0.projectID == projectID }
+        guard let idx else { return false }
+        cfnStacks.remove(at: idx)
         return true
     }
 

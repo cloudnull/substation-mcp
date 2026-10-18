@@ -43,6 +43,7 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `policy.read_only` | `false` | Restrict to read-only tools |
 | `policy.deny_resources` | `[project, user, group, role, role_assignment, domain]` | Resources hidden from the catalog |
 | `policy.max_list_limit` | `200` | Max `limit` for list operations |
+| `policy.write_roles` | `[admin]` | Token roles that grant `openstack:write` scope (e.g. add `creator`, `member` for clouds whose writer role is not `admin`) |
 | `client.request_timeout` | `60s` | Upstream request timeout |
 | `cache.ttl.<resource>` | per resource | Cache TTL per resource type |
 | `log.level` | `info` | Log level |

@@ -258,6 +258,9 @@ public actor NameResolver {
             case "address_group":
                 let ag = try await r.getAddressGroup(vt, id: id)
                 return try Self.encodeObject(ag)
+            case "qos_policy":
+                let q = try await r.getQoSPolicy(vt, id: id)
+                return try Self.encodeObject(q)
             default:
                 throw OpenStackError(service: "network", status: 404, message: "Unknown network resource: \(descriptor.name)")
             }
@@ -508,7 +511,17 @@ public actor NameResolver {
                 throw OpenStackError(service: "backup", status: 404, message: "Unknown backup resource: \(descriptor.name)")
             }
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch descriptor.name {
+            case "cfn_stack":
+                let stacks = try await r.describeStacks(vt, nameOrID: id)
+                guard let first = stacks.first else {
+                    throw OpenStackError(service: "cloudformation", status: 404, message: "No stack matching \(id)")
+                }
+                return try Self.encodeObject(first)
+            default:
+                throw OpenStackError(service: "cloudformation", status: 404, message: "Unknown cloudformation resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -651,6 +664,22 @@ public actor NameResolver {
                 let ags = try await r.listAddressGroups(vt)
                 var result: [String: JSONValue] = try Self.encodeList(ags)
                 result["resource"] = .string("address_group")
+                result["region"] = .string(region)
+                return result
+            case "qos_policy":
+                var f = filters
+                f["limit"] = String(limit)
+                let qs = try await r.listQoSPolicies(vt, filters: f)
+                var result: [String: JSONValue] = try Self.encodeList(qs)
+                result["resource"] = .string("qos_policy")
+                result["region"] = .string(region)
+                return result
+            case "qos_rule_type":
+                let types = try await r.listQoSRuleTypes(vt)
+                var filtered = types
+                if let t = filters["type"] { filtered = types.filter { $0.type == t } }
+                var result: [String: JSONValue] = try Self.encodeList(filtered)
+                result["resource"] = .string("qos_rule_type")
                 result["region"] = .string(region)
                 return result
             default:
@@ -877,7 +906,7 @@ public actor NameResolver {
                 let nameFilter = filters["name"]
                 // Placement API does not accept a `limit` query param —
                 // it only supports `name`, `marker`, and `type`.
-                let rps = try await r.listResourceProviders(vt, name: nameFilter)
+                let rps = try await r.listResourceProviders(vt, name: nameFilter, type: filters["type"])
                 var result: [String: JSONValue] = try Self.encodeList(rps)
                 result["resource"] = .string("placement"); result["region"] = .string(region)
                 return result
@@ -965,7 +994,17 @@ public actor NameResolver {
                 throw OpenStackError(service: "backup", status: 404, message: "Unknown backup resource: \(descriptor.name)")
             }
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch descriptor.name {
+            case "cfn_stack":
+                let stacks = try await r.listStacks(vt)
+                var result: [String: JSONValue] = try Self.encodeList(stacks)
+                result["resource"] = .string("cfn_stack")
+                result["region"] = .string(region)
+                return result
+            default:
+                throw OpenStackError(service: "cloudformation", status: 404, message: "Unknown cloudformation resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -1457,6 +1496,13 @@ public actor NameResolver {
                 )
                 let ag = try await r.createAddressGroup(vt, spec)
                 return try Self.encodeObject(ag)
+            case "qos_policy":
+                let name = obj["name"]?.stringValue
+                guard let name, !name.isEmpty else {
+                    throw OpenStackError(service: "network", status: 400, message: "QoS policy create requires name")
+                }
+                let q = try await r.createQoSPolicy(vt, name: name, description: obj["description"]?.stringValue, shared: obj["shared"]?.boolValue)
+                return try Self.encodeObject(q)
             default:
                 throw OpenStackError(service: "network", status: 400, message: "Unknown network create: \(descriptor.name)")
             }
@@ -1713,7 +1759,33 @@ public actor NameResolver {
         case .backup:
             throw OpenStackError(service: "backup", status: 400, message: "Freezer backups are created via the volume backup API; not creatable through this surface")
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch descriptor.name {
+            case "cfn_stack":
+                let name = obj["name"]?.stringValue
+                guard let name, !name.isEmpty else {
+                    throw OpenStackError(service: "cloudformation", status: 400, message: "CFN stack create requires name")
+                }
+                var params: [String: String] = [:]
+                if let p = obj["parameters"]?.objectValue {
+                    for (k, v) in p { params[k] = Self.scalarString(v) }
+                }
+                var tags: [String: String] = [:]
+                if let t = obj["tags"]?.objectValue {
+                    for (k, v) in t { tags[k] = Self.scalarString(v) }
+                }
+                let spec = CreateCFNStackSpec(
+                    stackName: name,
+                    templateBody: obj["template_body"]?.stringValue,
+                    templateURL: obj["template_url"]?.stringValue,
+                    parameters: params,
+                    tags: tags,
+                    disableRollback: obj["disable_rollback"]?.boolValue ?? false
+                )
+                return try Self.encodeObject(try await r.createStack(vt, spec))
+            default:
+                throw OpenStackError(service: "cloudformation", status: 404, message: "Unknown cloudformation resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -1747,6 +1819,9 @@ public actor NameResolver {
             case "floating_ip":
                 let f = try await r.updateFloatingIP(vt, id: id, portID: obj["port_id"]?.stringValue)
                 return try Self.encodeObject(f)
+            case "qos_policy":
+                let q = try await r.updateQoSPolicy(vt, id: id, name: obj["name"]?.stringValue, description: obj["description"]?.stringValue, shared: obj["shared"]?.boolValue)
+                return try Self.encodeObject(q)
             default:
                 throw OpenStackError(service: "network", status: 400, message: "Unknown network update: \(descriptor.name)")
             }
@@ -1799,7 +1874,17 @@ public actor NameResolver {
         case .backup:
             throw OpenStackError(service: "backup", status: 501, message: "Backups are not updatable")
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch descriptor.name {
+            case "cfn_stack":
+                var params: [String: String] = [:]
+                if let p = obj["parameters"]?.objectValue {
+                    for (k, v) in p { params[k] = Self.scalarString(v) }
+                }
+                return try Self.encodeObject(try await r.updateStack(vt, nameOrID: id, templateBody: obj["template_body"]?.stringValue, parameters: params))
+            default:
+                throw OpenStackError(service: "cloudformation", status: 404, message: "Unknown cloudformation resource: \(descriptor.name)")
+            }
         }
     }
 
@@ -1825,6 +1910,7 @@ public actor NameResolver {
             case "floating_ip": try await r.deleteFloatingIP(vt, id: id)
             case "security_group": try await r.deleteSecurityGroup(vt, id: id)
             case "address_group": try await r.deleteAddressGroup(vt, id: id)
+            case "qos_policy": try await r.deleteQoSPolicy(vt, id: id)
             default: throw OpenStackError(service: "network", status: 400, message: "Unknown network delete: \(descriptor.name)")
             }
         case .blockStorage:
@@ -1974,7 +2060,12 @@ public actor NameResolver {
         case .backup:
             throw OpenStackError(service: "backup", status: 400, message: "Freezer backup deletion is not exposed through this surface")
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch descriptor.name {
+            case "cfn_stack": try await r.deleteStack(vt, nameOrID: id)
+            default:
+                throw OpenStackError(service: "cloudformation", status: 404, message: "Unknown cloudformation resource: \(descriptor.name)")
+            }
         }
         return ["deleted": .bool(true), "id": .string(id)]
     }
@@ -2166,6 +2257,27 @@ public actor NameResolver {
                 default:
                     throw OpenStackError(service: "network", status: 400, message: "Unknown router action: \(action)")
                 }
+            case "qos_policy":
+                switch action {
+                case "add_rule":
+                    guard let type = params["type"]?.stringValue, !type.isEmpty else {
+                        throw OpenStackError(service: "network", status: 400, message: "add_rule requires type (see os_list qos_rule_type)")
+                    }
+                    var attrs: [String: RawJSONValue] = [:]
+                    if let a = params["attributes"]?.objectValue {
+                        for (k, v) in a { attrs[k] = Self.toRawJSON(v) }
+                    }
+                    let q = try await r.addQoSRule(vt, policyID: id, rule: QoSRuleSpec(type: type, attributes: attrs))
+                    return try Self.encodeObject(q)
+                case "remove_rule":
+                    guard let ruleID = params["rule_id"]?.stringValue, !ruleID.isEmpty else {
+                        throw OpenStackError(service: "network", status: 400, message: "remove_rule requires rule_id")
+                    }
+                    let q = try await r.removeQoSRule(vt, policyID: id, ruleID: ruleID)
+                    return try Self.encodeObject(q)
+                default:
+                    throw OpenStackError(service: "network", status: 400, message: "Unknown qos_policy action: \(action)")
+                }
             default:
                 throw OpenStackError(service: "network", status: 400, message: "Unknown network action resource: \(descriptor.name)")
             }
@@ -2251,7 +2363,7 @@ public actor NameResolver {
             let r = await client.placement(region: region)
             switch (descriptor.name, action) {
             case ("placement", "allocations"):
-                let allocs = try await r.providerAllocations(vt, uuid: id)
+                let allocs = try await r.providerAllocations(vt, uuid: id, consumerUUID: params["consumer_uuid"]?.stringValue)
                 return ["action": .string("allocations"), "id": .string(id), "data": Self.fromRawJSON(allocs)]
             case ("placement", "candidates"):
                 let resources = params["resources"]?.stringValue
@@ -2277,7 +2389,17 @@ public actor NameResolver {
         case .backup:
             throw OpenStackError(service: "backup", status: 501, message: "Backup actions not supported in phase 1")
         case .cloudformation:
-            throw OpenStackError(service: "cloudformation", status: 501, message: "CloudFormation uses AWS SigV4 signing, not Keystone tokens; not supported in phase 1.")
+            let r = await client.cloudFormation(region: region)
+            switch (descriptor.name, action) {
+            case ("cfn_stack", "validate_template"):
+                guard let template = params["template_body"]?.stringValue else {
+                    throw OpenStackError(service: "cloudformation", status: 400, message: "validate_template requires params.template_body")
+                }
+                let keys = try await r.validateTemplate(vt, templateBody: template)
+                return ["action": .string("validate_template"), "valid": .bool(true), "parameter_keys": .array(keys.map { .string($0) })]
+            default:
+                throw OpenStackError(service: "cloudformation", status: 400, message: "Unknown cloudformation action: \(descriptor.name).\(action)")
+            }
         }
     }
 
@@ -2310,6 +2432,32 @@ public actor NameResolver {
             )
         }
         return result
+    }
+
+    /// String form of a scalar JSONValue (for map-style bodies like CFN
+    /// parameters/tags, where values may arrive as strings or numbers).
+    static func scalarString(_ v: JSONValue) -> String {
+        switch v {
+        case .string(let s): return s
+        case .integer(let i): return String(i)
+        case .float(let f): return String(f)
+        case .bool(let b): return b ? "true" : "false"
+        case .null: return ""
+        default: return v.jsonDescription
+        }
+    }
+
+    /// MCP JSONValue → client RawJSONValue (QoS rule attributes passthrough).
+    static func toRawJSON(_ v: JSONValue) -> RawJSONValue {
+        switch v {
+        case .string(let s): return .string(s)
+        case .integer(let i): return .int(i)
+        case .float(let f): return .double(f)
+        case .bool(let b): return .bool(b)
+        case .null: return .null
+        case .array(let a): return .array(a.map { toRawJSON($0) })
+        case .object(let o): return .object(o.mapValues { toRawJSON($0) })
+        }
     }
 
     static func encodeList<T: Encodable>(_ values: [T]) throws -> [String: JSONValue] {
