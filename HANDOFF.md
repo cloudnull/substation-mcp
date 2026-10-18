@@ -2,6 +2,24 @@
 
 ## Current State
 
+- **Cloud-admin catalog surface** (2026-10-17, `49b4709`). Three gaps closed as
+  resources/actions under the existing verbs (still 20 tools; 63 → **64**
+  descriptors): **hypervisor** (list w/ `with_servers`, get, `statistics` +
+  `servers` actions → Nova `/os-hypervisors*`), **compute_service** (list w/
+  binary/host filters; `disable`/`enable`/`disable_log_requests`/
+  `enable_log_requests`/`force_down` actions → Nova `/os-services/{action}`,
+  pinned to microversion **2.52** — the 2.53+ form is unimplemented here), and
+  **placement** depth (`allocations` + `candidates` actions →
+  `/resource_providers/{uuid}/allocations`, `/allocation_candidates`).
+  Placement payloads are keyed by open-ended resource-class names → passed
+  through unmodeled as `RawJSONValue` (client module; Codable+Equatable),
+  converted at the resolver boundary (`NameResolver.fromRawJSON`). Fake
+  coverage added for all of it (incl. inventory-aware candidate fitting,
+  force-down state mutation, non-nova-compute 400). **689 tests green.**
+  Live validation: **blocked, same known infra** — regionone/SAT0 Keystone
+  unreachable from this host, IAD3 app cred is non-admin (Nova admin endpoints
+  403). Fake E2E is the current proof; re-run live when an admin-scoped live
+  cloud is available.
 - **Keystone OS-FEDERATION passthrough** (2026-10-17). Two routes: Route A
   (browser WebSSO bounce via `GET /v1/oauth/federate` → Keystone
   `OS-FEDERATION/…/websso` → callback → project picker → code mint) and
