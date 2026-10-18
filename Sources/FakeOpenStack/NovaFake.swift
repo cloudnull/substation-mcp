@@ -320,7 +320,7 @@ public struct NovaFake {
 
         // MARK: - Hypervisors (admin only)
 
-        router.get("/nova/os-hypervisors") { req, _ in
+        router.get("/nova/os-hypervisors") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
@@ -329,12 +329,13 @@ public struct NovaFake {
             if !token.roles.contains("admin") {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
+            let servers = await Self.hypervisorServersJSON(state: state, host: "compute-01", token: token, req: req)
             return Self.jsonResponse(status: .ok, body: """
-            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
+            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490\(servers ?? "")}]}
             """)
         }
 
-        router.get("/nova/os-hypervisors/detail") { req, _ in
+        router.get("/nova/os-hypervisors/detail") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
@@ -342,8 +343,9 @@ public struct NovaFake {
             if !token.roles.contains("admin") {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
+            let servers = await Self.hypervisorServersJSON(state: state, host: "compute-01", token: token, req: req)
             return Self.jsonResponse(status: .ok, body: """
-            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}]}
+            {"hypervisors":[{"id":"1","hypervisor_hostname":"compute-01","host_ip":"10.0.0.1","state":"up","status":"enabled","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"compute-01","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490\(servers ?? "")}]}
             """)
         }
 
@@ -361,6 +363,35 @@ public struct NovaFake {
             """)
         }
 
+        router.get("/nova/os-hypervisors/statistics") { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"hypervisor_statistics":{"count":2,"vcpus":64,"memory_mb":131072,"local_gb":2000,"vcpus_used":32,"memory_mb_used":65536,"local_gb_used":1000,"free_ram_mb":65536,"free_disk_gb":1000,"current_workload":0,"running_vms":32,"disk_available_least":980}}
+            """)
+        }
+
+        router.get("/nova/os-hypervisors/:host/servers") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            let host = ctx.parameters.get("host") ?? ""
+            let hosted = host == "compute-01" ? await state.listServers(projectID: token.projectID) : []
+            let servers = hosted.map { "{\"name\":\"\($0.name)\",\"uuid\":\"\($0.id)\"}" }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"hypervisors":[{"id":"1","hypervisor_hostname":"\(host)","state":"up","status":"enabled","servers":[\(servers)]}]}
+            """)
+        }
+
         // MARK: - Compute services (admin only)
 
         router.get("/nova/os-services") { req, _ in
@@ -371,9 +402,29 @@ public struct NovaFake {
             if !token.roles.contains("admin") {
                 return Self.novaError(status: .forbidden, message: "Admin access required")
             }
+            let binary = Self.queryParam("binary", from: req)
+            let host = Self.queryParam("host", from: req)
+            let services = await state.listComputeServices(binary: binary, host: host)
+            let items = services.map { svc in
+                let reason = svc.disabledReason.map { "\"\($0)\"" } ?? "null"
+                return "{\"id\":\"\(svc.id)\",\"host\":\"\(svc.host)\",\"binary\":\"\(svc.binary)\",\"zone\":\"\(svc.zone)\",\"status\":\"\(svc.status)\",\"state\":\"\(svc.state)\",\"updated_at\":\"\(svc.updatedAt ?? "")\",\"disabled_reason\":\(reason)}"
+            }.joined(separator: ",")
             return Self.jsonResponse(status: .ok, body: """
-            {"services":[{"id":"1","host":"compute-01","binary":"nova-compute","zone":"internal","status":"enabled","state":"up","updated_at":"2026-10-06T00:00:00.000000","disabled_reason":null}]}
+            {"services":[\(items)]}
             """)
+        }
+
+        // Legacy service actions (microversion <= 2.52): PUT /os-services/{action}
+        // with {host, binary} body. Only nova-compute is updatable (nova 400s
+        // on other binaries).
+        router.put("/nova/os-services/enable") { req, _ in
+            await Self.handleComputeServiceAction(req, state: state, action: "enable")
+        }
+        router.put("/nova/os-services/disable") { req, _ in
+            await Self.handleComputeServiceAction(req, state: state, action: "disable")
+        }
+        router.put("/nova/os-services/force-down") { req, _ in
+            await Self.handleComputeServiceAction(req, state: state, action: "force-down")
         }
 
         // MARK: - Volume attachments
@@ -524,6 +575,15 @@ public struct NovaFake {
         req.uri.queryParameters[Substring(key)].map { String($0) }
     }
 
+    /// `,"servers":[…]` suffix for hypervisor list JSON when the request asks
+    /// for `with_servers=true`; empty string otherwise.
+    static func hypervisorServersJSON(state: FakeState, host: String, token: FakeState.FakeToken, req: Request) async -> String? {
+        guard Self.queryParam("with_servers", from: req)?.lowercased() == "true" else { return nil }
+        let hosted = host == "compute-01" ? await state.listServers(projectID: token.projectID) : []
+        let servers = hosted.map { "{\"name\":\"\($0.name)\",\"uuid\":\"\($0.id)\"}" }.joined(separator: ",")
+        return ",\"servers\":[\(servers)]"
+    }
+
     /// Extract the osmcp provisioning correlation sha from a base64
     /// `user_data` payload. The renderer embeds it in a `# OSMCP_PROVISIONING
     /// sha=<hex>` comment as the second line of the cloud-config. Returns nil
@@ -631,6 +691,48 @@ public struct NovaFake {
             return String(rest[rest.startIndex..<close])
         }
         return nil
+    }
+
+    static func extractBool(_ key: String, from json: String) -> Bool? {
+        let pattern = "\"\(key)\""
+        guard let keyRange = json.range(of: pattern) else { return nil }
+        let afterKey = json[keyRange.upperBound...]
+        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
+        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        if afterColon.hasPrefix("true") { return true }
+        if afterColon.hasPrefix("false") { return false }
+        return nil
+    }
+
+    /// Legacy `PUT /os-services/{action}` handler: body carries host/binary
+    /// (+ disabled_reason / forced_down). Nova restricts updates to
+    /// nova-compute binaries; unknown (host, binary) pairs 404.
+    static func handleComputeServiceAction(_ req: Request, state: FakeState, action: String) async -> Response {
+        guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+              let token = await state.validateToken(tokenID) else {
+            return novaError(status: .unauthorized, message: "Unauthorized")
+        }
+        if !token.roles.contains("admin") {
+            return novaError(status: .forbidden, message: "Admin access required")
+        }
+        let body = (try? await readBody(req)) ?? "{}"
+        guard let host = extractString("host", from: body),
+              let binary = extractString("binary", from: body) else {
+            return novaError(status: .badRequest, message: "'host' and 'binary' are required")
+        }
+        if binary != "nova-compute" {
+            return novaError(status: .badRequest, message: "Updating a \(binary) service is not supported. Only nova-compute services can be updated.")
+        }
+        let reason = extractString("disabled_reason", from: body)
+        let forcedDown = extractBool("forced_down", from: body)
+        guard let svc = await state.updateComputeService(action: action, host: host, binary: binary,
+                                                         disabledReason: reason, forcedDown: forcedDown) else {
+            return novaError(status: .notFound, message: "No service found for host \(host) and binary \(binary)")
+        }
+        let reasonJSON = svc.disabledReason.map { "\"\($0)\"" } ?? "null"
+        return jsonResponse(status: .ok, body: """
+        {"service":{"id":\"\(svc.id)\",\"host\":\"\(svc.host)\",\"binary\":\"\(svc.binary)\",\"zone\":\"\(svc.zone)\",\"status\":\"\(svc.status)\",\"state\":\"\(svc.state)\",\"disabled_reason\":\(reasonJSON),\"forced_down\":\(svc.forcedDown ? "true" : "false")}}
+        """)
     }
 
     /// The real-nova non-detail list shape: only id/name/links per server.

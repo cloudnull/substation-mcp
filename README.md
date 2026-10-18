@@ -27,7 +27,7 @@ graph LR
   its own stateless OAuth 2.1 AS with browser login) or `keystone_token`
   (raw bearer, unchanged). See [OAuth 2.1 login](docs/oauth.md).
 - **Stable surface.** The verbs are additive-only. New services appear as new
-  *resources* under the same verbs (currently 63 descriptors across ~19 types),
+  *resources* under the same verbs (currently 64 descriptors across ~19 types),
   never as new tools.
 
 | | |

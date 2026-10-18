@@ -465,7 +465,10 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
     public var currentWorkload: Int?
     public var runningVms: Int?
     public var diskAvailableLeast: Int?
-    public var cpuInfo: String?
+    public var cpuInfo: HypervisorCPUInfo?
+    /// Instances hosted on this hypervisor. Present when the list was fetched
+    /// with `with_servers=true`, or from the `/servers` sub-resource.
+    public var servers: [HypervisorServerRef]?
 
     public init(
         id: String,
@@ -487,7 +490,8 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         currentWorkload: Int? = nil,
         runningVms: Int? = nil,
         diskAvailableLeast: Int? = nil,
-        cpuInfo: String? = nil
+        cpuInfo: HypervisorCPUInfo? = nil,
+        servers: [HypervisorServerRef]? = nil
     ) {
         self.id = id
         self.hypervisorHostname = hypervisorHostname
@@ -509,6 +513,7 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         self.runningVms = runningVms
         self.diskAvailableLeast = diskAvailableLeast
         self.cpuInfo = cpuInfo
+        self.servers = servers
     }
 
     /// Custom decoder: the Nova `/os-hypervisors` (summary) endpoint returns
@@ -536,7 +541,8 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         currentWorkload = try c.decodeIfPresent(Int.self, forKey: .currentWorkload)
         runningVms = try c.decodeIfPresent(Int.self, forKey: .runningVms)
         diskAvailableLeast = try c.decodeIfPresent(Int.self, forKey: .diskAvailableLeast)
-        cpuInfo = try c.decodeIfPresent(String.self, forKey: .cpuInfo)
+        cpuInfo = try c.decodeIfPresent(HypervisorCPUInfo.self, forKey: .cpuInfo)
+        servers = try c.decodeIfPresent([HypervisorServerRef].self, forKey: .servers)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -557,6 +563,103 @@ public struct Hypervisor: Sendable, Codable, Identifiable {
         case runningVms = "running_vms"
         case diskAvailableLeast = "disk_available_least"
         case cpuInfo = "cpu_info"
+        case servers
+    }
+}
+
+/// CPU info as Nova returns it: a JSON *string* below microversion 2.88 and a
+/// nested JSON *object* at/above it (also a bare int on some stubs).
+public enum HypervisorCPUInfo: Sendable, Codable {
+    case int(Int)
+    case double(Double)
+    case str(String)
+    case object([String: HypervisorCPUInfo])
+    case array([HypervisorCPUInfo])
+    case bool(Bool)
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let b = try? container.decode(Bool.self) { self = .bool(b); return }
+        if let i = try? container.decode(Int.self) { self = .int(i); return }
+        if let d = try? container.decode(Double.self) { self = .double(d); return }
+        if let s = try? container.decode(String.self) { self = .str(s); return }
+        if let a = try? container.decode([HypervisorCPUInfo].self) { self = .array(a); return }
+        if let o = try? container.decode([String: HypervisorCPUInfo].self) { self = .object(o); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .int(let i): try container.encode(i)
+        case .double(let d): try container.encode(d)
+        case .str(let s): try container.encode(s)
+        case .bool(let b): try container.encode(b)
+        case .null: try container.encodeNil()
+        case .array(let a): try container.encode(a)
+        case .object(let o): try container.encode(o)
+        }
+    }
+}
+
+/// A server reference nested inside a hypervisor's `servers` field.
+public struct HypervisorServerRef: Sendable, Codable {
+    public var name: String
+    public var uuid: String
+
+    public init(name: String, uuid: String) {
+        self.name = name
+        self.uuid = uuid
+    }
+}
+
+/// Fleet-wide hypervisor totals (`GET /os-hypervisors/statistics`).
+public struct HypervisorStatistics: Sendable, Codable {
+    public var count: Int?
+    public var vcpus: Int?
+    public var memoryMB: Int?
+    public var localGB: Int?
+    public var vcpusUsed: Int?
+    public var memoryMBUsed: Int?
+    public var localGBUsed: Int?
+    public var freeRAMMB: Int?
+    public var freeDiskGB: Int?
+    public var currentWorkload: Int?
+    public var runningVms: Int?
+    public var diskAvailableLeast: Int?
+
+    public init(count: Int? = nil, vcpus: Int? = nil, memoryMB: Int? = nil, localGB: Int? = nil,
+                vcpusUsed: Int? = nil, memoryMBUsed: Int? = nil, localGBUsed: Int? = nil,
+                freeRAMMB: Int? = nil, freeDiskGB: Int? = nil, currentWorkload: Int? = nil,
+                runningVms: Int? = nil, diskAvailableLeast: Int? = nil) {
+        self.count = count
+        self.vcpus = vcpus
+        self.memoryMB = memoryMB
+        self.localGB = localGB
+        self.vcpusUsed = vcpusUsed
+        self.memoryMBUsed = memoryMBUsed
+        self.localGBUsed = localGBUsed
+        self.freeRAMMB = freeRAMMB
+        self.freeDiskGB = freeDiskGB
+        self.currentWorkload = currentWorkload
+        self.runningVms = runningVms
+        self.diskAvailableLeast = diskAvailableLeast
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case count, vcpus
+        case memoryMB = "memory_mb"
+        case localGB = "local_gb"
+        case vcpusUsed = "vcpus_used"
+        case memoryMBUsed = "memory_mb_used"
+        case localGBUsed = "local_gb_used"
+        case freeRAMMB = "free_ram_mb"
+        case freeDiskGB = "free_disk_gb"
+        case currentWorkload = "current_workload"
+        case runningVms = "running_vms"
+        case diskAvailableLeast = "disk_available_least"
     }
 }
 

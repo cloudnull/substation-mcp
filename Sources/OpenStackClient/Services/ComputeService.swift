@@ -71,7 +71,8 @@ public struct ComputeRegion: Sendable {
         path: String,
         query: [URLQueryItem]? = nil,
         body: Data? = nil,
-        timeoutOverride: Duration? = nil
+        timeoutOverride: Duration? = nil,
+        microversionOverride: String? = nil
     ) async throws -> (status: Int, body: Data, requestID: String?) {
         let ep = resolveServiceEndpoint(
             vt: vt, region: region, cloud: cloud,
@@ -82,8 +83,13 @@ public struct ComputeRegion: Sendable {
         // negotiator caches the result per region, so this is a cache hit after
         // the first call. Failures are non-fatal: a version-doc error should not
         // block the data-plane call, so we proceed without the header.
+        // `microversionOverride` pins the header explicitly — required for
+        // routes that only exist below the negotiated max (e.g. the legacy
+        // PUT /os-services/{action} form, removed at microversion 2.53).
         var extraHeaders: [(String, String)] = []
-        if let profile = ServiceVersionProfile.profile(for: serviceType), profile.hasMicroversion {
+        if let pinned = microversionOverride {
+            extraHeaders.append(("X-OpenStack-Nova-API-Version", pinned))
+        } else if let profile = ServiceVersionProfile.profile(for: serviceType), profile.hasMicroversion {
             let negotiator = VersionNegotiator(
                 transport: transport,
                 cache: cache,
@@ -465,9 +471,11 @@ public struct ComputeRegion: Sendable {
 
     // MARK: - Hypervisors (admin)
 
-    public func listHypervisors(_ vt: ValidatedToken) async throws -> [Hypervisor] {
+    public func listHypervisors(_ vt: ValidatedToken, withServers: Bool = false) async throws -> [Hypervisor] {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/detail")
+        var query: [URLQueryItem] = []
+        if withServers { query.append(URLQueryItem(name: "with_servers", value: "true")) }
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/detail", query: query)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct HypervisorList: Decodable {
@@ -475,6 +483,33 @@ public struct ComputeRegion: Sendable {
         }
         let decoded = try JSONDecoder().decode(HypervisorList.self, from: result.body)
         return decoded.hypervisors
+    }
+
+    /// Fleet-wide capacity totals (`GET /os-hypervisors/statistics`).
+    public func hypervisorStatistics(_ vt: ValidatedToken) async throws -> HypervisorStatistics {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/statistics")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct StatsResp: Decodable {
+            let hypervisor_statistics: HypervisorStatistics
+        }
+        return try JSONDecoder().decode(StatsResp.self, from: result.body).hypervisor_statistics
+    }
+
+    /// Instances hosted on one hypervisor (`GET /os-hypervisors/{id}/servers`).
+    /// The id may be numeric or the hypervisor hostname.
+    public func hypervisorServers(_ vt: ValidatedToken, id: String) async throws -> [HypervisorServerRef] {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-hypervisors/\(id)/servers")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct ServersResp: Decodable {
+            struct Entry: Decodable { let servers: [HypervisorServerRef]? }
+            let hypervisors: [Entry]
+        }
+        let decoded = try JSONDecoder().decode(ServersResp.self, from: result.body)
+        return decoded.hypervisors.first?.servers ?? []
     }
 
     public func getHypervisor(_ vt: ValidatedToken, host: String) async throws -> Hypervisor {
@@ -491,9 +526,12 @@ public struct ComputeRegion: Sendable {
 
     // MARK: - Compute services (admin)
 
-    public func listComputeServices(_ vt: ValidatedToken) async throws -> [ComputeServiceInfo] {
+    public func listComputeServices(_ vt: ValidatedToken, binary: String? = nil, host: String? = nil) async throws -> [ComputeServiceInfo] {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-services")
+        var query: [URLQueryItem] = []
+        if let binary { query.append(URLQueryItem(name: "binary", value: binary)) }
+        if let host { query.append(URLQueryItem(name: "host", value: host)) }
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/os-services", query: query)
         try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
 
         struct ServiceList: Decodable {
@@ -501,6 +539,34 @@ public struct ComputeRegion: Sendable {
         }
         let decoded = try JSONDecoder().decode(ServiceList.self, from: result.body)
         return decoded.services
+    }
+
+    /// Legacy service action (`PUT /os-services/{action}` with `{host, binary}`
+    /// body), pinned to microversion 2.52 — the route was removed at 2.53 in
+    /// favor of `PUT /os-services/{uuid}`, but 2.52 works on every cloud from
+    /// Newton onward. Only nova-compute services are updatable (nova rejects
+    /// other binaries with 400).
+    ///
+    /// `action`: "enable" | "disable" | "force-down". `disabledReason` applies
+    /// to disable; `forcedDown` applies to force-down (bool, required there).
+    public func updateComputeService(_ vt: ValidatedToken, action: String, host: String, binary: String, disabledReason: String? = nil, forcedDown: Bool? = nil) async throws -> ComputeServiceInfo {
+        let region = try resolveRegion(vt)
+        var parts: [String] = ["\"host\":\"\(host)\"", "\"binary\":\"\(binary)\""]
+        if action == "disable", let reason = disabledReason {
+            let escaped = reason.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+            parts.append("\"disabled_reason\":\"\(escaped)\"")
+        }
+        if action == "force-down", let forcedDown {
+            parts.append("\"forced_down\":\(forcedDown ? "true" : "false")")
+        }
+        let body = Data("{\(parts.joined(separator: ","))}".utf8)
+        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/os-services/\(action)", body: body, microversionOverride: "2.52")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct ServiceResp: Decodable {
+            let service: ComputeServiceInfo
+        }
+        return try JSONDecoder().decode(ServiceResp.self, from: result.body).service
     }
 
     // MARK: - Quotas

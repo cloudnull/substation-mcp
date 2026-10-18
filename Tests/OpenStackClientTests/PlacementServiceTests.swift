@@ -123,4 +123,64 @@ struct PlacementServiceTests {
             #expect(error.status == 404, "Expected 404, got \(error.status): \(error.message)")
         }
     }
+
+    @Test("provider allocations returns consumer resource map")
+    func providerAllocations() async throws {
+        let (handle, vt, svc, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = svc.region("RegionOne")
+        let allocs = try await region.providerAllocations(vt, uuid: "rp-0001")
+        guard case .object(let top) = allocs,
+              case .object(let consumers)? = top["allocations"],
+              let first = consumers.values.first,
+              case .object(let entry) = first,
+              case .object(let resources)? = entry["resources"] else {
+            Issue.record("Unexpected allocations shape: \(allocs)")
+            return
+        }
+        #expect(resources["VCPU"] == .int(4))
+        #expect(resources["MEMORY_MB"] == .int(8192))
+
+        do {
+            _ = try await region.providerAllocations(vt, uuid: "rp-missing")
+            Issue.record("Expected 404 for unknown resource provider")
+        } catch let error as OpenStackError {
+            #expect(error.status == 404)
+        }
+    }
+
+    @Test("allocation candidates filters providers by inventory")
+    func allocationCandidates() async throws {
+        let (handle, vt, svc, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = svc.region("RegionOne")
+        // VCPU:8 fits both seeded providers; GPU:2 only fits the GPU host.
+        let both = try await region.allocationCandidates(vt, resources: "VCPU:8,MEMORY_MB:1024")
+        #expect(candidateCount(both) == 2)
+        let gpu = try await region.allocationCandidates(vt, resources: "GPU:2")
+        #expect(candidateCount(gpu) == 1)
+        if case .object(let top) = gpu,
+           case .array(let requests)? = top["allocation_requests"],
+           case .object(let first)? = requests.first,
+           case .object(let allocations)? = first["allocations"] {
+            #expect(allocations["rp-0002"] != nil)
+        } else {
+            Issue.record("Unexpected candidates shape")
+        }
+
+        do {
+            _ = try await region.allocationCandidates(vt, resources: "")
+            Issue.record("Expected 400 for empty resources")
+        } catch let error as OpenStackError {
+            #expect(error.status == 400)
+        }
+    }
+
+    private func candidateCount(_ value: RawJSONValue) -> Int {
+        guard case .object(let top) = value,
+              case .array(let requests)? = top["allocation_requests"] else { return -1 }
+        return requests.count
+    }
 }

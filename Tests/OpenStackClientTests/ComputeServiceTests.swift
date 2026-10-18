@@ -732,6 +732,95 @@ struct ComputeServiceTests {
         }
     }
 
+    @Test("hypervisor statistics returns fleet totals", .timeLimit(.minutes(2)))
+    func hypervisorStatistics() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let stats = try await region.hypervisorStatistics(vt)
+        #expect(stats.count == 2)
+        #expect(stats.vcpus == 64)
+        #expect(stats.runningVms == 32)
+    }
+
+    @Test("hypervisor servers lists hosted instances", .timeLimit(.minutes(2)))
+    func hypervisorServers() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        // compute-01 hosts the seeded servers in the fake; compute-02 hosts none.
+        let hosted = try await region.hypervisorServers(vt, id: "compute-01")
+        #expect(!hosted.isEmpty)
+        #expect(hosted.allSatisfy { !$0.uuid.isEmpty })
+        let empty = try await region.hypervisorServers(vt, id: "compute-02")
+        #expect(empty.isEmpty)
+    }
+
+    @Test("compute service disable/enable roundtrip mutates state", .timeLimit(.minutes(2)))
+    func computeServiceDisableEnable() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let disabled = try await region.updateComputeService(vt, action: "disable", host: "compute-01",
+                                                             binary: "nova-compute", disabledReason: "maintenance")
+        #expect(disabled.status == "disabled")
+        #expect(disabled.disabledReason == "maintenance")
+
+        var listed = try await region.listComputeServices(vt, binary: "nova-compute", host: "compute-01")
+        #expect(listed.count == 1)
+        #expect(listed[0].status == "disabled")
+
+        let enabled = try await region.updateComputeService(vt, action: "enable", host: "compute-01", binary: "nova-compute")
+        #expect(enabled.status == "enabled")
+        #expect(enabled.disabledReason == nil)
+        listed = try await region.listComputeServices(vt, binary: "nova-compute", host: "compute-01")
+        #expect(listed[0].status == "enabled")
+    }
+
+    @Test("compute service update rejects non-compute binaries", .timeLimit(.minutes(2)))
+    func computeServiceUpdateRejectsNonCompute() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        do {
+            _ = try await region.updateComputeService(vt, action: "disable", host: "controller-01", binary: "nova-conductor")
+            Issue.record("Expected 400 for non-nova-compute binary")
+        } catch let error as OpenStackError {
+            #expect(error.status == 400)
+        }
+    }
+
+    @Test("compute service force_down mutates state", .timeLimit(.minutes(2)))
+    func computeServiceForceDown() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let svc = try await region.updateComputeService(vt, action: "force-down", host: "compute-01",
+                                                        binary: "nova-compute", forcedDown: true)
+        #expect(svc.state == "down")
+        let cleared = try await region.updateComputeService(vt, action: "force-down", host: "compute-01",
+                                                            binary: "nova-compute", forcedDown: false)
+        #expect(cleared.state == "up")
+    }
+
+    @Test("compute service list filters by binary", .timeLimit(.minutes(2)))
+    func computeServiceListFilters() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let computes = try await region.listComputeServices(vt, binary: "nova-compute")
+        #expect(computes.count == 2)
+        let conductors = try await region.listComputeServices(vt, binary: "nova-conductor")
+        #expect(conductors.count == 1)
+        #expect(conductors[0].host == "controller-01")
+    }
+
     @Test("get quota set", .timeLimit(.minutes(2)))
     func getQuotaSet() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()

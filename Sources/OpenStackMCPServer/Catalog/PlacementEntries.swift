@@ -1,7 +1,7 @@
 import Foundation
 
 /// Placement (resource providers) resource entries. 1 resource:
-/// `placement` (a resource provider) — list/get only, read-only.
+/// `placement` (a resource provider) — list/get, plus capacity-planning actions.
 ///
 /// The resource provider is the authoritative per-host inventory entry:
 /// its `inventory` holds resource-class totals (VCPU, MEMORY_MB, DISK_GB, and
@@ -15,7 +15,19 @@ enum PlacementEntries {
             name: "placement",
             service: .placement,
             verbs: [.list, .get],
-            actions: [],
+            // Admin capacity view (validated live on SAT0, 2026-10-18):
+            //   GET /resource_providers/{uuid}/allocations  action "allocations"
+            //   GET /allocation_candidates                  action "candidates"
+            // Both return the raw placement payload (resource-class maps are
+            // open-ended, so they are passed through unmodeled).
+            actions: [
+                ActionSpec(name: "allocations", adminOnly: true, params: []),
+                ActionSpec(name: "candidates", adminOnly: true, params: [
+                    ParamSpec(name: "resources", required: true, description: "Placement resource syntax, e.g. \"VCPU:2,MEMORY_MB:4096\" (groups separated by ';')"),
+                    ParamSpec(name: "limit", type: "integer", description: "Max candidates to return"),
+                    ParamSpec(name: "in_tree", type: "boolean", description: "Restrict candidates to a single provider tree"),
+                ]),
+            ],
             links: [],
             createSchema: nil,
             updateSchema: nil,

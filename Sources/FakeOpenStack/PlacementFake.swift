@@ -82,6 +82,62 @@ public struct PlacementFake {
             {"usages":{\(entries)}}
             """)
         }
+
+        router.get(RouterPath("\(base)/resource_providers/:uuid/allocations")) { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  await state.validateToken(tokenID) != nil else {
+                return Self.unauthorized()
+            }
+            let uuid = ctx.parameters.get("uuid") ?? ""
+            guard let allocs = await state.providerAllocations(uuid: uuid) else {
+                return Self.fault(status: .notFound, title: "Not Found", explanation: "No resource provider found for UUID \(uuid).")
+            }
+            let rp = await state.getResourceProvider(uuid: uuid)
+            let consumerEntries = allocs.map { consumer, resources -> String in
+                let res = resources.keys.sorted().map { "\"\($0)\":\(resources[$0] ?? 0)" }.joined(separator: ",")
+                return "\"\(consumer)\":{\"resources\":{\(res)}}"
+            }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"allocations":{\(consumerEntries)},"resource_provider_generation":\(rp?.generation ?? 1)}
+            """)
+        }
+
+        router.get(RouterPath("\(base)/allocation_candidates")) { req, _ in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  await state.validateToken(tokenID) != nil else {
+                return Self.unauthorized()
+            }
+            guard let resources = Self.queryParam("resources", from: req), !resources.isEmpty else {
+                return Self.fault(status: .badRequest, title: "Bad Request", explanation: "Missing required query parameter: resources")
+            }
+            // Every provider whose inventory covers the resource group becomes
+            // a candidate (real placement does full scheduling; the fake only
+            // needs the response shape + plausible filtering).
+            let firstGroup = resources.split(separator: ";").first.map(String.init) ?? resources
+            let wanted = firstGroup.split(separator: ",").compactMap { pair -> (String, Int)? in
+                let kv = pair.split(separator: ":", maxSplits: 1)
+                guard kv.count == 2, let amount = Int(kv[1]) else { return nil }
+                return (String(kv[0]), amount)
+            }
+            let rps = await state.listResourceProviders()
+            let fitting = rps.filter { rp in
+                wanted.allSatisfy { (klass, amount) in (rp.inventory[klass] ?? 0) >= amount }
+            }
+            let requests = fitting.map { rp -> String in
+                let res = wanted.map { "\"\($0.0)\":\($0.1)" }.joined(separator: ",")
+                return "{\"allocations\":{\"\(rp.uuid)\":{\"resources\":{\(res)}}},\"mappings\":{\"\":\"\(rp.uuid)\"}}"
+            }.joined(separator: ",")
+            let summaries = fitting.map { rp -> String in
+                let inv = rp.inventory.keys.sorted().map { k in
+                    "\"\(k)\":{\"total\":\(rp.inventory[k] ?? 0),\"reserved\":0,\"allocated\":\(rp.usages[k] ?? 0)}"
+                }.joined(separator: ",")
+                let traits = rp.traits.map { "\"\($0)\"" }.joined(separator: ",")
+                return "\"\(rp.uuid)\":{\"name\":\"\(rp.name)\",\"generation\":\(rp.generation),\"resource_provider_generation\":\(rp.generation),\"inventories\":{\(inv)},\"aggregates\":[],\"traits\":[\(traits)]}"
+            }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"allocation_requests":[\(requests)],"meta":{"count":\(fitting.count),"limit":null,"marker":null},"provider_summaries":{\(summaries)}}
+            """)
+        }
     }
 
     // MARK: - JSON builders

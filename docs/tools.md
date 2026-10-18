@@ -5,7 +5,7 @@ The server exposes **20 tools** — 14 read-only + 6 write. The verb tools are
 **stable (additive-only invariant):** new OpenStack services are exposed as new
 *resources* under the existing verbs, never as new tools. That means a client
 that learns `os_list` / `os_get` / `os_create` keeps working forever as the
-catalog grows (currently **63 resource descriptors** across ~19 types).
+catalog grows (currently **64 resource descriptors** across ~19 types).
 
 Read-only mode (`--read-only` / `policy.read_only: true`) restricts the server
 to the 14 read tools. Write tools are additionally gated by the token's derived

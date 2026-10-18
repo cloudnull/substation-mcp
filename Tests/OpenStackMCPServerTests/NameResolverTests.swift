@@ -404,4 +404,113 @@ struct NameResolverTests {
             Issue.record("Expected OpenStackError, got \(error)")
         }
     }
+
+    // MARK: - Hypervisor / compute_service admin actions
+
+    @Test("hypervisor list supports the with_servers filter", .timeLimit(.minutes(2)))
+    func hypervisorListWithServers() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("hypervisor")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: ["with_servers": "true"], limit: nil, marker: nil, region: "RegionOne")
+        let items = result["items"]?.arrayValue ?? []
+        #expect(items.count >= 1)
+        let servers = items[0].objectValue?["servers"]?.arrayValue
+        #expect(servers != nil, "with_servers=true must include the servers field")
+    }
+
+    @Test("hypervisor action statistics returns fleet totals", .timeLimit(.minutes(2)))
+    func hypervisorStatisticsAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("hypervisor")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "1", action: "statistics", params: [:], region: "RegionOne")
+        #expect(result["count"]?.intValue == 2)
+        #expect(result["vcpus"]?.intValue == 64)
+    }
+
+    @Test("hypervisor action servers returns hosted instances", .timeLimit(.minutes(2)))
+    func hypervisorServersAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("hypervisor")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "compute-01", action: "servers", params: [:], region: "RegionOne")
+        #expect(result["action"]?.stringValue == "servers")
+        let servers = result["servers"]?.arrayValue ?? []
+        #expect(!servers.isEmpty)
+        #expect(servers[0].objectValue?["uuid"] != nil)
+    }
+
+    @Test("compute_service disable then enable roundtrip via actions", .timeLimit(.minutes(2)))
+    func computeServiceActionRoundtrip() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("compute_service")!
+        let disabled = try await resolver.actionPublic(vt, descriptor: descriptor, id: "compute-01", action: "disable",
+                                                       params: ["reason": .string("drain")], region: "RegionOne")
+        #expect(disabled["status"]?.stringValue == "disabled")
+        #expect(disabled["disabled_reason"]?.stringValue == "drain")
+
+        let enabled = try await resolver.actionPublic(vt, descriptor: descriptor, id: "compute-01", action: "enable",
+                                                      params: [:], region: "RegionOne")
+        #expect(enabled["status"]?.stringValue == "enabled")
+    }
+
+    @Test("compute_service list filters by binary through the resolver", .timeLimit(.minutes(2)))
+    func computeServiceListFilter() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("compute_service")!
+        let result = try await resolver.listPublic(vt, descriptor: descriptor, filters: ["binary": "nova-conductor"], limit: nil, marker: nil, region: "RegionOne")
+        let items = result["items"]?.arrayValue ?? []
+        #expect(items.count == 1)
+        #expect(items[0].objectValue?["host"]?.stringValue == "controller-01")
+    }
+
+    @Test("placement action candidates returns allocation requests", .timeLimit(.minutes(2)))
+    func placementCandidatesAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("placement")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "rp-0001", action: "candidates",
+                                                     params: ["resources": .string("VCPU:2,MEMORY_MB:1024")], region: "RegionOne")
+        #expect(result["action"]?.stringValue == "candidates")
+        let data = result["data"]?.objectValue
+        let requests = data?["allocation_requests"]?.arrayValue ?? []
+        #expect(requests.count == 2)
+    }
+
+    @Test("placement action candidates without resources returns 400", .timeLimit(.minutes(2)))
+    func placementCandidatesMissingResources() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("placement")!
+        do {
+            _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "rp-0001", action: "candidates", params: [:], region: "RegionOne")
+            Issue.record("Expected 400 for missing resources")
+        } catch let error as OpenStackError {
+            #expect(error.status == 400)
+            #expect(error.message.contains("resources"))
+        }
+    }
+
+    @Test("placement action allocations returns the consumer map", .timeLimit(.minutes(2)))
+    func placementAllocationsAction() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let descriptor = ResourceCatalog.phase1().descriptor("placement")!
+        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "rp-0001", action: "allocations", params: [:], region: "RegionOne")
+        #expect(result["action"]?.stringValue == "allocations")
+        let data = result["data"]?.objectValue
+        let allocations = data?["allocations"]?.objectValue
+        #expect(allocations != nil && !allocations!.isEmpty)
+    }
 }

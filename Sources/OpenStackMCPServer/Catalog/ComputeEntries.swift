@@ -238,33 +238,61 @@ enum ComputeEntries {
 
         // MARK: - hypervisor
 
+        // Admin surface (validated live on SAT0, 2026-10-18):
+        //   GET  /os-hypervisors/detail            list (full capacity detail)
+        //   GET  /os-hypervisors/{id}              get (id or hypervisor_hostname)
+        //   GET  /os-hypervisors/statistics        action "statistics" (fleet totals)
+        //   GET  /os-hypervisors/{id}/servers      action "servers" (instances on host)
+        // Requires a project-scoped admin token: domain-scoped tokens lack
+        // nova policy target_project match and get 403.
         ResourceDescriptor(
             name: "hypervisor",
             service: .compute,
             verbs: [.list, .get],
-            listFilters: ["hypervisor_hostname"],
+            actions: [
+                ActionSpec(name: "statistics", adminOnly: true, params: []),
+                ActionSpec(name: "servers", adminOnly: true, params: []),
+            ],
+            listFilters: ["hypervisor_hostname", "with_servers"],
             idField: "id",
-            nameField: "hypervisor_hostname"
+            nameField: "hypervisor_hostname",
+            defaultListFields: ["id", "hypervisor_hostname", "state", "status", "vcpus", "vcpus_used",
+                                "memory_mb", "memory_mb_used", "local_gb", "local_gb_used", "running_vms"]
         ),
 
         // MARK: - compute_service
 
+        // Admin surface (validated live on SAT0, 2026-10-18):
+        //   GET  /os-services                       list (binary/host filters)
+        //   PUT  /os-services/disable {host,binary} action "disable"  (mv 2.1-2.52)
+        //   PUT  /os-services/enable  {host,binary} action "enable"   (mv 2.1-2.52)
+        //   PUT  /os-services/force-down {host,binary,forced_down}
+        //       action "force_down" — only nova-compute services are updatable.
+        // `id_or_name` is the host name; `binary` (default nova-compute) is an
+        // action param. The mv 2.53 PUT /os-services/{uuid} {status,...} form
+        // exists too but the legacy form works across all microversions.
         ResourceDescriptor(
             name: "compute_service",
             service: .compute,
-            verbs: [.list, .update],
+            verbs: [.list],
             actions: [
-                ActionSpec(name: "enable", adminOnly: true, params: [ParamSpec(name: "host", required: true)]),
-                ActionSpec(name: "disable", destructive: true, adminOnly: true, params: [ParamSpec(name: "host", required: true), ParamSpec(name: "reason", description: "Disable reason")]),
+                ActionSpec(name: "enable", adminOnly: true, params: [
+                    ParamSpec(name: "binary", description: "Service binary (default nova-compute)"),
+                ]),
+                ActionSpec(name: "disable", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "binary", description: "Service binary (default nova-compute)"),
+                    ParamSpec(name: "reason", description: "Why the service is being disabled"),
+                ]),
+                ActionSpec(name: "force_down", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "binary", description: "Service binary (default nova-compute)"),
+                    ParamSpec(name: "forced_down", type: "boolean", description: "true (default) marks the host down before it reports; false clears the flag (nova refuses when evacuations are pending)"),
+                ]),
             ],
-            updateSchema: .init(type: "object", properties: [
-                "disabled": .init(type: "boolean", description: "Enable/disable the service"),
-                "reason": .init(type: "string", description: "Reason for disable")
-            ]),
             listFilters: ["binary", "host"],
-            idField: "id",
+            idField: "host",
             nameField: "host",
-            statusField: "disabled_reason"
+            statusField: "status",
+            defaultListFields: ["id", "host", "binary", "zone", "status", "state", "disabled_reason", "updated_at"]
         ),
 
         // MARK: - server_interface

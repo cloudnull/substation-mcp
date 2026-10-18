@@ -164,8 +164,18 @@ public actor NameResolver {
                     throw OpenStackError(service: "compute", status: 404, code: "itemNotFound", message: "Keypair '\(id)' not found")
                 }
                 return try Self.encodeObject(k)
+            case "hypervisor":
+                let h = try await r.getHypervisor(vt, host: id)
+                return try Self.encodeObject(h)
+            case "compute_service":
+                // No get-by-id route in Nova; recover from the (host-filtered)
+                // list so os_get(compute_service, <host>) works.
+                let all = try await r.listComputeServices(vt)
+                guard let match = all.first(where: { $0.host == id }) else {
+                    throw OpenStackError(service: "compute", status: 404, code: "itemNotFound", message: "Compute service on host '\(id)' not found")
+                }
+                return try Self.encodeObject(match)
             case "compute_quota":
-                // Project-scoped; the quota set's id is the project id, so
                 // the requested id is honored only as a project sanity check.
                 let q = try await r.getQuotaSet(vt)
                 var result = try Self.encodeObject(q)
@@ -538,13 +548,17 @@ public actor NameResolver {
                 result["region"] = .string(region)
                 return result
             case "hypervisor":
-                let hvs = try await r.listHypervisors(vt)
+                let withServers = (filters["with_servers"] ?? "").lowercased() == "true"
+                var hvs = try await r.listHypervisors(vt, withServers: withServers)
+                if let hostPattern = filters["hypervisor_hostname"] {
+                    hvs = hvs.filter { $0.hypervisorHostname.contains(hostPattern) }
+                }
                 var result: [String: JSONValue] = try Self.encodeList(hvs)
                 result["resource"] = .string("hypervisor")
                 result["region"] = .string(region)
                 return result
             case "compute_service":
-                let cs = try await r.listComputeServices(vt)
+                let cs = try await r.listComputeServices(vt, binary: filters["binary"], host: filters["host"])
                 var result: [String: JSONValue] = try Self.encodeList(cs)
                 result["resource"] = .string("compute_service")
                 result["region"] = .string(region)
@@ -2070,6 +2084,35 @@ public actor NameResolver {
                     return try Self.encodeObject(s)
                 }
                 return ["action": .string(action), "id": .string(id), "status": .string("accepted")]
+            case "hypervisor":
+                switch action {
+                case "statistics":
+                    let stats = try await r.hypervisorStatistics(vt)
+                    return try Self.encodeObject(stats)
+                case "servers":
+                    let servers = try await r.hypervisorServers(vt, id: id)
+                    let encoded = try Self.encodeList(servers)
+                    return ["action": .string("servers"), "id": .string(id),
+                            "servers": encoded["items"] ?? .array([])]
+                default:
+                    throw OpenStackError(service: "compute", status: 400, message: "Unknown hypervisor action: \(action)")
+                }
+            case "compute_service":
+                // id_or_name resolves to the host (idField = host).
+                let binary = params["binary"]?.stringValue ?? "nova-compute"
+                let serviceAction: String
+                switch action {
+                case "enable": serviceAction = "enable"
+                case "disable": serviceAction = "disable"
+                case "force_down": serviceAction = "force-down"
+                default:
+                    throw OpenStackError(service: "compute", status: 400, message: "Unknown compute_service action: \(action)")
+                }
+                let svc = try await r.updateComputeService(
+                    vt, action: serviceAction, host: id, binary: binary,
+                    disabledReason: params["reason"]?.stringValue,
+                    forcedDown: params["forced_down"]?.boolValue)
+                return try Self.encodeObject(svc)
             default:
                 throw OpenStackError(service: "compute", status: 400, message: "Unknown compute action resource: \(descriptor.name)")
             }
@@ -2205,8 +2248,24 @@ public actor NameResolver {
             // Manila has no custom actions in phase 2.
             throw OpenStackError(service: "sharev2", status: 501, message: "Share actions not supported")
         case .placement:
-            // Placement has no custom actions in phase 2.
-            throw OpenStackError(service: "placement", status: 501, message: "Placement actions not supported")
+            let r = await client.placement(region: region)
+            switch (descriptor.name, action) {
+            case ("placement", "allocations"):
+                let allocs = try await r.providerAllocations(vt, uuid: id)
+                return ["action": .string("allocations"), "id": .string(id), "data": Self.fromRawJSON(allocs)]
+            case ("placement", "candidates"):
+                let resources = params["resources"]?.stringValue
+                guard let resources, !resources.isEmpty else {
+                    throw OpenStackError(service: "placement", status: 400, message: "candidates requires resources, e.g. \"VCPU:2,MEMORY_MB:4096\"")
+                }
+                var extra: [URLQueryItem] = []
+                if let limit = params["limit"]?.intValue { extra.append(URLQueryItem(name: "limit", value: String(limit))) }
+                if let inTree = params["in_tree"]?.boolValue { extra.append(URLQueryItem(name: "in_tree", value: inTree ? "True" : "False")) }
+                let cands = try await r.allocationCandidates(vt, resources: resources, extraQuery: extra)
+                return ["action": .string("candidates"), "resources": .string(resources), "data": Self.fromRawJSON(cands)]
+            default:
+                throw OpenStackError(service: "placement", status: 400, message: "Unknown placement action: \(descriptor.name).\(action)")
+            }
         case .database:
             throw OpenStackError(service: "database", status: 501, message: "Database actions not supported in phase 1")
         case .metric:
@@ -2354,6 +2413,19 @@ public actor NameResolver {
 
         }
         return true
+    }
+
+    /// Convert a client-module raw JSON value into the MCP JSONValue tree.
+    static func fromRawJSON(_ value: RawJSONValue) -> JSONValue {
+        switch value {
+        case .string(let s): return .string(s)
+        case .int(let i): return .integer(i)
+        case .double(let d): return .float(d)
+        case .bool(let b): return .bool(b)
+        case .null: return .null
+        case .array(let a): return .array(a.map { fromRawJSON($0) })
+        case .object(let o): return .object(o.mapValues { fromRawJSON($0) })
+        }
     }
 }
 

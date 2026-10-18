@@ -911,6 +911,37 @@ public actor FakeState {
     }
 
     public private(set) var resourceProviders: [FakePlacementResourceProvider] = []
+
+    /// A Nova compute service (`GET /os-services`). `status` is derived from
+    /// `disabled` (enabled/disabled) so the PUT actions only mutate the flag.
+    public struct FakeComputeService: Sendable, Identifiable {
+        public let id: String
+        public let host: String
+        public let binary: String
+        public let zone: String
+        public var disabled: Bool
+        public var disabledReason: String?
+        public var forcedDown: Bool
+        public var updatedAt: String?
+
+        public init(id: String, host: String, binary: String, zone: String,
+                    disabled: Bool = false, disabledReason: String? = nil,
+                    forcedDown: Bool = false, updatedAt: String? = nil) {
+            self.id = id
+            self.host = host
+            self.binary = binary
+            self.zone = zone
+            self.disabled = disabled
+            self.disabledReason = disabledReason
+            self.forcedDown = forcedDown
+            self.updatedAt = updatedAt
+        }
+
+        public var status: String { disabled ? "disabled" : "enabled" }
+        public var state: String { forcedDown ? "down" : "up" }
+    }
+
+    public var computeServices: [FakeComputeService] = []
     public private(set) var loadBalancers: [FakeLoadBalancer] = []
     public private(set) var listeners: [FakeListener] = []
     public private(set) var pools: [FakePool] = []
@@ -1681,6 +1712,22 @@ public actor FakeState {
                 inventory: ["VCPU": 8, "MEMORY_MB": 32768, "DISK_GB": 256, "GPU": 2],
                 usages: ["VCPU": 2, "MEMORY_MB": 4096, "DISK_GB": 20, "GPU": 1]
             ),
+        ]
+
+        // Nova compute services (os-services) seed: two compute hosts matching
+        // the seeded hypervisor hostname, plus a control-plane service so the
+        // binary filter is testable. `disabled`/`disabledReason` mirror what
+        // PUT /os-services/{enable,disable} mutate.
+        computeServices = [
+            FakeComputeService(id: "1", host: "compute-01", binary: "nova-compute", zone: "internal",
+                               disabled: false, disabledReason: nil, forcedDown: false,
+                               updatedAt: "2026-10-06T00:00:00.000000"),
+            FakeComputeService(id: "2", host: "compute-02", binary: "nova-compute", zone: "internal",
+                               disabled: false, disabledReason: nil, forcedDown: false,
+                               updatedAt: "2026-10-06T00:00:00.000000"),
+            FakeComputeService(id: "3", host: "controller-01", binary: "nova-conductor", zone: "internal",
+                               disabled: false, disabledReason: nil, forcedDown: false,
+                               updatedAt: "2026-10-06T00:00:00.000000"),
         ]
 
         // Keystone identity bootstrap: the standard domains + roles that every
@@ -3296,6 +3343,49 @@ public actor FakeState {
 
     public func resourceProviderUsages(uuid: String) -> [String: Int]? {
         getResourceProvider(uuid: uuid)?.usages
+    }
+
+    // MARK: - Nova compute services (os-services)
+
+    public func listComputeServices(binary: String? = nil, host: String? = nil) -> [FakeComputeService] {
+        var result = computeServices
+        if let binary { result = result.filter { $0.binary == binary } }
+        if let host { result = result.filter { $0.host == host } }
+        return result
+    }
+
+    /// Mirrors Nova's legacy `PUT /os-services/{action}` contract: only
+    /// nova-compute services are updatable; the action mutates exactly one
+    /// flag. Returns nil when no (host, binary) service exists.
+    public func updateComputeService(action: String, host: String, binary: String,
+                                     disabledReason: String? = nil, forcedDown: Bool? = nil) -> FakeComputeService? {
+        guard let idx = computeServices.firstIndex(where: { $0.host == host && $0.binary == binary }) else {
+            return nil
+        }
+        switch action {
+        case "disable":
+            computeServices[idx].disabled = true
+            computeServices[idx].disabledReason = disabledReason
+        case "enable":
+            computeServices[idx].disabled = false
+            computeServices[idx].disabledReason = nil
+        case "force-down":
+            guard let forcedDown else { return nil }
+            computeServices[idx].forcedDown = forcedDown
+        default:
+            return nil
+        }
+        return computeServices[idx]
+    }
+
+    /// Allocations for one resource provider: consumers are the seeded
+    /// servers whose placement usages are attributed to the provider.
+    public func providerAllocations(uuid: String) -> [String: [String: Int]]? {
+        guard let rp = getResourceProvider(uuid: uuid) else { return nil }
+        // One synthetic consumer per provider, mirroring how a real cloud
+        // attributes usages to instance uuids.
+        guard !rp.usages.isEmpty else { return [:] }
+        return ["consumer-\(rp.uuid)": rp.usages]
     }
 
     // MARK: - IAD3 gap-fill CRUD (phase 2)

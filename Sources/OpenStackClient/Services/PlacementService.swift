@@ -134,6 +134,44 @@ public struct PlacementRegion: Sendable {
         return try JSONDecoder().decode(Envelope.self, from: result.body).usages
     }
 
+    // MARK: - Capacity planning (raw passthrough)
+
+    /// Allocations keyed to one resource provider
+    /// (`GET /resource_providers/{uuid}/allocations`). Returns the raw JSON
+    /// object: allocations are keyed by consumer (server) uuid with an
+    /// arbitrary resource-class → amount map, so they are not modeled.
+    public func providerAllocations(_ vt: ValidatedToken, uuid: String) async throws -> RawJSONValue {
+        let region = try resolveRegion(vt)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/resource_providers/\(uuid)/allocations")
+        if !(200...299).contains(result.status) {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "placement", requestID: result.requestID, hasAccessRules: false)
+        }
+        return try decodeObject(result.body)
+    }
+
+    /// Placement allocation candidates (`GET /allocation_candidates`).
+    /// `resources` is the raw Placement syntax, e.g. `VCPU:2,MEMORY_MB:4096`
+    /// (repeat for multiple groups: `VCPU:2,MEMORY_MB:4096;DISK_GB:10`).
+    /// Returns the raw JSON object (`allocation_requests` + `provider_summaries`).
+    public func allocationCandidates(_ vt: ValidatedToken, resources: String, extraQuery: [URLQueryItem] = []) async throws -> RawJSONValue {
+        let region = try resolveRegion(vt)
+        var query: [URLQueryItem] = [URLQueryItem(name: "resources", value: resources)]
+        query.append(contentsOf: extraQuery)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/allocation_candidates", query: query)
+        if !(200...299).contains(result.status) {
+            throw OpenStackError.normalize(body: result.body, status: result.status, service: "placement", requestID: result.requestID, hasAccessRules: false)
+        }
+        return try decodeObject(result.body)
+    }
+
+    private func decodeObject(_ data: Data) throws -> RawJSONValue {
+        do {
+            return try JSONDecoder().decode(RawJSONValue.self, from: data)
+        } catch {
+            throw OpenStackError(service: "placement", status: 500, message: "Unrecognized placement response shape")
+        }
+    }
+
     // MARK: - Helpers
 
     private func resolveRegion(_ vt: ValidatedToken) throws -> String {
@@ -162,5 +200,43 @@ public struct PlacementService: Sendable {
 
     public func region(_ region: String? = nil) -> PlacementRegion {
         PlacementRegion(cloud: cloud, transport: transport, cache: cache, logger: logger, basePath: basePath, defaultRegion: region ?? cloud.regionName)
+    }
+}
+
+/// A raw, unmodeled JSON value. Placement payloads (allocations, allocation
+/// candidates) are keyed by open-ended resource-class names, so they are
+/// passed through to the MCP layer without modeling.
+public enum RawJSONValue: Sendable, Codable, Equatable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case null
+    case array([RawJSONValue])
+    case object([String: RawJSONValue])
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null; return }
+        if let b = try? container.decode(Bool.self) { self = .bool(b); return }
+        if let i = try? container.decode(Int.self) { self = .int(i); return }
+        if let d = try? container.decode(Double.self) { self = .double(d); return }
+        if let s = try? container.decode(String.self) { self = .string(s); return }
+        if let a = try? container.decode([RawJSONValue].self) { self = .array(a); return }
+        if let o = try? container.decode([String: RawJSONValue].self) { self = .object(o); return }
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try container.encode(s)
+        case .int(let i): try container.encode(i)
+        case .double(let d): try container.encode(d)
+        case .bool(let b): try container.encode(b)
+        case .null: try container.encodeNil()
+        case .array(let a): try container.encode(a)
+        case .object(let o): try container.encode(o)
+        }
     }
 }
