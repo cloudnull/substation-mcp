@@ -513,4 +513,75 @@ struct NameResolverTests {
         let allocations = data?["allocations"]?.objectValue
         #expect(allocations != nil && !allocations!.isEmpty)
     }
+
+    // MARK: - Metric (Gnocchi) deepening
+
+    @Test("metric list/get + archive_policy list route through the resolver", .timeLimit(.minutes(2)))
+    func metricRoutes() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let catalog = ResourceCatalog.phase1()
+
+        let list = try await resolver.listPublic(vt, descriptor: catalog.descriptor("metric")!, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        #expect(list["resource"]?.stringValue == "metric")
+        #expect((list["items"]?.arrayValue ?? []).count == 2)
+
+        let byResource = try await resolver.listPublic(vt, descriptor: catalog.descriptor("metric")!, filters: ["resource_id": "inst-1"], limit: 20, marker: nil, region: "RegionOne")
+        #expect((byResource["items"]?.arrayValue ?? []).count == 2)
+        let byPolicy = try await resolver.listPublic(vt, descriptor: catalog.descriptor("metric")!, filters: ["archive_policy": "low"], limit: 20, marker: nil, region: "RegionOne")
+        let items = byPolicy["items"]?.arrayValue ?? []
+        #expect(items.count == 1)
+        #expect(items.first?.objectValue?["name"]?.stringValue == "cpu.utilization")
+
+        let got = try await resolver.resolve(vt, descriptor: catalog.descriptor("metric")!, idOrName: "gnocchi-1", region: "RegionOne")
+        #expect(got.raw["name"]?.stringValue == "cpu.utilization")
+
+        let ap = try await resolver.listPublic(vt, descriptor: catalog.descriptor("archive_policy")!, filters: [:], limit: 20, marker: nil, region: "RegionOne")
+        let policies = ap["items"]?.arrayValue ?? []
+        #expect(policies.contains { $0.objectValue?["name"]?.stringValue == "ceilometer-low-rate" })
+
+        let apGet = try await resolver.resolve(vt, descriptor: catalog.descriptor("archive_policy")!, idOrName: "low", region: "RegionOne")
+        #expect(apGet.raw["aggregation_methods"]?.arrayValue?.contains(.string("mean")) == true)
+    }
+
+    @Test("metric measures/metrics actions + create/delete lifecycle through the resolver", .timeLimit(.minutes(2)))
+    func metricActions() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let catalog = ResourceCatalog.phase1()
+        let metric = catalog.descriptor("metric")!
+
+        let raw = try await resolver.actionPublic(vt, descriptor: metric, id: "gnocchi-1", action: "measures", params: [:], region: "RegionOne")
+        #expect(raw["action"]?.stringValue == "measures")
+        #expect((raw["data"]?.arrayValue ?? []).count == 2)
+
+        let agg = try await resolver.actionPublic(vt, descriptor: metric, id: "gnocchi-1", action: "measures",
+            params: ["aggregation": .string("mean"), "granularity": .string("0:05:00")], region: "RegionOne")
+        #expect((agg["data"]?.arrayValue ?? []).count == 1)
+
+        // lone aggregation is rejected up front
+        await #expect(throws: OpenStackError.self) {
+            _ = try await resolver.actionPublic(vt, descriptor: metric, id: "gnocchi-1", action: "measures",
+                params: ["aggregation": .string("mean")], region: "RegionOne")
+        }
+
+        let join = try await resolver.actionPublic(vt, descriptor: catalog.descriptor("resource_type")!, id: "instance", action: "metrics",
+            params: ["resource_id": .string("inst-1")], region: "RegionOne")
+        #expect(join["action"]?.stringValue == "metrics")
+        #expect((join["data"]?.objectValue?["items"]?.arrayValue ?? []).count == 2)
+
+        // create → delete
+        let created = try await resolver.createPublic(vt, descriptor: metric, body: .object(["archive_policy": .string("medium"), "name": .string("resolver.metric")]), region: "RegionOne")
+        let newID = created["id"]?.stringValue ?? ""
+        #expect(!newID.isEmpty)
+        _ = try await resolver.deletePublic(vt, descriptor: metric, id: newID, region: "RegionOne")
+        await #expect(throws: OpenStackError.self) {
+            _ = try await resolver.resolve(vt, descriptor: metric, idOrName: newID, region: "RegionOne")
+        }
+
+        // create without archive_policy → 400
+        await #expect(throws: OpenStackError.self) {
+            _ = try await resolver.createPublic(vt, descriptor: metric, body: .object(["name": .string("nope")]), region: "RegionOne")
+        }
+    }
 }

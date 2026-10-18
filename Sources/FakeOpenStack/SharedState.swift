@@ -707,14 +707,21 @@ public actor FakeState {
         public var unit: String?
         public var resourceID: String?
         public var created: String
+        public var archivePolicy: String?
+        public var creator: String?
+        /// Stored measures: `[timestamp, granularity_seconds, value]` triples.
+        public var measures: [[Double]]
 
-        public init(id: String, projectID: String, name: String, unit: String? = nil, resourceID: String? = nil, created: String = "2026-01-01T00:00:00.000") {
+        public init(id: String, projectID: String, name: String, unit: String? = nil, resourceID: String? = nil, created: String = "2026-01-01T00:00:00.000", archivePolicy: String? = nil, creator: String? = nil, measures: [[Double]] = []) {
             self.id = id
             self.projectID = projectID
             self.name = name
             self.unit = unit
             self.resourceID = resourceID
             self.created = created
+            self.archivePolicy = archivePolicy
+            self.creator = creator
+            self.measures = measures
         }
     }
 
@@ -1425,6 +1432,7 @@ public actor FakeState {
     private var shareIDCounter = 0
     private var shareAccessIDCounter = 0
     // IAD3 gap-fill counters (phase 2)
+    private var gnocchiMetricIDCounter = 0
     private var databaseInstanceIDCounter = 0
     private var blazarReservationIDCounter = 0
     private var blazarAllocationIDCounter = 0
@@ -1736,8 +1744,8 @@ public actor FakeState {
         databaseInstanceIDCounter = 1
         databaseInstances.append(FakeDatabaseInstance(id: "db-1", projectID: "proj-one", name: "fake-mysql", status: "ACTIVE", flavorRef: "fl-1", volumeSize: 10, versionNumber: "8.0"))
         gnocchiMetrics = [
-            FakeGnocchiMetric(id: "gnocchi-1", projectID: "proj-one", name: "cpu.utilization", unit: "%", resourceID: "inst-1"),
-            FakeGnocchiMetric(id: "gnocchi-2", projectID: "proj-one", name: "memory.usage", unit: "B", resourceID: "inst-1"),
+            FakeGnocchiMetric(id: "gnocchi-1", projectID: "proj-one", name: "cpu.utilization", unit: "%", resourceID: "inst-1", archivePolicy: "low", creator: "user-one", measures: [[1767225600.0, 300.0, 12.5], [1767225900.0, 300.0, 18.0]]),
+            FakeGnocchiMetric(id: "gnocchi-2", projectID: "proj-one", name: "memory.usage", unit: "B", resourceID: "inst-1", archivePolicy: "ceilometer-low-rate", creator: "user-one"),
         ]
         blazarReservationIDCounter = 1
         blazarReservations.append(FakeBlazarReservation(id: "res-1", projectID: "proj-one", name: "fake-reservation", status: "ACTIVE", allocationID: "alloc-1", flavorID: "flavor-1"))
@@ -3589,16 +3597,58 @@ public actor FakeState {
     }
 
     // Gnocchi (metric)
-    public func listGnocchiMetrics(projectID: String, name: String? = nil, limit: Int? = nil) -> [FakeGnocchiMetric] {
+    public func listGnocchiMetrics(
+        projectID: String,
+        name: String? = nil,
+        resourceID: String? = nil,
+        archivePolicy: String? = nil,
+        limit: Int? = nil
+    ) -> [FakeGnocchiMetric] {
         var result = gnocchiMetrics.filter { $0.projectID == projectID }
         if let name { result = result.filter { $0.name == name } }
+        if let resourceID { result = result.filter { $0.resourceID == resourceID } }
+        if let archivePolicy { result = result.filter { $0.archivePolicy == archivePolicy } }
         result.sort { $0.id < $1.id }
         if let limit, limit < result.count { result = Array(result[0..<limit]) }
         return result
     }
 
+    public func getGnocchiMetric(id: String, projectID: String) -> FakeGnocchiMetric? {
+        gnocchiMetrics.first { $0.id == id && $0.projectID == projectID }
+    }
+
+    public func createGnocchiMetric(projectID: String, archivePolicy: String, name: String?, unit: String?, creator: String?) -> FakeGnocchiMetric {
+        gnocchiMetricIDCounter += 1
+        let m = FakeGnocchiMetric(
+            id: "gnocchi-new-\(gnocchiMetricIDCounter)",
+            projectID: projectID,
+            name: name ?? "",
+            unit: unit,
+            archivePolicy: archivePolicy,
+            creator: creator
+        )
+        gnocchiMetrics.append(m)
+        return m
+    }
+
+    public func deleteGnocchiMetric(id: String, projectID: String) -> Bool {
+        guard let idx = gnocchiMetrics.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return false }
+        gnocchiMetrics.remove(at: idx)
+        return true
+    }
+
     public func gnocchiResourceTypes() -> [String] {
         ["instance", "host", "generic", "image", "identity"]
+    }
+
+    /// Mirrors the IAD3 meterng policy set.
+    public func gnocchiArchivePolicies() -> [(name: String, methods: [String], granularity: String, timespan: String)] {
+        [
+            ("bool", ["last", "mean"], "0:05:00", "7 days"),
+            ("low", ["last", "mean", "min", "max", "std"], "0:05:00", "365 days"),
+            ("medium", ["last", "mean", "min", "max", "std"], "1:00:00", "30 days"),
+            ("ceilometer-low-rate", ["mean", "rate:mean"], "0:05:00", "90 days"),
+        ]
     }
 
     // ZaQar (messaging)

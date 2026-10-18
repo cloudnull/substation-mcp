@@ -93,3 +93,56 @@ public struct GnocchiResourceType: Sendable, Codable, Identifiable {
         try c.encode(href, forKey: .href)
     }
 }
+
+/// One Gnocchi archive policy (`GET /v1/archive_policy`). The `definition`
+/// steps are the legal granularities for measures aggregation, and
+/// `aggregation_methods` the legal methods (e.g. IAD3's `ceilometer-low-rate`
+/// offers only `rate:mean` and `mean` at `0:05:00`).
+public struct GnocchiArchivePolicy: Sendable, Codable, Identifiable {
+    public struct Definition: Sendable, Codable, Equatable {
+        public var timespan: String
+        public var granularity: String
+        public var points: Int?
+
+        public init(timespan: String, granularity: String, points: Int? = nil) {
+            self.timespan = timespan
+            self.granularity = granularity
+            self.points = points
+        }
+    }
+
+    public let id: String   // the policy name
+    public var name: String
+    public var backWindow: Int?
+    public var definition: [Definition]
+    public var aggregationMethods: [String]
+
+    public init(
+        name: String,
+        backWindow: Int? = nil,
+        definition: [Definition] = [],
+        aggregationMethods: [String] = []
+    ) {
+        self.id = name
+        self.name = name
+        self.backWindow = backWindow
+        self.definition = definition
+        self.aggregationMethods = aggregationMethods
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, definition
+        case backWindow = "back_window"
+        case aggregationMethods = "aggregation_methods"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let n = try c.decode(String.self, forKey: .name)
+        id = n
+        name = n
+        backWindow = try c.decodeIfPresent(Int.self, forKey: .backWindow)
+        definition = try c.decodeIfPresent([Definition].self, forKey: .definition) ?? []
+        aggregationMethods = try c.decodeIfPresent([String].self, forKey: .aggregationMethods) ?? []
+    }
+}

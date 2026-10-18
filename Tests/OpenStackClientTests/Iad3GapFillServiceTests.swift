@@ -100,6 +100,66 @@ struct Iad3GapFillServiceTests {
         #expect(types.contains { $0.id == "instance" })
     }
 
+    @Test("Gnocchi: get by id, resource join, archive policies, measures, create/delete lifecycle")
+    func metricDeepening() async throws {
+        let (handle, vt, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let client = makeClient(cloud(from: handle), transport)
+        let r = await client.metric(region: "RegionOne")
+
+        // get by id
+        let m = try await r.getMetric(vt, id: "gnocchi-1")
+        #expect(m.name == "cpu.utilization")
+        #expect(m.unit == "%")
+
+        // resource join + archive-policy filter
+        let joined = try await r.listMetricsForResource(vt, resourceID: "inst-1")
+        #expect(joined.count == 2)
+        let byPolicy = try await r.listMetrics(vt, archivePolicy: "low")
+        #expect(byPolicy.map(\.name) == ["cpu.utilization"])
+
+        // raw measures pass through as triples
+        let raw = try await r.getMeasures(vt, metricID: "gnocchi-1")
+        guard case .array(let rows) = raw, case .array(let first) = rows.first, rows.count == 2 else {
+            throw OpenStackError(service: "mcp", status: 500, message: "expected 2 raw measure rows, got \(raw)")
+        }
+        #expect(first.count == 3)
+
+        // aggregation validated against the policy vocabulary (low offers mean @ 0:05:00)
+        let agg = try await r.getAggregatedMeasures(vt, metricID: "gnocchi-1", aggregation: "mean", granularity: "0:05:00", start: "2026-01-01T00:00:00+00:00", stop: nil)
+        guard case .array(let bucket) = agg, bucket.count == 1 else {
+            throw OpenStackError(service: "mcp", status: 500, message: "expected one aggregated bucket, got \(agg)")
+        }
+        // unknown method → 404 like meterng
+        await #expect(throws: OpenStackError.self) {
+            _ = try await r.getAggregatedMeasures(vt, metricID: "gnocchi-1", aggregation: "rate:mean", granularity: "0:05:00", start: nil, stop: nil)
+        }
+        // relative window → 400 like meterng
+        await #expect(throws: OpenStackError.self) {
+            _ = try await r.getAggregatedMeasures(vt, metricID: "gnocchi-1", aggregation: "mean", granularity: "0:05:00", start: "-P7D", stop: nil)
+        }
+
+        // archive policies
+        let policies = try await r.listArchivePolicies(vt)
+        #expect(policies.contains { $0.name == "ceilometer-low-rate" && $0.aggregationMethods.contains("rate:mean") })
+        #expect(policies.first(where: { $0.name == "low" })?.definition.first?.granularity == "0:05:00")
+
+        // create → appears in list → delete → gone
+        let created = try await r.createMetric(vt, archivePolicy: "medium", name: "probe.metric", unit: "B")
+        #expect(!created.id.isEmpty)
+        #expect(created.archivePolicyName == "medium")
+        let afterCreate = try await r.listMetrics(vt, name: "probe.metric")
+        #expect(afterCreate.contains { $0.id == created.id })
+        try await r.deleteMetric(vt, id: created.id)
+        let afterDelete = try await r.listMetrics(vt, name: "probe.metric")
+        #expect(afterDelete.isEmpty)
+
+        // unknown archive policy on create → error
+        await #expect(throws: OpenStackError.self) {
+            _ = try await r.createMetric(vt, archivePolicy: "nope", name: nil, unit: nil)
+        }
+    }
+
     @Test("ZaQar: list and get queues")
     func messagingQueues() async throws {
         let (handle, vt, transport) = try await makeSetup()

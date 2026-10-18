@@ -463,6 +463,11 @@ public actor NameResolver {
             let r = await client.metric(region: region)
             switch descriptor.name {
             case "metric":
+                // id-first (GET /v1/metric/{id}), then fall back to the
+                // server-side name filter.
+                if let m = try? await r.getMetric(vt, id: id) {
+                    return try Self.encodeObject(m)
+                }
                 let items = try await r.listMetrics(vt, name: id)
                 guard let m = items.first else {
                     throw OpenStackError(service: "metric", status: 404, code: "itemNotFound", message: "Metric '\(id)' not found")
@@ -474,6 +479,12 @@ public actor NameResolver {
                     throw OpenStackError(service: "metric", status: 404, code: "itemNotFound", message: "Resource type '\(id)' not found")
                 }
                 return try Self.encodeObject(rt)
+            case "archive_policy":
+                let items = try await r.listArchivePolicies(vt)
+                guard let ap = items.first(where: { $0.name == id }) else {
+                    throw OpenStackError(service: "metric", status: 404, code: "itemNotFound", message: "Archive policy '\(id)' not found")
+                }
+                return try Self.encodeObject(ap)
             default:
                 throw OpenStackError(service: "metric", status: 404, message: "Unknown metric resource: \(descriptor.name)")
             }
@@ -938,7 +949,7 @@ public actor NameResolver {
             let r = await client.metric(region: region)
             switch descriptor.name {
             case "metric":
-                let items = try await r.listMetrics(vt, name: filters["name"], limit: limit, marker: filters["marker"])
+                let items = try await r.listMetrics(vt, name: filters["name"], resourceID: filters["resource_id"], archivePolicy: filters["archive_policy"], limit: limit, marker: filters["marker"])
                 var result: [String: JSONValue] = try Self.encodeList(items)
                 result["resource"] = .string("metric"); result["region"] = .string(region)
                 return result
@@ -946,6 +957,11 @@ public actor NameResolver {
                 let items = try await r.listResourceTypes(vt)
                 var result: [String: JSONValue] = try Self.encodeList(items)
                 result["resource"] = .string("resource_type"); result["region"] = .string(region)
+                return result
+            case "archive_policy":
+                let items = try await r.listArchivePolicies(vt)
+                var result: [String: JSONValue] = try Self.encodeList(items)
+                result["resource"] = .string("archive_policy"); result["region"] = .string(region)
                 return result
             default:
                 throw OpenStackError(service: "metric", status: 404, message: "Unknown metric resource: \(descriptor.name)")
@@ -1740,7 +1756,12 @@ public actor NameResolver {
                 throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
             }
         case .metric:
-            throw OpenStackError(service: "metric", status: 400, message: "Metrics are written by Ceilometer collectors; not creatable through this surface")
+            let r = await client.metric(region: region)
+            guard let ap = obj["archive_policy"]?.stringValue, !ap.isEmpty else {
+                throw OpenStackError(service: "metric", status: 400, message: "create metric requires archive_policy (see os_list archive_policy)")
+            }
+            let m = try await r.createMetric(vt, archivePolicy: ap, name: obj["name"]?.stringValue, unit: obj["unit"]?.stringValue)
+            return try Self.encodeObject(m)
         case .messaging:
             throw OpenStackError(service: "messaging", status: 400, message: "ZaQar queues are created implicitly on first use; not creatable through this surface")
         case .reservation:
@@ -1866,7 +1887,7 @@ public actor NameResolver {
         case .database:
             throw OpenStackError(service: "database", status: 501, message: "Database instances are resized via a resize action, not update")
         case .metric:
-            throw OpenStackError(service: "metric", status: 501, message: "Metrics are not updatable (collector-written)")
+            throw OpenStackError(service: "metric", status: 501, message: "Gnocchi metrics are immutable (PATCH /metric returns 405 on meterng); delete and re-create")
         case .messaging:
             throw OpenStackError(service: "messaging", status: 501, message: "Queues are not updatable (re-create instead)")
         case .reservation:
@@ -2045,7 +2066,9 @@ public actor NameResolver {
                 throw OpenStackError(service: "database", status: 404, message: "Unknown database resource: \(descriptor.name)")
             }
         case .metric:
-            throw OpenStackError(service: "metric", status: 400, message: "Metrics are deleted via the Gnocchi REST API directly; not exposed through this surface")
+            let r = await client.metric(region: region)
+            try await r.deleteMetric(vt, id: id)
+            return ["deleted": .bool(true), "id": .string(id)]
         case .messaging:
             throw OpenStackError(service: "messaging", status: 400, message: "Queues are deleted via the ZaQar REST API directly; not exposed through this surface")
         case .reservation:
@@ -2381,7 +2404,34 @@ public actor NameResolver {
         case .database:
             throw OpenStackError(service: "database", status: 501, message: "Database actions not supported in phase 1")
         case .metric:
-            throw OpenStackError(service: "metric", status: 501, message: "Metric actions not supported in phase 1")
+            let r = await client.metric(region: region)
+            switch (descriptor.name, action) {
+            case ("metric", "measures"):
+                let agg = params["aggregation"]?.stringValue
+                let gran = params["granularity"]?.stringValue
+                let raw: RawJSONValue
+                if let agg, let gran {
+                    raw = try await r.getAggregatedMeasures(
+                        vt, metricID: id, aggregation: agg, granularity: gran,
+                        start: params["start"]?.stringValue, stop: params["stop"]?.stringValue,
+                        limit: params["limit"]?.intValue
+                    )
+                } else if agg != nil || gran != nil {
+                    throw OpenStackError(service: "metric", status: 400, message: "measures: aggregation and granularity must be supplied together (Gnocchi ignores a lone one); or omit both for raw measures")
+                } else {
+                    raw = try await r.getMeasures(vt, metricID: id)
+                }
+                return ["action": .string("measures"), "id": .string(id), "data": Self.fromRawJSON(raw)]
+            case ("metric", "metrics"), ("resource_type", "metrics"):
+                guard let resourceID = params["resource_id"]?.stringValue, !resourceID.isEmpty else {
+                    throw OpenStackError(service: "metric", status: 400, message: "metrics action requires resource_id (for a server: the server uuid)")
+                }
+                let items = try await r.listMetricsForResource(vt, resourceID: resourceID)
+                let result = try Self.encodeList(items)
+                return ["action": .string("metrics"), "resource_id": .string(resourceID), "data": .object(result)]
+            default:
+                throw OpenStackError(service: "metric", status: 400, message: "Unknown metric action: \(descriptor.name).\(action)")
+            }
         case .messaging:
             throw OpenStackError(service: "messaging", status: 501, message: "Messaging actions not supported in phase 1")
         case .reservation:

@@ -2,6 +2,34 @@
 
 ## Current State
 
+- **Metric deepening + region-selection fixes** (2026-10-18, supersedes the QoS
+  bullet's test count). Catalog 65 → **66** (`archive_policy`); `metric` gained
+  get-by-id, `measures` (raw + validated aggregation), `metrics` (resource join),
+  create/delete (live meterng grants project members their own metric namespace;
+  measures of *other* projects' metrics are 403 — cloud policy). New client
+  methods on `MetricRegion`; fake mirrors the 400/404 error shapes. **Two real
+  region-selection bugs found + fixed during live E2E:** (1) `handleDevMint`
+  dropped the `region` field from the code grant → the OAuth session lost the
+  login-time region (fixed: grant now carries it, like the consent POST path);
+  (2) URL-mode login tokens (bare Keystone bearer) validated against the
+  *default* cloud's Keystone — a token minted in IAD3 is 403 at DFW3 Keystone,
+  so the session silently fell back to the default region. Fix:
+  `AppTokenValidator` accepts the `region:<REGION>:<token>` bearer form
+  (completion page now displays/copy-buttons that exact string), validates at
+  the selected region's Keystone, and carries the region as the session
+  preference. Pass-through with no credentials is unchanged (Keystone whoami
+  per region; `guardEndpoint` validates catalog access before any call).
+  **706 tests green.** Live IAD3 E2E (oauth dev serve + dev-mint, region IAD3):
+  whoami regions=[IAD3], `metric` list (200 real metrics), `archive_policy`
+  (8 policies), measures raw+agg on own metric, `resource_type` metrics join,
+  metric create→get→delete lifecycle, lone-aggregation 400 — **ALL PASS**;
+  region-prefixed bearer path E2E PASS (`/v1/login` → `region:IAD3:<token>` →
+  whoami/metric lists served in IAD3). Live gotchas pinned in code+catalog
+  notes: `start=-P7D` → 400 (absolute ISO-8601 or `YYYY-MM-DD` only); lone
+  `aggregation=`/`granularity=` silently ignored by Gnocchi → resolver 400s the
+  pair-mismatch; PATCH metric → 405; measures write (`POST …/measures`) is
+  rejected for this credential shape → **not exposed**.
+  `metric.listFilters` gained `marker` (server-side paging).
 - **QoS + CloudFormation + write_roles** (2026-10-18). Catalog 64 → **65**:
   **qos_policy** (full verbs + `add_rule`/`remove_rule` actions + `qos_policy`
   attach/detach link on ports) and **qos_rule_type** (list) → Neutron `qos`
@@ -796,8 +824,10 @@ container-infra/orchestration + fake). After: **63** (+11).
 - **Clients** (`Sources/OpenStackClient/Services/` + `Models/`):
   - `DatabaseService` / `DatabaseModels` (Trove, service type `database`) — instances
     (full lifecycle L/G/C/D + actions resize/reboot/rebuild), flavors, datastores.
-  - `MetricService` / `MetricModels` (Gnocchi, `metric`) — metrics (list/get/create),
-    resource types.
+  - `MetricService` / `MetricModels` (Gnocchi, `metric`) — deepened 2026-10-18 after a
+    live IAD3 meterng probe: metrics (list w/ name+resource_id+archive_policy filters,
+    get-by-id, create, delete), per-metric measures (raw triples + validated
+    aggregation), resource→metrics join, resource types, archive policies.
   - `MessagingService` / `MessagingModels` (ZaQar, `messaging`) — queues, name-keyed
     (get/list/create/delete); read-only otherwise (no message-body API).
   - `ReservationService` / `ReservationModels` (Blazar, `reservation`) — reservations
@@ -816,6 +846,21 @@ container-infra/orchestration + fake). After: **63** (+11).
 - **Tests**: `Tests/OpenStackClientTests/Iad3GapFillServiceTests.swift` (5 client
   lifecycle tests against the fake cloud) + `CatalogCompletenessTests` updated
   (63 total / 11 new).
+
+**Metric deepening (2026-10-18)** — live-probed the IAD3 meterng surface before
+designing. Added to `MetricRegion`: `getMetric`, `listMetricsForResource`,
+`getMeasures`, `getAggregatedMeasures`, `listArchivePolicies`, `createMetric`,
+`deleteMetric`; `listMetrics` gained `resourceID`/`archivePolicy` filters. New
+catalog resource `archive_policy` (66 total). `metric` is now creatable/deletable
+with actions `measures` + `metrics`; `resource_type` gained `metrics`. Live
+findings encoded in code + catalog notes: PATCH metric → 405 (immutable);
+relative windows (`start=-P7D`) → 400 (absolute ISO-8601 only); lone
+`aggregation=`/`granularity=` silently ignored by Gnocchi → the resolver rejects
+the pair-mismatch with a 400 instead; aggregation/granularity outside the
+metric's archive policy → 404; measures of another project's metric → 403;
+`POST /search/*` → 503 upstream (not exposed); `/v1/status` → 403 non-admin.
+Fake (`MetricFake`/`SharedState`) mirrors all of it incl. the 400/404 error
+shapes. **703 tests green.**
 
 ### Endpoint strategies (the per-service gotchas)
 

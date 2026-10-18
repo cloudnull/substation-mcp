@@ -188,7 +188,7 @@ tool list instead of Code Mode.
 |------|-----|------|
 | **OAuth 2.1 flow (default, P3)** | Client follows the 401 challenge → PRM → substation-mcp's stateless OAuth AS → browser consent → presents the resulting `stst.at.` JWT | No pre-minted credential needed |
 | **Client-side mint (P1)** | Client mints a Keystone token and presents it as a Bearer header; on `401` it re-mints and retries. Tokens cached at `~/.config/openstack/mcp-tokens/<cloud>.token` (`0600`) | Simplest to reason about |
-| **URL-mode elicitation** | Client visits `/<endpoint>/login`, enters the application credential, server mints + stores the token; completion page shows the token ID | Interactive browser flow |
+| **URL-mode elicitation** | Client visits `/<endpoint>/login`, enters credentials (+ optional region), server mints a token; the completion page shows the bearer to use — on multi-region clouds it is shown as `region:<REGION>:<token>` so validation and API calls target the selected region | Interactive browser flow |
 
 Full details, including multi-replica replay-store configuration, are in
 [OAuth 2.1 login](oauth.md).

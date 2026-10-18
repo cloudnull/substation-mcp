@@ -66,7 +66,7 @@ struct CatalogCompletenessTests {
             "placement",
             // IAD3 gap-fill (11) — phase 2
             "database_instance", "database_flavor", "database_datastore",
-            "metric", "resource_type",
+            "metric", "resource_type", "archive_policy",
             "queue",
             "reservation", "allocation",
             "backup", "schedule",
@@ -76,7 +76,7 @@ struct CatalogCompletenessTests {
         ]
         let actual = Set(catalog.names)
         #expect(actual == expected, "Catalog names mismatch. Missing: \(expected.subtracting(actual)). Extra: \(actual.subtracting(expected))")
-        #expect(catalog.resources.count == 65, "Expected 65 resources (63 + 2 QoS), got \(catalog.resources.count)")
+        #expect(catalog.resources.count == 66, "Expected 66 resources (63 + 2 QoS + archive_policy), got \(catalog.resources.count)")
     }
 
     // MARK: - Verb sets (sample covering every cell type)
@@ -447,14 +447,21 @@ struct CatalogCompletenessTests {
         #expect(d.createSchema != nil)
     }
 
-    @Test("metric has 2 resources")
+    @Test("metric has 3 resources; metric is creatable/deletable with measures actions")
     func metricCount() {
-        #expect(catalog.resources(for: .metric).count == 2)
+        #expect(catalog.resources(for: .metric).count == 3)
         #expect(catalog.descriptor("metric")!.service == .metric)
         #expect(catalog.descriptor("resource_type")!.service == .metric)
-        // read-only: no create/update/delete
+        #expect(catalog.descriptor("archive_policy")!.service == .metric)
         let m = catalog.descriptor("metric")!
-        #expect(!m.verbs.contains(.create) && !m.verbs.contains(.delete))
+        #expect(m.verbs.contains(.create) && m.verbs.contains(.delete))
+        #expect(m.actions.map(\.name).sorted() == ["measures", "metrics"])
+        #expect(m.createSchema != nil)
+        let rt = catalog.descriptor("resource_type")!
+        #expect(rt.actions.map(\.name) == ["metrics"])
+        let ap = catalog.descriptor("archive_policy")!
+        #expect(ap.idField == "name")
+        #expect(!ap.verbs.contains(.create))
     }
 
     @Test("messaging has 1 read-only queue resource keyed by name")
