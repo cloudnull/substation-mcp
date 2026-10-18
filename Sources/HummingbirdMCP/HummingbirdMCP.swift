@@ -712,10 +712,11 @@ public struct MCPRoute: Sendable {
                         <div class="icon ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
                         <h1 class="title">Signed in</h1>
                         <p class="sub">Your token was minted and stored for this session. You may close this tab.</p>
-                        <div class="token-box"><span class="k">Token ID</span><span id="tokenValue" class="v">\(result.tokenID)</span></div>
+                        <div class="token-box"><span class="k">Token ID</span><span id="tokenValue" class="v">\(result.region.map { "region:\($0):" } ?? "")\(result.tokenID)</span></div>
                         <button type="button" class="btn copy-btn" id="copyBtn" onclick="copyToken(this)">
                           <span class="copy-label">Copy token</span>
                         </button>
+                        \(result.region.map { r in "<p class=\"sub\" style=\"margin-top:10px\">Multi-region bearer: <code>Authorization: Bearer region:\(r):&lt;token&gt;</code> validates and serves in <strong>\(r)</strong>.</p>" } ?? "")
                       </div>
                     </main>
                     <script>

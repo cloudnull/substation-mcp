@@ -365,7 +365,8 @@ extension OAuthAuthorizationServer {
             guard let code = mintCode(
                 clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge,
                 scope: scope, keystoneTokenID: token.id, projectID: token.project.id,
-                keystoneTokenExpiry: token.expiresAt
+                keystoneTokenExpiry: token.expiresAt,
+                region: fields["region"].flatMap { $0.isEmpty ? nil : $0 }
             ) else {
                 return Self.oauthError(.invalidRequest(description: "Mint failed."))
             }
