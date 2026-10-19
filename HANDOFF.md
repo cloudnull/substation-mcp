@@ -2,6 +2,49 @@
 
 ## Current State
 
+- **Evacuation workflow** (2026-10-19). The "evacuate hypervisor X" entry point
+  is now end-to-end. **`os_evacuation_plan`** (read-only; read-only sessions
+  see 15 tools incl. it): joins per instance the flavor disk shape
+  (disk/ephemeral/swap), inline `volumes_attached`, and `task_state`, then
+  recommends the Nova action a 2.1-pinned cloud can actually perform —
+  `live_migrate` (no local disks), `migrate` + `block_migration=true`
+  (local/ephemeral disks, cold), or `evacuate` (host down). Classification
+  NEVER depends on `OS-EXT-SRV-ATTR:*` (Rackspace IAD3 never emits it; payload
+  carries `host_attribution:"unavailable"` instead) — live-validated
+  2026-10-18. Candidate targets ranked by spare vcpu/ram/local_gb excluding
+  the source. **Hypervisor fencing**: `os_action(hypervisor, id, "set_state",
+  params:{enabled:bool})` → `ComputeRegion.setHypervisorState` → PUT
+  `/os-hypervisors/{host}/state` (mv 2.53, body `{"state":{"enabled":…}}`).
+  **Migration-aware waiting**: `os_wait(server, id, until:["settled"])` —
+  ACTIVE alone is NOT completion; settled = ACTIVE/SHUTOFF **and**
+  `OS-EXT-STS:task_state` null (Nova keeps status ACTIVE through a whole live
+  migration). **Migration error hints**: `migrationHint` (ResultFormatting)
+  maps the IAD3-validated fault shapes (no-valid-host, task-in-flight incl.
+  the `task_state` phrasing, block-migration mismatch, same-host, pinned-CPU,
+  policy denial, unknown-action) onto the next concrete call. Migration wire
+  shapes pinned live: evacuate REQUIRES object body with `onSharedStorage`;
+  live migrate key is `os-migrateLive` (`liveMigrate` → 400); cold migrate is
+  `migrate` with optional `block_migration`/`disk_over_commit`. Server model
+  gained `task_state`/`power_state`/`vm_state`/`volumes_attached`/srv_attr
+  fields + `NovaServer` typealias (bare `Server` collides with MCP SDK's
+  actor; module-qualified `OpenStackClient.Server` resolves to the ACTOR, not
+  the module). Fake: task_state field + Nova-accurate refusal of any
+  migrate/evacuate/resize while task_state is set, `setServerTaskState` knob,
+  hypervisor state route. Tests: `MigrationHintTests` (table + dispatch
+  E2E), evacuation-plan classification + fencing round-trip in
+  `InProcessMCPTests`, client `setHypervisorState`, read-only tool-set counts
+  (15 read / 21 write).
+  **Live IAD3 E2E (2026-10-19, dev serve + dev-mint, region IAD3):**
+  whoami regions=[IAD3]; `os_get(server)` on a real BFOV GPU node returns
+  `OS-EXT-STS:power_state/vm_state` + `os-extended-volumes:volumes_attached`
+  and NO `OS-EXT-SRV-ATTR:*` / `task_state` (absent = idle — exactly the
+  degradation the classifier assumes); `os_wait(until:["settled"])` →
+  `settled:true, task_state:null` in 1 poll; hypervisor list + evacuation
+  plan + any migration action refused by **Nova policy** for this
+  non-admin app-cred (`PolicyNotAuthorized os-hypervisors:list-detail /
+  :show`) and the refusal carries the new migrationHint ("…need the cloud
+  admin role. Re-login with an admin-scoped credential…") — cloud policy,
+  not code; the admin path is fake-tested end-to-end.
 - **Metric deepening + region-selection fixes** (2026-10-18, supersedes the QoS
   bullet's test count). Catalog 65 → **66** (`archive_policy`); `metric` gained
   get-by-id, `measures` (raw + validated aggregation), `metrics` (resource join),

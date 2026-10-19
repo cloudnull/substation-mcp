@@ -33,6 +33,43 @@ public struct SecurityGroupRef: Sendable, Codable, Equatable {
     }
 }
 
+/// One entry of `os-extended-volumes:volumes_attached` on a server detail
+/// response — the volume-attachment view available even on a Nova 2.1 proxy
+/// (the `server_volume_attachment` list needs the same data; this is the
+/// per-server inline form). `delete_on_termination` is reported by Nova as
+/// either a bool or a "True"/"False" string (live on IAD3: bool).
+public struct ServerVolumeAttachmentRef: Sendable, Codable, Equatable {
+    public var id: String
+    public var deleteOnTermination: Bool?
+
+    public init(id: String, deleteOnTermination: Bool? = nil) {
+        self.id = id
+        self.deleteOnTermination = deleteOnTermination
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case deleteOnTermination = "delete_on_termination"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        if let b = try? c.decode(Bool.self, forKey: .deleteOnTermination) {
+            deleteOnTermination = b
+        } else if let s = try? c.decode(String.self, forKey: .deleteOnTermination) {
+            deleteOnTermination = (s.lowercased() == "true")
+        } else {
+            deleteOnTermination = nil
+        }
+    }
+}
+
+/// Nova instance model, exposed under a unique name so call sites that also
+/// import the MCP SDK (whose `Server` actor collides with bare `Server`) can
+/// spell it without ambiguity. Same type as `Server`.
+public typealias NovaServer = Server
+
 /// A Nova server (instance).
 ///
 /// Decoded from Nova's `/servers` and `/servers/detail` responses.
@@ -57,6 +94,29 @@ public struct Server: Sendable, Codable, Identifiable {
     public var securityGroups: [SecurityGroupRef]
     public var updated: Date?
     public var progress: Int?
+    /// `OS-EXT-STS:task_state` — non-null while an async operation (migration,
+    /// resize, rebuild…) is in flight; null when idle. Available at Nova mv 2.1
+    /// (unlike `OS-EXT-SRV-ATTR:*`, which Rackspace's 2.1-pinned proxy never
+    /// emits). The evacuation/migration wait polls this back to null.
+    public var taskState: String?
+    /// `OS-EXT-STS:power_state` (1 = running, 0 = shutdown, 3 = suspended…).
+    public var powerState: Int?
+    /// `OS-EXT-STS:vm_state` (active/stopped/suspended/shelved/rescued/error).
+    public var vmState: String?
+    /// `os-extended-volumes:volumes_attached` — non-empty ⇒ boot-from-volume
+    /// (root on a volume). The only volume-attachment view available on a
+    /// 2.1-pinned proxy.
+    public var volumesAttached: [ServerVolumeAttachmentRef]?
+    /// `OS-EXT-SRV-ATTR:host` — the compute host. Only present on clouds that
+    /// negotiate ≥2.53; nil on 2.1-pinned proxies.
+    public var srvAttrHost: String?
+    /// `OS-EXT-SRV-ATTR:hypervisor_hostname` — same availability caveat.
+    public var srvAttrHypervisor: String?
+    /// `OS-EXT-SRV-ATTR:root_device_name` — e.g. `/dev/vda1` (local) vs
+    /// `/dev/vda` on volume-backed; same availability caveat.
+    public var srvAttrRootDevice: String?
+    /// `OS-EXT-SRV-ATTR:availability_zone` — same availability caveat.
+    public var srvAttrAvailabilityZone: String?
 
     public init(
         id: String,
@@ -76,7 +136,15 @@ public struct Server: Sendable, Codable, Identifiable {
         image: ImageRef? = nil,
         securityGroups: [SecurityGroupRef] = [],
         updated: Date? = nil,
-        progress: Int? = nil
+        progress: Int? = nil,
+        taskState: String? = nil,
+        powerState: Int? = nil,
+        vmState: String? = nil,
+        volumesAttached: [ServerVolumeAttachmentRef]? = nil,
+        srvAttrHost: String? = nil,
+        srvAttrHypervisor: String? = nil,
+        srvAttrRootDevice: String? = nil,
+        srvAttrAvailabilityZone: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -96,6 +164,14 @@ public struct Server: Sendable, Codable, Identifiable {
         self.securityGroups = securityGroups
         self.updated = updated
         self.progress = progress
+        self.taskState = taskState
+        self.powerState = powerState
+        self.vmState = vmState
+        self.volumesAttached = volumesAttached
+        self.srvAttrHost = srvAttrHost
+        self.srvAttrHypervisor = srvAttrHypervisor
+        self.srvAttrRootDevice = srvAttrRootDevice
+        self.srvAttrAvailabilityZone = srvAttrAvailabilityZone
     }
 
     enum CodingKeys: String, CodingKey {
@@ -109,6 +185,14 @@ public struct Server: Sendable, Codable, Identifiable {
         case image
         case securityGroups = "security_groups"
         case created, updated, progress
+        case taskState = "OS-EXT-STS:task_state"
+        case powerState = "OS-EXT-STS:power_state"
+        case vmState = "OS-EXT-STS:vm_state"
+        case volumesAttached = "os-extended-volumes:volumes_attached"
+        case srvAttrHost = "OS-EXT-SRV-ATTR:host"
+        case srvAttrHypervisor = "OS-EXT-SRV-ATTR:hypervisor_hostname"
+        case srvAttrRootDevice = "OS-EXT-SRV-ATTR:root_device_name"
+        case srvAttrAvailabilityZone = "OS-EXT-SRV-ATTR:availability_zone"
     }
 
     // Custom decoder: Nova's JSON uses namespaced keys (OS-EXT-AZ:availability_zone),
@@ -135,6 +219,14 @@ public struct Server: Sendable, Codable, Identifiable {
         created = try c.decodeIfPresent(String.self, forKey: .created).flatMap(Self.parseISODate)
         updated = try c.decodeIfPresent(String.self, forKey: .updated).flatMap(Self.parseISODate)
         progress = try c.decodeIfPresent(Int.self, forKey: .progress)
+        taskState = try c.decodeIfPresent(String.self, forKey: .taskState)
+        powerState = try c.decodeIfPresent(Int.self, forKey: .powerState)
+        vmState = try c.decodeIfPresent(String.self, forKey: .vmState)
+        volumesAttached = try c.decodeIfPresent([ServerVolumeAttachmentRef].self, forKey: .volumesAttached)
+        srvAttrHost = try c.decodeIfPresent(String.self, forKey: .srvAttrHost)
+        srvAttrHypervisor = try c.decodeIfPresent(String.self, forKey: .srvAttrHypervisor)
+        srvAttrRootDevice = try c.decodeIfPresent(String.self, forKey: .srvAttrRootDevice)
+        srvAttrAvailabilityZone = try c.decodeIfPresent(String.self, forKey: .srvAttrAvailabilityZone)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -157,6 +249,14 @@ public struct Server: Sendable, Codable, Identifiable {
         if let created { try c.encode(created.ISO8601Format(), forKey: .created) }
         if let updated { try c.encode(updated.ISO8601Format(), forKey: .updated) }
         if let progress { try c.encode(progress, forKey: .progress) }
+        if let taskState { try c.encode(taskState, forKey: .taskState) }
+        if let powerState { try c.encode(powerState, forKey: .powerState) }
+        if let vmState { try c.encode(vmState, forKey: .vmState) }
+        if let volumesAttached { try c.encode(volumesAttached, forKey: .volumesAttached) }
+        if let srvAttrHost { try c.encode(srvAttrHost, forKey: .srvAttrHost) }
+        if let srvAttrHypervisor { try c.encode(srvAttrHypervisor, forKey: .srvAttrHypervisor) }
+        if let srvAttrRootDevice { try c.encode(srvAttrRootDevice, forKey: .srvAttrRootDevice) }
+        if let srvAttrAvailabilityZone { try c.encode(srvAttrAvailabilityZone, forKey: .srvAttrAvailabilityZone) }
     }
 
     /// Decode the flavor field from a keyed container.
@@ -889,9 +989,21 @@ public enum ServerAction: Sendable, Equatable {
     case consoleURL(type: String)
     case addSecurityGroup(id: String)
     case removeSecurityGroup(id: String)
-    case evacuate
-    case liveMigrate
-    case migrate
+    /// `POST …/action {"evacuate":{…}}`. Nova (validated live on IAD3) requires
+    /// an OBJECT body with `onSharedStorage` present; `host` is optional;
+    /// `force` is NOT an accepted property (400 Additional properties).
+    case evacuate(onSharedStorage: Bool?, host: String?)
+    /// `POST …/action {"os-migrateLive":{…}}`. NOTE the wire key is
+    /// `os-migrateLive` — `liveMigrate`/`live-migrate` are 400 "no such action"
+    /// on Nova 2.1 (validated live on IAD3). `host` is a REQUIRED property of
+    /// the body (null = let Nova pick); `block_migration`/`disk_over_commit`
+    /// are optional booleans (null = omit).
+    case liveMigrate(host: String?, blockMigration: Bool?, diskOverCommit: Bool?)
+    /// `POST …/action {"migrate":{…}}` — cold migration. Object body; `host`
+    /// optional (null = scheduler picks). `block_migration`/`disk_over_commit`
+    /// are the 2.25+ block-migration form; a 2.1 proxy accepts and ignores
+    /// them (validated live on IAD3).
+    case migrate(host: String?, blockMigration: Bool?, diskOverCommit: Bool?)
 
     /// The action key for the Nova API body.
     var actionKey: String {
@@ -919,8 +1031,8 @@ public enum ServerAction: Sendable, Equatable {
         case .addSecurityGroup: return "addSecurityGroup"
         case .removeSecurityGroup: return "removeSecurityGroup"
         case .evacuate: return "evacuate"
-        case .liveMigrate: return "liveMigrate"
-        case .migrate: return "os-migrate"
+        case .liveMigrate: return "os-migrateLive"
+        case .migrate: return "migrate"
         }
     }
 
@@ -929,8 +1041,33 @@ public enum ServerAction: Sendable, Equatable {
         switch self {
         case .start, .stop, .pause, .unpause, .suspend, .resume,
              .lock, .unlock, .shelve, .unshelve, .rescue, .unrescue,
-             .confirmResize, .revertResize, .evacuate, .liveMigrate, .migrate:
+             .confirmResize, .revertResize:
             return "{\"\(actionKey)\":null}"
+
+        // evacuate: `null` body → 400 and `onSharedStorage:null` → 400 (live
+        // probe); emit an object, include the bool only when the caller set it.
+        case .evacuate(let onSharedStorage, let host):
+            var fields: [String] = []
+            if let onSharedStorage { fields.append("\"onSharedStorage\":\(onSharedStorage ? "true" : "false")") }
+            if let host { fields.append("\"host\":\"\(host)\"") }
+            let inner = fields.isEmpty ? "{}" : "{\(fields.joined(separator: ","))}"
+            return "{\"evacuate\":\(inner)}"
+
+        // os-migrateLive: `host` is a REQUIRED property (null = scheduler
+        // picks). block_migration/disk_over_commit omitted when nil.
+        case .liveMigrate(let host, let blockMigration, let diskOverCommit):
+            var fields: [String] = ["\"host\":\(host.map { "\"\($0)\"" } ?? "null")"]
+            if let blockMigration { fields.append("\"block_migration\":\(blockMigration ? "true" : "false")") }
+            if let diskOverCommit { fields.append("\"disk_over_commit\":\(diskOverCommit ? "true" : "false")") }
+            return "{\"os-migrateLive\":{\(fields.joined(separator: ","))}}"
+
+        // migrate (cold): object body; host null = scheduler; block-migration
+        // pair included only when the caller expressed them.
+        case .migrate(let host, let blockMigration, let diskOverCommit):
+            var fields: [String] = ["\"host\":\(host.map { "\"\($0)\"" } ?? "null")"]
+            if let blockMigration { fields.append("\"block_migration\":\(blockMigration ? "true" : "false")") }
+            if let diskOverCommit { fields.append("\"disk_over_commit\":\(diskOverCommit ? "true" : "false")") }
+            return "{\"migrate\":{\(fields.joined(separator: ","))}}"
 
         case .reboot(let soft):
             let type = soft ? "SOFT" : "HARD"

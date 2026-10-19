@@ -145,6 +145,20 @@ public enum AllTools {
                 annotations: .init(readOnlyHint: true, destructiveHint: false)
             ),
             Tool(
+                name: "os_evacuation_plan",
+                description: "Read-only evacuation plan for a hypervisor: lists every instance on the host with its disk shape (root local/volume, ephemeral GB, swap GB, attached volumes incl. bootable flag) and a per-instance recommended action — live_migrate (shared/BFOV, no local disks), migrate with block_migration=true (local/ephemeral disks, cold block migration), or evacuate (host is down/ERROR). Also returns target-capacity guidance (hypervisors with spare vcpu/ram/local disk, excluding the source) and the fencing step. This is the planning call for \"evacuate hypervisor X\": classify, choose actions, then execute os_action per instance and os_wait(until:[\"settled\"]) to confirm.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "host": .object(["type": .string("string"), "description": .string("Hypervisor hostname to evacuate (hypervisor_hostname).")]),
+                        "region": .object(["type": .string("string")]),
+                        "host_down": .object(["type": .string("boolean"), "description": .string("true: the host is down/unreachable — recommend evacuate (with block evacuation for local-disk instances) instead of migrate. Default false.")]),
+                    ]),
+                    "required": .array([.string("host")]),
+                ]),
+                annotations: .init(readOnlyHint: true, destructiveHint: false)
+            ),
+            Tool(
                 name: "os_clouds",
                 description: "Show the cloud's regions and available services per region.",
                 inputSchema: .object([

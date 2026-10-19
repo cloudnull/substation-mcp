@@ -122,7 +122,8 @@ public struct CloudWiring: Sendable {
                     logger: logger,
                     auditEnabled: auditEnabled,
                     callLimiter: callLimiter,
-                    taskRegistry: taskRegistry
+                    taskRegistry: taskRegistry,
+                    writeRoles: policy.writeRoles
                 )
                 return await registry.makeServer()
             } catch {
@@ -160,7 +161,8 @@ public struct CloudWiring: Sendable {
                     logger: logger,
                     auditEnabled: auditEnabled,
                     callLimiter: callLimiter,
-                    taskRegistry: taskRegistry
+                    taskRegistry: taskRegistry,
+                    writeRoles: policy.writeRoles
                 )
                 return await registry.makeServer()
             }

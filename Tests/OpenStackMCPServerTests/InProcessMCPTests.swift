@@ -235,9 +235,10 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 17 verb tools (the stable, additive-only set) + 3 task-lifecycle
-        // tools (os_task_submit/status/cancel, the Path C shim).
-        #expect(names.count == 20, "Expected 20 tools, got \(names.count): \(names.sorted())")
+        // 17 verb tools (the stable, additive-only set) + os_evacuation_plan
+        // (read-only advisory) + 3 task-lifecycle tools (os_task_submit/status/
+        // cancel, the Path C shim).
+        #expect(names.count == 21, "Expected 21 tools, got \(names.count): \(names.sorted())")
         #expect(names.contains("os_create"))
         #expect(names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -255,8 +256,8 @@ struct InProcessMCPTests {
 
         let (tools, _) = try await bundle.mcpClient.listTools()
         let names = Set(tools.map(\.name))
-        // 11 read-only verb tools + 3 read-scoped task tools = 14.
-        #expect(names.count == 14, "Expected 14 tools, got \(names.count): \(names.sorted())")
+        // 11 read-only verb tools + os_evacuation_plan + 3 read-scoped task tools = 15.
+        #expect(names.count == 15, "Expected 15 tools, got \(names.count): \(names.sorted())")
         #expect(!names.contains("os_create"))
         #expect(!names.contains("os_delete"))
         #expect(names.contains("os_list"))
@@ -298,6 +299,74 @@ struct InProcessMCPTests {
         // never returned, forcing callers to guess field names like networks).
         #expect(text?.contains("create_schema") == true, "os_describe should return create_schema, got: \(text ?? "nil")")
         #expect(text?.contains("\"network\"") == true, "create_schema should expose the networks[].network field, got: \(text ?? "nil")")
+    }
+
+    /// `os_evacuation_plan` classifies every instance on a hypervisor from the
+    /// flavor disk shape + inline volume attachments, and recommends the Nova
+    /// action a 2.1-pinned cloud can actually perform. Regression guard: the
+    /// classification must not depend on `OS-EXT-SRV-ATTR:*` (Rackspace IAD3
+    /// never emits it) and must degrade gracefully when it is absent.
+    @Test("os_evacuation_plan classifies instances and ranks targets")
+    func evacuationPlan() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_evacuation_plan",
+                                                         arguments: ["host": .string("compute-01")])
+        #expect(result.isError != true, "evacuation plan failed: \(firstText(result.content) ?? "nil")")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"tool\":\"os_evacuation_plan\"") || text.contains("os_evacuation_plan"),
+                "payload should identify the tool, got: \(text)")
+        #expect(text.contains("\"host_state\":\"up\\/enabled\""), "source host state missing: \(text)")
+        // The fake's single ACTIVE server has a local-disk flavor and no
+        // attached volumes ⇒ cold BLOCK migration is the only safe action.
+        #expect(text.contains("\"recommended_action\":\"migrate\""),
+                "local-disk instance should recommend block migrate: \(text)")
+        #expect(text.contains("\"block_migration\":true"),
+                "migrate recommendation must carry block_migration=true: \(text)")
+        #expect(text.contains("host_attribution"),
+                "without OS-EXT-SRV-ATTR the plan must flag host attribution unavailable: \(text)")
+        // Server-group awareness: the seeded group is anti-affinity with the
+        // hosted servers as members; sibling hosts are unattributable without
+        // OS-EXT-SRV-ATTR, so the plan must surface the constraint and defer
+        // enforcement to Nova rather than drop it.
+        #expect(text.contains("\"anti_affinity\""),
+                "anti-affinity group members must surface the constraint: \(text)")
+        #expect(text.contains("anti-affinity"), "group policy should be reported: \(text)")
+        // The procedure must lead with fencing (set_state) and close with the
+        // task_state-settled confirmation — ACTIVE alone is not completion.
+        #expect(text.contains("set_state"), "procedure must include the fencing step: \(text)")
+        #expect(text.contains("settled"), "procedure must require task_state-settled confirmation: \(text)")
+    }
+
+    /// `os_action(hypervisor, set_state)` fences/re-enables a host — the first
+    /// step of a controlled evacuation.
+    @Test("os_action hypervisor set_state fences and re-enables the host")
+    func hypervisorSetState() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let fence = try await bundle.mcpClient.callTool(
+            name: "os_action",
+            arguments: ["resource": .string("hypervisor"), "id_or_name": .string("compute-01"),
+                        "action": .string("set_state"),
+                        "params": .object(["enabled": .bool(false)])])
+        #expect(fence.isError != true, "fence failed: \(firstText(fence.content) ?? "nil")")
+        #expect(firstText(fence.content)?.contains("\"status\":\"disabled\"") == true,
+                "fenced host should report status disabled: \(firstText(fence.content) ?? "nil")")
+
+        let enable = try await bundle.mcpClient.callTool(
+            name: "os_action",
+            arguments: ["resource": .string("hypervisor"), "id_or_name": .string("compute-01"),
+                        "action": .string("set_state"),
+                        "params": .object(["enabled": .bool(true)])])
+        #expect(enable.isError != true, "re-enable failed: \(firstText(enable.content) ?? "nil")")
+        #expect(firstText(enable.content)?.contains("\"status\":\"enabled\"") == true,
+                "re-enabled host should report status enabled: \(firstText(enable.content) ?? "nil")")
     }
 
     @Test("os_describe surfaces phase-1 note on by-design 501 identity resources")

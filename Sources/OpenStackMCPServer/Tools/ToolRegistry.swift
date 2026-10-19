@@ -69,6 +69,10 @@ public struct ToolRegistry: Sendable {
     /// process-wide shared instance so existing constructions/tests are
     /// unaffected; the serve path passes a server-scoped one.
     public let taskRegistry: TaskRegistry
+    /// Roles treated as cloud-admin for `adminOnly` action enforcement
+    /// (`policy.write_roles`, default `[admin]`). Empty = enforcement off
+    /// (tests/legacy constructions keep the advisory-only behavior).
+    public let writeRoles: [String]
 
     public init(
         client: OpenStackClient,
@@ -79,7 +83,8 @@ public struct ToolRegistry: Sendable {
         logger: Logger = Logger(label: "substation-mcp"),
         auditEnabled: Bool = true,
         callLimiter: ToolCallLimiter? = nil,
-        taskRegistry: TaskRegistry? = nil
+        taskRegistry: TaskRegistry? = nil,
+        writeRoles: [String] = []
     ) {
         self.client = client
         self.catalog = policy.effective(catalog)
@@ -96,6 +101,7 @@ public struct ToolRegistry: Sendable {
         // the serve path passes a server-scoped one so tasks survive the
         // per-identity registry being re-created on each request.
         self.taskRegistry = taskRegistry ?? TaskRegistry.shared
+        self.writeRoles = writeRoles
     }
 
     /// In `perService` mode, the set of catalog service types the token may
@@ -156,7 +162,7 @@ public struct ToolRegistry: Sendable {
         return [
             "os_list", "os_get", "os_describe", "os_topology",
             "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness", "os_recommend_flavor",
-            "os_task_submit", "os_task_status", "os_task_cancel",
+            "os_task_submit", "os_task_status", "os_task_cancel", "os_evacuation_plan",
             "os_create", "os_update", "os_delete", "os_action",
             "os_attach", "os_detach",
         ]
@@ -280,6 +286,7 @@ public struct ToolRegistry: Sendable {
             case "os_action": outcome = (try await handleAction(params), nil)
             case "os_attach": outcome = (try await handleLink(params, attach: true, server: server), nil)
             case "os_detach": outcome = (try await handleLink(params, attach: false, server: server), nil)
+            case "os_evacuation_plan": outcome = (try await handleEvacuationPlan(params), nil)
             default:
                 outcome = (CallTool.Result(
                     content: [.text(text: "Unknown tool: \(params.name). Valid: \(visibleToolNames.joined(separator: ", "))", annotations: nil, _meta: nil)],
@@ -704,6 +711,189 @@ public struct ToolRegistry: Sendable {
             "count": .integer(matches.count),
             "matches": .array(matches.map { .object($0) }),
         ]
+        let (text, val) = resultText(result)
+        return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
+    }
+
+    // MARK: - os_evacuation_plan
+
+    /// Read-only evacuation planner for a hypervisor (the "evacuate host X"
+    /// entry point). Joins, per instance on the host: flavor disk shape
+    /// (disk/ephemeral/swap), inline volume attachments (BFOV + data disks),
+    /// and task_state — then recommends the correct Nova action per instance
+    /// and lists candidate targets by spare capacity. Classification rules are
+    /// pinned to what a Nova 2.1-pinned cloud can actually report (live-
+    /// validated IAD3): `os-extended-volumes:volumes_attached` non-empty ⇒
+    /// boot-from-volume; `flavor.ephemeral > 0` ⇒ local ephemeral disk ⇒ cold
+    /// BLOCK migration; nothing local ⇒ plain live migration.
+    private func handleEvacuationPlan(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+        let host = try argString(params, "host")
+        let region = try await resolveRegion(params)
+        let hostDown = argBool(params, "host_down")
+        let vt = identity.vt
+        let compute = await client.compute(region: region)
+
+        // 1. The source host must exist (also validates the hostname).
+        let source = try await compute.getHypervisor(vt, host: host)
+
+        // 2. Instances on the host.
+        let refs = try await compute.hypervisorServers(vt, id: host)
+
+        // 3. Per-instance classification. Flavor lookups cached per region.
+        var entries: [[String: JSONValue]] = []
+        var totals: [String: Int] = ["total": refs.count, "live_migrate": 0,
+                                     "migrate_block": 0, "evacuate": 0, "blocked": 0]
+        var flavorCache: [String: Flavor] = [:]
+        for ref in refs {
+            var entry: [String: JSONValue] = ["id": .string(ref.uuid), "name": .string(ref.name)]
+            let server: NovaServer?
+            do {
+                server = try await compute.getServer(vt, id: ref.uuid)
+            } catch let e as OpenStackError where e.status == 404 {
+                entry["classification"] = .string("gone")
+                entry["recommended_action"] = .string("none")
+                entry["note"] = .string("Instance no longer exists (deleted or migrated already).")
+                entries.append(entry)
+                continue
+            }
+            guard let server else { continue }
+            entry["status"] = .string(server.status)
+            if let ts = server.taskState { entry["task_state"] = .string(ts) }
+
+            let flavorID = server.flavor.id
+            var flavor: Flavor? = flavorCache[flavorID]
+            if flavor == nil {
+                flavor = try? await compute.getFlavor(vt, id: flavorID)
+                if let flavor { flavorCache[flavorID] = flavor }
+            }
+            let diskGB = flavor?.disk ?? 0
+            let ephemeralGB = flavor?.ephemeral ?? 0
+            let swapMB = flavor?.swap ?? 0
+            let attached = server.volumesAttached ?? []
+            let isBFOV = !attached.isEmpty
+            entry["flavor"] = .object([
+                "id": .string(flavorID),
+                "disk_gb": .integer(diskGB),
+                "ephemeral_gb": .integer(ephemeralGB),
+                "swap_mb": .integer(swapMB),
+            ])
+            entry["root"] = .string(isBFOV ? "volume" : (diskGB > 0 ? "local" : "unknown"))
+            entry["volumes_attached"] = .array(attached.map { a in
+                JSONValue.object(["id": .string(a.id),
+                                  "delete_on_termination": a.deleteOnTermination.map { JSONValue.bool($0) } ?? .null])
+            })
+            if server.srvAttrHost == nil && server.srvAttrHypervisor == nil {
+                entry["host_attribution"] = .string("unavailable")
+            }
+            if let hv = server.srvAttrHypervisor { entry["hypervisor_hostname"] = .string(hv) }
+
+            // Recommendation.
+            let hasLocal = !isBFOV && (diskGB > 0 || ephemeralGB > 0)
+            var action: String
+            var actionParams: [String: JSONValue] = [:]
+            var note: String?
+            if server.status == "ERROR" {
+                action = "investigate"
+                note = "Instance is ERROR — migration will fail; inspect os_get(server) fault before moving it."
+            } else if server.taskState != nil {
+                action = "wait"
+                note = "A task is in flight (\(server.taskState!)) — os_wait(server, until:[\"settled\"]) before acting."
+            } else if hostDown {
+                action = "evacuate"
+                if hasLocal {
+                    actionParams["on_shared_storage"] = .bool(false)
+                    note = "Host down + local disks: block evacuation (copies the disk from rescue/shared storage; if the local disk is unrecoverable the instance must be rebuilt from its image/snapshot)."
+                } else {
+                    actionParams["on_shared_storage"] = .bool(true)
+                }
+            } else if hasLocal {
+                action = "migrate"
+                actionParams["block_migration"] = .bool(true)
+                actionParams["disk_over_commit"] = .bool(false)
+                note = "Cold BLOCK migration: instance has local disks (root local \(diskGB)GB, ephemeral \(ephemeralGB)GB, swap \(swapMB)MB). Requires a brief downtime; target must have local_gb spare ≥ disk+ephemeral."
+            } else {
+                action = "live_migrate"
+                note = isBFOV ? "Boot-from-volume, no local disks: zero-downtime live migration." : nil
+            }
+            entry["recommended_action"] = .string(action)
+            if !actionParams.isEmpty { entry["recommended_params"] = .object(actionParams) }
+            if let note { entry["note"] = .string(note) }
+            switch action {
+            case "live_migrate": totals["live_migrate", default: 0] += 1
+            case "migrate": totals["migrate_block", default: 0] += 1
+            case "evacuate": totals["evacuate", default: 0] += 1
+            default: totals["blocked", default: 0] += 1
+            }
+            entries.append(entry)
+        }
+
+        // 4. Target capacity: other hosts with spare, ranked by spare local
+        //    disk then spare ram. Block migrations need local_gb spare.
+        //    Server-group awareness: an instance in a (hard or soft)
+        //    anti-affinity group may not land on a host already running a
+        //    sibling. On clouds that never emit OS-EXT-SRV-ATTR the sibling
+        //    host is unknown, so the constraint is reported per instance
+        //    instead of silently dropped.
+        let groups = (try? await compute.listServerGroups(vt)) ?? []
+        let affinityByMember = Dictionary(uniqueKeysWithValues:
+            groups.flatMap { g in g.members.map { ($0, g) } })
+        struct Target { let host: String; let vcpuSpare: Int; let ramSpare: Int; let diskSpare: Int; let state: String }
+        var targets: [Target] = []
+        var hostMembers: [String: [String]] = [:]
+        if let all = try? await compute.listHypervisors(vt) {
+            for h in all {
+                if h.hypervisorHostname != host {
+                    let vcpuSpare = (h.vcpus ?? 0) - (h.vcpusUsed ?? 0)
+                    let ramSpare = (h.memoryMB ?? 0) - (h.memoryMBUsed ?? 0)
+                    let diskSpare = (h.localGB ?? 0) - (h.localGBUsed ?? 0)
+                    targets.append(Target(host: h.hypervisorHostname, vcpuSpare: vcpuSpare,
+                                          ramSpare: ramSpare, diskSpare: diskSpare,
+                                          state: "\(h.state ?? "?")/\(h.status ?? "?")"))
+                }
+                for s in h.servers ?? [] { hostMembers[h.hypervisorHostname, default: []].append(s.uuid) }
+            }
+        }
+        targets.sort { ($0.diskSpare, $0.ramSpare) > ($1.diskSpare, $1.ramSpare) }
+        let targetOut = targets.prefix(10).map { t -> JSONValue in
+            .object(["hypervisor_hostname": .string(t.host), "state": .string(t.state),
+                     "vcpu_spare": .integer(t.vcpuSpare), "memory_mb_spare": .integer(t.ramSpare),
+                     "local_gb_spare": .integer(t.diskSpare)])
+        }
+        // Per-instance anti-affinity constraint (only for members of a group).
+        for i in entries.indices {
+            guard let id = entries[i]["id"]?.stringValue, let g = affinityByMember[id] else { continue }
+            entries[i]["server_group"] = .object([
+                "id": .string(g.id), "name": .string(g.name), "policy": .string(g.policy),
+            ])
+            let siblings = g.members.filter { $0 != id }
+            let siblingHosts = Set(siblings.flatMap { s in
+                hostMembers.filter { $0.value.contains(s) }.map { $0.key }
+            })
+            if siblings.isEmpty {
+                entries[i]["anti_affinity"] = .string("none: sole member of group '\(g.name)' (\(g.policy))")
+            } else if siblingHosts.isEmpty {
+                entries[i]["anti_affinity"] = .string("group '\(g.name)' (\(g.policy)): \(siblings.count) sibling(s) whose hosts are unattributable (cloud omits OS-EXT-SRV-ATTR) — omit host and let Nova enforce anti-affinity via placement")
+            } else {
+                entries[i]["anti_affinity"] = .string("group '\(g.name)' (\(g.policy)): avoid hosts running siblings: \(siblingHosts.sorted().joined(separator: ", "))")
+            }
+        }
+
+        var result: [String: JSONValue] = [
+            "tool": .string("os_evacuation_plan"),
+            "region": .string(region),
+            "host": .string(host),
+            "host_state": .string("\(source.state)/\(source.status)"),
+            "instances": .array(entries.map { JSONValue.object($0) }),
+            "summary": .object(totals.mapValues { JSONValue.integer($0) }),
+            "candidate_targets": .array(targetOut),
+            "procedure": .array([
+                .string("1. Fence the source: os_action(hypervisor, \"\(host)\", set_state, params:{enabled:false}) — stops NEW placements; running VMs unaffected."),
+                .string("2. For each instance, execute recommended_action via os_action(server, ...) (omit host unless a specific target is required; Nova schedules via placement)."),
+                .string("3. Confirm each move: os_wait(server, id, until:[\"settled\"]) — ACTIVE alone is NOT completion; settled = task_state null."),
+                .string("4. Final check: os_action(hypervisor, \"\(host)\", \"servers\") must return an empty list; then re-enable the host (set_state enabled:true) or leave fenced."),
+            ]),
+        ]
+        if let disabled = source.service?.disabledReason { result["host_disabled_reason"] = .string(disabled) }
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
@@ -1214,9 +1404,23 @@ public struct ToolRegistry: Sendable {
         let actionName = try argString(params, "action")
         let vt = identity.vt
 
-        guard d.actions.contains(where: { $0.name == actionName }) else {
+        guard let spec = d.actions.first(where: { $0.name == actionName }) else {
             throw OpenStackError(service: "mcp", status: 400,
                 message: "Unknown action: \(actionName) for \(d.name). Valid: \(d.actions.map(\.name).joined(separator: ", "))")
+        }
+        // adminOnly is ENFORCED, not advisory: the caller's token must carry a
+        // write role (policy.write_roles, default [admin]) — the same role set
+        // that grants `openstack:write`. Without it the call is refused here
+        // with a clear code instead of surfacing Nova's 403 PolicyNotAuthorized
+        // (which many clouds return with an unhelpful message).
+        if spec.adminOnly, !writeRoles.isEmpty {
+            let roles = identity.vt.token.roles.map { $0.lowercased() }
+            let allowed = writeRoles.map { $0.lowercased() }
+            guard Set(roles).isDisjoint(with: Set(allowed)) == false else {
+                throw OpenStackError(service: "mcp", status: 403, code: "insufficient_scope",
+                    message: "Action \(d.name).\(actionName) is admin-only: requires one of the write roles (\(writeRoles.joined(separator: ", "))); token roles: \(identity.vt.token.roles.joined(separator: ", "))",
+                    hint: "Re-authenticate with a cloud-admin credential, or extend policy.write_roles if this role is legitimately an operator on this cloud.")
+            }
         }
 
         let paramsValue = argObject(params, "params") ?? [:]

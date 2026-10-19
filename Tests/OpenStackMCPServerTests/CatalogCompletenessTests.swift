@@ -312,7 +312,8 @@ struct CatalogCompletenessTests {
     @Test("server default list fields")
     func serverDefaultFields() {
         let d = catalog.descriptor("server")!
-        #expect(d.defaultListFields == ["id", "name", "status", "flavor", "addresses", "created"])
+        #expect(d.defaultListFields == ["id", "name", "status", "flavor", "addresses", "created",
+                                        "task_state", "volumes_attached"])
     }
 
     @Test("port default list fields")

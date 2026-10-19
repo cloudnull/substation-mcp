@@ -33,9 +33,20 @@ enum ComputeEntries {
                 ActionSpec(name: "console_url", params: [ParamSpec(name: "type", enumValues: ["vnc", "spice", "rdp"], description: "Console type")]),
                 ActionSpec(name: "add_security_group", params: [ParamSpec(name: "name", required: true, description: "Security group name")]),
                 ActionSpec(name: "remove_security_group", params: [ParamSpec(name: "name", required: true, description: "Security group name")]),
-                ActionSpec(name: "evacuate", destructive: true, adminOnly: true),
-                ActionSpec(name: "live_migrate", destructive: true, adminOnly: true),
-                ActionSpec(name: "migrate", destructive: true, adminOnly: true),
+                ActionSpec(name: "evacuate", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "on_shared_storage", type: "boolean", description: "Whether the instance's root disk is on shared storage. Nova 400s a null value; omit to let Nova infer. false = copy the disk (block evacuation)."),
+                    ParamSpec(name: "host", description: "Target hypervisor hostname. Omit = Nova scheduler picks."),
+                ]),
+                ActionSpec(name: "live_migrate", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "host", description: "Target hypervisor hostname. Omit/null = Nova scheduler picks (placement decides)."),
+                    ParamSpec(name: "block_migration", type: "boolean", description: "true: copy local disks during the live migration (needed when the instance has local/ephemeral disks and the target lacks shared storage)."),
+                    ParamSpec(name: "disk_over_commit", type: "boolean", description: "true: allow over-committing disk on the target during block live-migration. Set explicitly alongside block_migration."),
+                ]),
+                ActionSpec(name: "migrate", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "host", description: "Target hypervisor hostname. Omit/null = Nova scheduler picks."),
+                    ParamSpec(name: "block_migration", type: "boolean", description: "true: COLD BLOCK migration — copy local/ephemeral disks to the target (the path for instances with ephemeral root disks). Pair with disk_over_commit=false to refuse over-commit."),
+                    ParamSpec(name: "disk_over_commit", type: "boolean", description: "true: allow target disk over-commit during block cold-migration. Set explicitly alongside block_migration."),
+                ]),
             ],
             links: [
                 LinkSpec(
@@ -158,8 +169,10 @@ enum ComputeEntries {
             nameField: "name",
             statusField: "status",
             terminalStates: ["ACTIVE", "SHUTOFF", "ERROR", "SHELVED_OFFLOADED"],
-            defaultListFields: ["id", "name", "status", "flavor", "addresses", "created"],
-            destructiveHints: ["stop", "reboot", "shelve", "rescue", "resize", "rebuild", "evacuate", "live_migrate", "migrate"]
+            defaultListFields: ["id", "name", "status", "flavor", "addresses", "created",
+                                "task_state", "volumes_attached"],
+            destructiveHints: ["stop", "reboot", "shelve", "rescue", "resize", "rebuild", "evacuate", "live_migrate", "migrate"],
+            phase1Note: "Evacuation classification without OS-EXT-SRV-ATTR (2.1-pinned clouds like Rackspace; live-validated IAD3: OS-EXT-SRV-ATTR:* never emitted): root on volume when volumes_attached non-empty; local root when flavor.disk > 0 and volumes_attached empty; ephemeral local disk when flavor.ephemeral > 0 (needs cold BLOCK migrate); swap when flavor.swap > 0 (travels with block migration). Migration completion: status ACTIVE alone is NOT proof — poll task_state back to null, then confirm the instance left the source host via os_action(hypervisor, servers). os_get(server) returns all extended fields (task_state, power_state, vm_state, volumes_attached, srv_attr_host, srv_attr_hypervisor, srv_attr_root_device, srv_attr_availability_zone) when the cloud emits them.",
         ),
 
         // MARK: - flavor
@@ -243,6 +256,10 @@ enum ComputeEntries {
         //   GET  /os-hypervisors/{id}              get (id or hypervisor_hostname)
         //   GET  /os-hypervisors/statistics        action "statistics" (fleet totals)
         //   GET  /os-hypervisors/{id}/servers      action "servers" (instances on host)
+        //   PUT  /os-hypervisors/{name}/state      action "set_state" (mv 2.53;
+        //       fencing: enabled=false stops NEW placements, running VMs stay —
+        //       the first step of a controlled evacuation; shape validated live
+        //       on IAD3: unknown host 404, member token 403 policy)
         // Requires a project-scoped admin token: domain-scoped tokens lack
         // nova policy target_project match and get 403.
         ResourceDescriptor(
@@ -252,6 +269,9 @@ enum ComputeEntries {
             actions: [
                 ActionSpec(name: "statistics", adminOnly: true, params: []),
                 ActionSpec(name: "servers", adminOnly: true, params: []),
+                ActionSpec(name: "set_state", destructive: true, adminOnly: true, params: [
+                    ParamSpec(name: "enabled", type: "boolean", required: true, description: "false fences the host: no NEW instances are scheduled to it (running VMs are untouched). true re-enables placement. First step of a controlled evacuation."),
+                ]),
             ],
             listFilters: ["hypervisor_hostname", "with_servers"],
             idField: "id",

@@ -159,13 +159,23 @@ public struct NovaFake {
                 return Self.jsonResponse(status: .ok, body: bodyStr)
             }
 
-            let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue","resize","confirmResize","revertResize","rebuild","createImage","evacuate","liveMigrate","os-migrate","os-start","os-stop"]
+            let actions = ["start","stop","reboot","pause","unpause","suspend","resume","lock","unlock","shelve","unshelve","rescue","unrescue","resize","confirmResize","revertResize","rebuild","createImage","evacuate","os-migrateLive","migrate","os-migrate","os-start","os-stop"]
             guard let actionKey = actions.first(where: { body.contains("\"" + $0 + "\"") }) else {
                 return Self.novaError(status: .badRequest, message: "Unknown action")
             }
 
+            // Nova refuses every migration/resize family action while an async
+            // task is in flight on the instance (OS-EXT-STS:task_state non-null).
+            let migrationActions: Set<String> = ["evacuate", "os-migrateLive", "migrate", "resize"]
+            if migrationActions.contains(actionKey),
+               let server = await state.getServer(id: id, projectID: token.projectID),
+               let task = server.taskState {
+                return Self.novaError(status: .badRequest,
+                    message: "Instance cannot be migrated while task_state is \(task).")
+            }
+
             // Actions that don't need server state (return 202)
-            let noStateActions = ["rebuild","createImage","os-migrate","evacuate","liveMigrate","confirmResize","revertResize","resize"]
+            let noStateActions = ["rebuild","createImage","os-migrate","evacuate","os-migrateLive","migrate","confirmResize","revertResize","resize"]
             if noStateActions.contains(actionKey) {
                 return Response(status: .accepted)
             }
@@ -312,9 +322,14 @@ public struct NovaFake {
                   let token = await state.validateToken(tokenID) else {
                 return Self.novaError(status: .unauthorized, message: "Unauthorized")
             }
-            _ = token
+            // Members reflect the seeded servers so anti-affinity joins are
+            // testable against real member ids.
+            let members = await state.servers
+                .filter { $0.projectID == token.projectID }
+                .map { "\"\($0.id)\"" }
+                .joined(separator: ",")
             return Self.jsonResponse(status: .ok, body: """
-            {"server_groups":[{"id":"sg-001","name":"test-group","policy":"soft-affinity","members":[]}]}
+            {"server_groups":[{"id":"sg-001","name":"test-group","policy":"anti-affinity","members":[\(members)]}]}
             """)
         }
 
@@ -389,6 +404,25 @@ public struct NovaFake {
             let servers = hosted.map { "{\"name\":\"\($0.name)\",\"uuid\":\"\($0.id)\"}" }.joined(separator: ",")
             return Self.jsonResponse(status: .ok, body: """
             {"hypervisors":[{"id":"1","hypervisor_hostname":"\(host)","state":"up","status":"enabled","servers":[\(servers)]}]}
+            """)
+        }
+
+        router.put("/nova/os-hypervisors/:host/state") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.novaError(status: .unauthorized, message: "Unauthorized")
+            }
+            if !token.roles.contains("admin") {
+                return Self.novaError(status: .forbidden, message: "Admin access required")
+            }
+            let host = ctx.parameters.get("host") ?? ""
+            let body = (try? await Self.readBody(req)) ?? "{}"
+            guard let enabled = Self.extractBool("enabled", from: body) else {
+                return Self.novaError(status: .badRequest, message: "Missing 'state.enabled' boolean")
+            }
+            let status = enabled ? "enabled" : "disabled"
+            return Self.jsonResponse(status: .ok, body: """
+            {"hypervisor":{"id":"1","hypervisor_hostname":"\(host)","host_ip":"10.0.0.1","state":"up","status":"\(status)","hypervisor_type":"QEMU","hypervisor_version":7002022,"service":{"id":"1","host":"\(host)","disabled_reason":null},"vcpus":32,"memory_mb":65536,"local_gb":1000,"vcpus_used":16,"memory_mb_used":32768,"local_gb_used":500,"free_ram_mb":32768,"free_disk_gb":500,"current_workload":0,"running_vms":16,"disk_available_least":490}}
             """)
         }
 
@@ -763,8 +797,9 @@ public struct NovaFake {
         let image = server.imageID.map { "\"\($0)\"" } ?? "null"
         let userData = server.userData.map { ",\"user_data\":\"\($0)\"" } ?? ""
         let secGroups = server.securityGroups.map { "{\"name\":\"\($0.value)\"}" }.joined(separator: ",")
+        let taskState = server.taskState.map { ",\"OS-EXT-STS:task_state\":\"\($0)\"" } ?? ""
         return """
-        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(secGroups)],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")\(userData)}}
+        {"server":{"id":"\(server.id)","name":"\(server.name)","status":"\(server.status)","flavor":{"id":"\(server.flavorID)","links":[{"rel":"bookmark","href":"/nova/flavors/\(server.flavorID)"}]},"image":{"id":\(image),"links":[]},"key_name":\(server.keyName.map { "\"\($0)\"" } ?? "null"),"addresses":\(addressesJSON(server.addresses)),"security_groups":[\(secGroups)],"metadata":{},"created":"\(server.created.ISO8601Format())","updated":\(server.updated.map { "\"\($0.ISO8601Format())\"" } ?? "null")\(userData)\(taskState)}}
         """
     }
 

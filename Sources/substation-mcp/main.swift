@@ -125,7 +125,8 @@ struct StdioCommand: AsyncParsableCommand {
             readOnly: cfg.policyReadOnly,
             denyResources: Set(cfg.policyDenyResources),
             maxListLimit: cfg.policyMaxListLimit,
-            maxCallsPerMinute: cfg.policyMaxCallsPerMinute
+            maxCallsPerMinute: cfg.policyMaxCallsPerMinute,
+            writeRoles: cfg.policyWriteRoles
         )
         let vt = try await wiring.validator.validate(tokenID)
         let identity = ValidatedIdentity(

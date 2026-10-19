@@ -66,6 +66,10 @@ public actor FakeState {
         /// Test-only knob: expected provisioning outcome for the fake console
         /// transcript. nil = default "succeeded".
         public var provisioningOutcome: String?
+        /// `OS-EXT-STS:task_state` — non-null while an async op (migration,
+        /// resize…) is in flight. Nova refuses migration while set; the fake
+        /// mirrors that so the settled-wait and hint paths are testable.
+        public var taskState: String?
 
         public init(
             id: String,
@@ -82,7 +86,8 @@ public actor FakeState {
             metadata: [String: String] = [:],
             userData: String? = nil,
             provisioningSha: String? = nil,
-            provisioningOutcome: String? = nil
+            provisioningOutcome: String? = nil,
+            taskState: String? = nil
         ) {
             self.id = id
             self.name = name
@@ -99,6 +104,7 @@ public actor FakeState {
             self.userData = userData
             self.provisioningSha = provisioningSha
             self.provisioningOutcome = provisioningOutcome
+            self.taskState = taskState
             self.created = Date()
             self.updated = nil
         }
@@ -1184,6 +1190,17 @@ public actor FakeState {
     public func setServerStatus(serverID: String, status: String) -> Bool {
         guard let idx = servers.firstIndex(where: { $0.id == serverID }) else { return false }
         servers[idx].status = status
+        servers[idx].updated = Date()
+        return true
+    }
+
+    /// Test-only knob: set `OS-EXT-STS:task_state` on a server (nil = idle).
+    /// Nova refuses migration/resize while a task is in flight; the fake mirrors
+    /// the refusal so the settled-wait and migration-hint paths are testable.
+    @discardableResult
+    public func setServerTaskState(serverID: String, taskState: String?) -> Bool {
+        guard let idx = servers.firstIndex(where: { $0.id == serverID }) else { return false }
+        servers[idx].taskState = taskState
         servers[idx].updated = Date()
         return true
     }

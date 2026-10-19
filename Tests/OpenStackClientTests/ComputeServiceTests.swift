@@ -744,6 +744,19 @@ struct ComputeServiceTests {
         #expect(stats.runningVms == 32)
     }
 
+    @Test("set hypervisor state fences and re-enables (PUT /os-hypervisors/{host}/state)", .timeLimit(.minutes(2)))
+    func setHypervisorState() async throws {
+        let (handle, vt, compute, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = compute.region("RegionOne")
+        let fenced = try await region.setHypervisorState(vt, host: "compute-01", enabled: false)
+        #expect(fenced.hypervisorHostname == "compute-01")
+        #expect(fenced.status == "disabled", "fenced host must report disabled: \(fenced.status)")
+        let enabled = try await region.setHypervisorState(vt, host: "compute-01", enabled: true)
+        #expect(enabled.status == "enabled", "re-enabled host must report enabled: \(enabled.status)")
+    }
+
     @Test("hypervisor servers lists hosted instances", .timeLimit(.minutes(2)))
     func hypervisorServers() async throws {
         let (handle, vt, compute, _, _, transport) = try await makeSetup()

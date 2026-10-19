@@ -2166,9 +2166,20 @@ public actor NameResolver {
                     let sgID = params["security_group_id"]?.stringValue
                     guard let sgID else { throw OpenStackError(service: "compute", status: 400, message: "remove_security_group requires security_group_id") }
                     serverAction = .removeSecurityGroup(id: sgID)
-                case "evacuate": serverAction = .evacuate
-                case "live_migrate": serverAction = .liveMigrate
-                case "migrate": serverAction = .migrate
+                case "evacuate":
+                    serverAction = .evacuate(
+                        onSharedStorage: params["on_shared_storage"]?.boolValue,
+                        host: params["host"]?.stringValue)
+                case "live_migrate":
+                    serverAction = .liveMigrate(
+                        host: params["host"]?.stringValue,
+                        blockMigration: params["block_migration"]?.boolValue,
+                        diskOverCommit: params["disk_over_commit"]?.boolValue)
+                case "migrate":
+                    serverAction = .migrate(
+                        host: params["host"]?.stringValue,
+                        blockMigration: params["block_migration"]?.boolValue,
+                        diskOverCommit: params["disk_over_commit"]?.boolValue)
                 default:
                     throw OpenStackError(service: "compute", status: 400, message: "Unknown server action: \(action)")
                 }
@@ -2208,6 +2219,13 @@ public actor NameResolver {
                     let encoded = try Self.encodeList(servers)
                     return ["action": .string("servers"), "id": .string(id),
                             "servers": encoded["items"] ?? .array([])]
+                case "set_state":
+                    guard let enabled = params["enabled"]?.boolValue else {
+                        throw OpenStackError(service: "compute", status: 400,
+                            message: "set_state requires the boolean param \"enabled\" (false fences the host against new placements)")
+                    }
+                    let h = try await r.setHypervisorState(vt, host: id, enabled: enabled)
+                    return try Self.encodeObject(h)
                 default:
                     throw OpenStackError(service: "compute", status: 400, message: "Unknown hypervisor action: \(action)")
                 }
@@ -2395,7 +2413,19 @@ public actor NameResolver {
                 }
                 var extra: [URLQueryItem] = []
                 if let limit = params["limit"]?.intValue { extra.append(URLQueryItem(name: "limit", value: String(limit))) }
-                if let inTree = params["in_tree"]?.boolValue { extra.append(URLQueryItem(name: "in_tree", value: inTree ? "True" : "False")) }
+                // in_tree is a provider-tree UUID in placement (not a bool) —
+                // pass the string through unchanged.
+                if let inTree = params["in_tree"]?.stringValue, !inTree.isEmpty {
+                    extra.append(URLQueryItem(name: "in_tree", value: inTree))
+                }
+                for key in ["required", "member_of", "not_member_of", "group_policy"] {
+                    if let v = params[key]?.stringValue, !v.isEmpty {
+                        extra.append(URLQueryItem(name: key, value: v))
+                    }
+                }
+                if let all = params["include_all_providers"]?.boolValue {
+                    extra.append(URLQueryItem(name: "include_all_providers", value: all ? "True" : "False"))
+                }
                 let cands = try await r.allocationCandidates(vt, resources: resources, extraQuery: extra)
                 return ["action": .string("candidates"), "resources": .string(resources), "data": Self.fromRawJSON(cands)]
             default:

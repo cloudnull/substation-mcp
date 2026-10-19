@@ -42,7 +42,8 @@ public struct ServeApp: Sendable {
             readOnly: config.policyReadOnly,
             denyResources: Set(config.policyDenyResources),
             maxListLimit: config.policyMaxListLimit,
-            maxCallsPerMinute: config.policyMaxCallsPerMinute
+            maxCallsPerMinute: config.policyMaxCallsPerMinute,
+            writeRoles: config.policyWriteRoles
         )
         // The PRM `resource` is the canonical public base (spec §7.1: clients
         // fetch `resource + /.well-known/oauth-protected-resource`). The

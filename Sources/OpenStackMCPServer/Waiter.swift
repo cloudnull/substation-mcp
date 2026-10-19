@@ -26,6 +26,10 @@ public struct Waiter: Sendable {
         var states = Set(descriptor.terminalStates)
         states.insert("ERROR")
         states.insert("killed")
+        // "settled" is a server-only pseudo-state (status + task_state idle);
+        // meaningful only for server, but accepted in validation and rejected
+        // at poll time for other resources via the settledMode gate below.
+        if descriptor.name == "server" { states.insert("settled") }
         return Array(states).sorted()
     }
 
@@ -85,12 +89,20 @@ public struct Waiter: Sendable {
             targets = Set(descriptor.terminalStates)
         }
         let faultStates: Set<String> = ["ERROR", "killed"]
+        // Migration-aware waiting: Nova keeps `status` ACTIVE for the entire
+        // duration of a live/cold migration — settling on ACTIVE would declare
+        // success mid-flight. When the caller asks for `until: ["settled"]`
+        // (server only), the wait is complete only when status is ACTIVE *and*
+        // OS-EXT-STS:task_state has returned to null (no async op in flight).
+        let settledMode = resource == "server" && targets.contains("settled")
+        let settledTargets: Set<String> = ["ACTIVE", "SHUTOFF"]
 
         var backoff: TimeInterval = 1.0
         let cap: TimeInterval = 10.0
         let start = Date()
         let timeoutDate = start.addingTimeInterval(timeout)
         var lastStatus: String?
+        var lastTaskState: String?
         var polls = 0
 
         while Date() < timeoutDate {
@@ -124,8 +136,9 @@ public struct Waiter: Sendable {
                     message: "Resource \(resource) \(id) no longer exists (last status: \(lastStatus ?? "unknown"))"
                 )
 
-            case .found(let status):
+            case .found(let status, let taskState):
                 lastStatus = status
+                lastTaskState = taskState
 
                 if faultStates.contains(status) {
                     return [
@@ -138,6 +151,27 @@ public struct Waiter: Sendable {
                         "elapsedSeconds": .float(elapsed(start)),
                         "polls": .integer(polls),
                     ]
+                }
+
+                if settledMode {
+                    if settledTargets.contains(status), taskState == nil {
+                        return [
+                            "resource": .string(resource),
+                            "id": .string(id),
+                            "region": .string(region),
+                            "status": .string(status),
+                            "task_state": .null,
+                            "settled": .bool(true),
+                            "note": .string("status \(status) with no task in flight — safe to treat migrations/resizes as complete. For evacuation, confirm the instance left the source host via os_action(hypervisor, servers)."),
+                            "elapsedSeconds": .float(elapsed(start)),
+                            "polls": .integer(polls),
+                        ]
+                    }
+                    if let server, let progressToken {
+                        await sendProgress(server: server, token: progressToken,
+                            status: "\(status)\(taskState.map { " (task: \($0))" } ?? "")", elapsed: elapsed(start))
+                    }
+                    // fall through to the shared backoff sleep below
                 }
 
                 if targets.contains(status) {
@@ -212,7 +246,7 @@ public struct Waiter: Sendable {
     /// "not exists", which a poll loop could then misreport as deletion or
     /// "resource no longer exists".
     private enum FetchOutcome {
-        case found(status: String)
+        case found(status: String, taskState: String?)
         case gone
         case transient(underlying: Error)
     }
@@ -221,7 +255,8 @@ public struct Waiter: Sendable {
         do {
             let raw = try await getRaw(vt, descriptor: descriptor, id: id, region: region)
             let status = raw["status"]?.stringValue ?? ""
-            return .found(status: status)
+            let taskState = raw["task_state"]?.stringValue
+            return .found(status: status, taskState: taskState)
         } catch {
             if let e = error as? OpenStackError, e.status == 404 {
                 return .gone
@@ -238,7 +273,9 @@ public struct Waiter: Sendable {
             if descriptor.name == "server" {
                 let r = await client.compute(region: region)
                 let s = try await r.getServer(vt, id: id)
-                return ["status": .string(s.status), "name": .string(s.name)]
+                var raw: [String: JSONValue] = ["status": .string(s.status), "name": .string(s.name)]
+                if let ts = s.taskState { raw["task_state"] = .string(ts) }
+                return raw
             }
             if descriptor.name == "flavor" || descriptor.name == "keypair" || descriptor.name == "server_group" {
                 throw OpenStackError(service: "mcp", status: 501, message: "Waiting on \(descriptor.name) not supported")

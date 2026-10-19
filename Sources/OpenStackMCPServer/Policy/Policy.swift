@@ -10,6 +10,9 @@ public struct Policy: Sendable {
     public var denyActions: [String: Set<String>]
     public var maxListLimit: Int
     public var maxCallsPerMinute: Int
+    /// Roles treated as cloud-admin for `adminOnly` action enforcement
+    /// (`policy.write_roles`, default `[admin]`).
+    public var writeRoles: [String]
 
     public init(
         readOnly: Bool = false,
@@ -17,7 +20,8 @@ public struct Policy: Sendable {
         denyVerbs: [String: Set<Verb>] = [:],
         denyActions: [String: Set<String>] = [:],
         maxListLimit: Int = 200,
-        maxCallsPerMinute: Int = 1024
+        maxCallsPerMinute: Int = 1024,
+        writeRoles: [String] = ["admin"]
     ) {
         self.readOnly = readOnly
         self.denyResources = denyResources
@@ -25,6 +29,7 @@ public struct Policy: Sendable {
         self.denyActions = denyActions
         self.maxListLimit = maxListLimit
         self.maxCallsPerMinute = maxCallsPerMinute
+        self.writeRoles = writeRoles
     }
 
     /// The six identity-admin resource names denied by default (spec §12).
@@ -41,7 +46,8 @@ public struct Policy: Sendable {
             denyVerbs: denyVerbs,
             denyActions: denyActions,
             maxListLimit: maxListLimit,
-            maxCallsPerMinute: maxCallsPerMinute
+            maxCallsPerMinute: maxCallsPerMinute,
+            writeRoles: writeRoles
         )
     }
 
@@ -96,7 +102,7 @@ public struct Policy: Sendable {
     public func toolsEnabled(readOnlyList: [String] = [
         "os_list", "os_get", "os_describe", "os_topology",
         "os_find", "os_whoami", "os_quota", "os_clouds", "os_wait", "os_project_readiness", "os_recommend_flavor",
-        "os_task_submit", "os_task_status", "os_task_cancel"
+        "os_task_submit", "os_task_status", "os_task_cancel", "os_evacuation_plan"
     ]) -> Set<String> {
         Set(readOnlyList)
     }

@@ -524,6 +524,26 @@ public struct ComputeRegion: Sendable {
         return decoded.hypervisor
     }
 
+    /// Fence or re-enable a hypervisor (`PUT /os-hypervisors/{name}/state`,
+    /// microversion 2.53). `enabled: false` stops NEW placements from being
+    /// scheduled to the host; running instances are untouched — the first step
+    /// of a controlled evacuation. `enabled: true` re-enables placement.
+    /// Body is the flat `{"state": {"enabled": <bool>}}` form (validated live
+    /// on IAD3: unknown host 404, member-scoped token 403 policy).
+    public func setHypervisorState(_ vt: ValidatedToken, host: String, enabled: Bool) async throws -> Hypervisor {
+        let region = try resolveRegion(vt)
+        let body = Data("{\"state\":{\"enabled\":\(enabled ? "true" : "false")}}".utf8)
+        let result = try await req(vt, region, method: "PUT",
+                                   path: "\(basePath)/os-hypervisors/\(host)/state",
+                                   body: body, microversionOverride: "2.53")
+        try Self.checkStatus(result.status, service: "compute", resultID: result.requestID)
+
+        struct HypervisorResp: Decodable {
+            let hypervisor: Hypervisor
+        }
+        return try JSONDecoder().decode(HypervisorResp.self, from: result.body).hypervisor
+    }
+
     // MARK: - Compute services (admin)
 
     public func listComputeServices(_ vt: ValidatedToken, binary: String? = nil, host: String? = nil) async throws -> [ComputeServiceInfo] {
