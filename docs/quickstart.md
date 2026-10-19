@@ -190,6 +190,12 @@ tool list instead of Code Mode.
 | **Client-side mint (P1)** | Client mints a Keystone token and presents it as a Bearer header; on `401` it re-mints and retries. Tokens cached at `~/.config/openstack/mcp-tokens/<cloud>.token` (`0600`) | Simplest to reason about |
 | **URL-mode elicitation** | Client visits `/<endpoint>/login`, enters credentials (+ optional region), server mints a token; the completion page shows the bearer to use — on multi-region clouds it is shown as `region:<REGION>:<token>` so validation and API calls target the selected region | Interactive browser flow |
 
+Password logins without a Project are auto-scoped: if the account reaches exactly
+one project, the server transparently re-mints a project-scoped token (clouds like
+Rackspace return an unscoped password token with no roles or catalog, which fails
+every later call). When several projects are reachable, sign-in is refused with a
+message to pick one — use **Detect projects** on the form.
+
 Full details, including multi-replica replay-store configuration, are in
 [OAuth 2.1 login](oauth.md).
 

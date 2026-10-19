@@ -136,6 +136,20 @@
   identity before rendering anything. 670 tests green (incl. 7 Federation E2E
   tests pinning router wiring against the fake Keystone). Full flow doc in
   `docs/oauth.md` "Keystone federation" section.
+- **Region selection fixed end-to-end** (`b433a6b`, 2026-10-19). Three chained
+  defects made the login-form region selection look broken: (1) `Token.decode`
+  crashed on OS-FEDERATION `identity_provider`/`protocol` OBJECTS (Keystone
+  emits `{"id":...}`; decoder expected strings) — the mint swallowed it into a
+  500 that rendered as "bad credentials" with valid credentials; (2) Rackspace
+  unscoped password mints return a minimal body (no roles/catalog/project, token
+  id only in `X-Subject-Token`) — `LoginMinter.mint` now auto-scopes: one
+  accessible project → transparent project-scoped re-mint; several →
+  `needs_project_scope` refusal shown on /login + /oauth/authorize via the new
+  user-safe `LoginResponse.failureReason` channel; (3) the token-validation
+  cache key ignored region, but tokens are NOT portable across Rackspace
+  regional keystones (IAD3 token 401s at DFW3) — key now includes the region.
+  Live E2E: IAD3/5, SJC3/10, DFW3/2 servers per selected region; blank region →
+  default DFW3. 716 tests green.
 - **v0.2.0 PRODUCTION ROLLOUT COMPLETE** (2026-10-10). Deployed to regionone Genestack
   cluster (172.16.27.67), namespace `openstack`, image
   `ghcr.io/cloudnull/substation-mcp:latest` (tagged `0.2.0` + SHA), helm release
