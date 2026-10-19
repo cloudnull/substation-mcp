@@ -358,6 +358,22 @@ public struct ToolRegistry: Sendable {
     }
     func argOptional(_ params: CallTool.Parameters, _ name: String) -> String? { arg(params, name)?.stringValue }
     func argInt(_ params: CallTool.Parameters, _ name: String) -> Int? { arg(params, name)?.intValue }
+
+    /// Read the resource identifier for get/update/delete/action.
+    ///
+    /// The documented parameter is `id_or_name`, but `id`/`name` are what
+    /// callers actually reach for; a wrong key used to cost a full round-trip
+    /// on a `missingParam` error. Accept the aliases and name the canonical key
+    /// in the error so the caller self-corrects.
+    private func argIDOrName(_ params: CallTool.Parameters) throws -> String {
+        for key in ["id_or_name", "id", "name", "uuid"] {
+            if let s = arg(params, key)?.stringValue, !s.isEmpty { return s }
+        }
+        throw OpenStackError(
+            service: "mcp", status: 400, code: "missingParam",
+            message: "Missing required parameter: id_or_name (aliases id, name also accepted)"
+        )
+    }
     /// Read the wait timeout in seconds. `timeout_seconds` is the documented
     /// parameter; `timeout` is a convenience alias so a client sending the
     /// shorter name still gets an honored value instead of a silent ignore.
@@ -465,7 +481,7 @@ public struct ToolRegistry: Sendable {
     private func handleGet(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let d = try getDescriptor(params)
         let region = try await resolveRegion(params)
-        let idOrName = try argString(params, "id_or_name")
+        let idOrName = try argIDOrName(params)
         let vt = identity.vt
 
         let resolver = NameResolver(catalog: catalog, client: client)
@@ -848,7 +864,7 @@ public struct ToolRegistry: Sendable {
                     let diskSpare = (h.localGB ?? 0) - (h.localGBUsed ?? 0)
                     targets.append(Target(host: h.hypervisorHostname, vcpuSpare: vcpuSpare,
                                           ramSpare: ramSpare, diskSpare: diskSpare,
-                                          state: "\(h.state ?? "?")/\(h.status ?? "?")"))
+                                          state: "\(h.state)/\(h.status)"))
                 }
                 for s in h.servers ?? [] { hostMembers[h.hypervisorHostname, default: []].append(s.uuid) }
             }
@@ -900,7 +916,7 @@ public struct ToolRegistry: Sendable {
 
     private func handleTopology(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let resourceName = try argString(params, "resource")
-        let idOrName = try argString(params, "id_or_name")
+        let idOrName = try argIDOrName(params)
         let region = try await resolveRegion(params)
         let depth = argInt(params, "depth") ?? 1
         let diagnosis = argBool(params, "diagnosis")
@@ -1289,7 +1305,7 @@ public struct ToolRegistry: Sendable {
     private func handleUpdate(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let d = try getDescriptor(params)
         let region = try await resolveRegion(params)
-        let idOrName = try argString(params, "id_or_name")
+        let idOrName = try argIDOrName(params)
         let vt = identity.vt
         let dryRun = argBool(params, "dry_run")
 
@@ -1325,7 +1341,7 @@ public struct ToolRegistry: Sendable {
     private func handleDelete(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let d = try getDescriptor(params)
         let region = try await resolveRegion(params)
-        let idOrName = try argString(params, "id_or_name")
+        let idOrName = try argIDOrName(params)
         let vt = identity.vt
         let dryRun = argBool(params, "dry_run")
 
@@ -1400,7 +1416,7 @@ public struct ToolRegistry: Sendable {
     private func handleAction(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let d = try getDescriptor(params)
         let region = try await resolveRegion(params)
-        let idOrName = try argString(params, "id_or_name")
+        let idOrName = try argIDOrName(params)
         let actionName = try argString(params, "action")
         let vt = identity.vt
 

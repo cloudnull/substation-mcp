@@ -46,18 +46,66 @@ public func project(_ raw: [String: JSONValue], _ fields: [String]) -> [String: 
     return result
 }
 
+/// Closest known filter to `needle` (Levenshtein), or nil when nothing is near
+/// enough to suggest.
+///
+/// Callers reach for the parameter they half-remember (`vm_id` for `server_id`,
+/// `status` for `state`); a bare "Unknown filter" forced a second round-trip
+/// through os_describe. Naming the nearest candidate lets the caller correct in
+/// one shot — but only when genuinely close, so the hint never points at an
+/// unrelated filter.
+func suggestFilter(_ needle: String, known: [String]) -> String? {
+    let lower = needle.lowercased()
+    // Budget scales with length: 1 edit for short names, 2 for longer ones.
+    let maxDistance = lower.count <= 5 ? 1 : 2
+    var best: (name: String, distance: Int)? = nil
+    for k in known.sorted() {
+        let d = levenshtein(lower, k.lowercased())
+        guard d <= maxDistance else { continue }
+        if best == nil || d < best!.distance { best = (k, d) }
+    }
+    return best?.name
+}
+
+/// Classic dynamic-programming edit distance.
+func levenshtein(_ a: String, _ b: String) -> Int {
+    if a.isEmpty { return b.count }
+    if b.isEmpty { return a.count }
+    let s = Array(a), t = Array(b)
+    var prev = Array(0...t.count)
+    var curr = [Int](repeating: 0, count: t.count + 1)
+    for i in 1...s.count {
+        curr[0] = i
+        for j in 1...t.count {
+            let cost = s[i - 1] == t[j - 1] ? 0 : 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+        }
+        swap(&prev, &curr)
+    }
+    return prev[t.count]
+}
+
 /// Validate list filters against the descriptor's known filter set.
-/// Throws if an unknown filter is present, listing the known ones (spec §8.2).
+/// Throws if an unknown filter is present, listing the known ones (spec §8.2)
+/// plus the nearest candidate for each unknown key.
 public func checkFilters(descriptor: ResourceDescriptor, filters: [String: String]) throws {
     let unknown = Set(filters.keys).subtracting(descriptor.listFilters)
     guard unknown.isEmpty else {
         let known = descriptor.listFilters.sorted().joined(separator: ", ")
         let unknownStr = unknown.sorted().joined(separator: ", ")
+        var message = "Unknown filter(s) for \(descriptor.name): \(unknownStr). Known filters: \(known)"
+        let hints = unknown.sorted().compactMap { u -> String? in
+            guard let s = suggestFilter(u, known: descriptor.listFilters.sorted()) else { return nil }
+            return "\(u) -> \(s)"
+        }
+        if !hints.isEmpty {
+            message += ". Did you mean: \(hints.joined(separator: "; "))?"
+        }
         throw OpenStackError(
             service: descriptor.service.rawValue,
             status: 400,
             code: "invalidFilter",
-            message: "Unknown filter(s) for \(descriptor.name): \(unknownStr). Known filters: \(known)"
+            message: message
         )
     }
 }

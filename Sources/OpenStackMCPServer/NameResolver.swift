@@ -152,8 +152,22 @@ public actor NameResolver {
             let r = await client.compute(region: region)
             switch descriptor.name {
             case "server":
-                let s = try await r.getServer(vt, id: id)
-                return try Self.encodeObject(s)
+                do {
+                    let s = try await r.getServer(vt, id: id)
+                    return try Self.encodeObject(s)
+                } catch let err as OpenStackError where err.status == 404 {
+                    // Nova's server listing is cross-project (all_projects) but
+                    // GET /servers/{id} is project-scoped, so an id copied from
+                    // os_list can 404 here. os_get still recovers via the
+                    // listing (step 1b) when the server is merely invisible to
+                    // this project, so only a genuinely unreachable id reaches
+                    // the caller — say which of the two happened.
+                    throw OpenStackError(
+                        service: "compute", status: 404, code: err.code,
+                        message: err.message,
+                        hint: "Server '\(id)' is not reachable by id from this session's project. os_list(server) reads Nova's cross-project listing; per-server routes are project-scoped — sign in again selecting the project that owns the server."
+                    )
+                }
             case "flavor":
                 let f = try await r.getFlavor(vt, id: id)
                 return try Self.encodeObject(f)
@@ -587,34 +601,67 @@ public actor NameResolver {
                 result["resource"] = .string("compute_service")
                 result["region"] = .string(region)
                 return result
-            case "server_interface":
-                // Per-server resource: flatten interfaces across all
-                // servers (optionally narrowed by a server_id filter).
-                let servers = try await r.listServers(vt, filters: filters, limit: limit)
-                var all: [ServerInterface] = []
-                for s in servers {
-                    if let ifaces = try? await r.listServerInterfaces(vt, serverID: s.id) {
-                        all.append(contentsOf: ifaces)
+            case "server_interface", "server_volume_attachment":
+                // Per-server resources: Nova has no global listing, so fan out
+                // per server — CONCURRENTLY (the old serial loop cost one
+                // round-trip per server). Filters are scoped HERE and never
+                // forwarded to /servers/detail, where Nova rejects unknown query
+                // keys with 400 "'server_id' does not match any of the regexes:
+                // '^_'".
+                //
+                // A server outside the session's project 404s on the per-server
+                // routes even though os_list(server) shows it (Nova's listing is
+                // cross-project; the attachment routes are not). Name that cause
+                // so the caller switches project instead of doubting the id.
+                let serverID = filters["server_id"].flatMap { $0.isEmpty ? nil : $0 }
+                let servers: [Server]
+                if let sid = serverID {
+                    do {
+                        servers = [try await r.getServer(vt, id: sid)]
+                    } catch let err as OpenStackError where err.status == 404 {
+                        throw OpenStackError(
+                            service: "compute", status: 404, code: err.code,
+                            message: err.message,
+                            hint: "Server '\(sid)' is not visible to this session's project. os_list(server) reads Nova's cross-project listing, but per-server routes are project-scoped — sign in again selecting the project that owns the server."
+                        )
                     }
+                } else {
+                    servers = try await r.listServers(vt, limit: limit)
                 }
-                var result: [String: JSONValue] = try Self.encodeList(all)
-                result["resource"] = .string("server_interface")
-                result["region"] = .string(region)
-                return result
-            case "server_volume_attachment":
-                // Per-server resource: flatten volume attachments across all
-                // servers (optionally narrowed by a server_id filter).
-                let servers = try await r.listServers(vt, filters: filters, limit: limit)
-                var all: [ServerVolumeAttachment] = []
-                for s in servers {
-                    if let vols = try? await r.listServerVolumeAttachments(vt, serverID: s.id) {
-                        all.append(contentsOf: vols)
+
+                if descriptor.name == "server_interface" {
+                    var ifaces = await withTaskGroup(of: [ServerInterface].self) { group in
+                        for s in servers {
+                            group.addTask { (try? await r.listServerInterfaces(vt, serverID: s.id)) ?? [] }
+                        }
+                        var acc: [ServerInterface] = []
+                        for await batch in group { acc.append(contentsOf: batch) }
+                        return acc
                     }
+                    if let pid = filters["port_id"], !pid.isEmpty {
+                        ifaces = ifaces.filter { $0.portID == pid }
+                    }
+                    var result: [String: JSONValue] = try Self.encodeList(ifaces)
+                    result["resource"] = .string("server_interface")
+                    result["region"] = .string(region)
+                    return result
+                } else {
+                    var vols = await withTaskGroup(of: [ServerVolumeAttachment].self) { group in
+                        for s in servers {
+                            group.addTask { (try? await r.listServerVolumeAttachments(vt, serverID: s.id)) ?? [] }
+                        }
+                        var acc: [ServerVolumeAttachment] = []
+                        for await batch in group { acc.append(contentsOf: batch) }
+                        return acc
+                    }
+                    if let vid = filters["volume_id"], !vid.isEmpty {
+                        vols = vols.filter { $0.volumeID == vid }
+                    }
+                    var result: [String: JSONValue] = try Self.encodeList(vols)
+                    result["resource"] = .string("server_volume_attachment")
+                    result["region"] = .string(region)
+                    return result
                 }
-                var result: [String: JSONValue] = try Self.encodeList(all)
-                result["resource"] = .string("server_volume_attachment")
-                result["region"] = .string(region)
-                return result
             case "compute_quota":
                 let q = try await r.getQuotaSet(vt)
                 var result: [String: JSONValue] = try Self.encodeList([q])

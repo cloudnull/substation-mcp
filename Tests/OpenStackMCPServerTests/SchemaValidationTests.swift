@@ -145,6 +145,35 @@ struct SchemaValidationTests {
         try checkFilters(descriptor: d, filters: [:])
     }
 
+    @Test("unknown filter close to a known one gets a did-you-mean hint")
+    func unknownFilterSuggestsNearest() {
+        let d = catalog.descriptor("server")!
+        do {
+            // `name` is a real filter; `nme` is one edit away.
+            try checkFilters(descriptor: d, filters: ["nme": "web"])
+            Issue.record("Expected error for unknown filter")
+        } catch let error as OpenStackError {
+            #expect(error.message.contains("Did you mean"), "Expected a suggestion, got: \(error.message)")
+            #expect(error.message.contains("nme -> name"), "Expected 'nme -> name', got: \(error.message)")
+        } catch {
+            Issue.record("Expected OpenStackError, got \(error)")
+        }
+    }
+
+    @Test("unknown filter with no near match gets no suggestion")
+    func unknownFilterWithoutSuggestion() {
+        let d = catalog.descriptor("server")!
+        do {
+            try checkFilters(descriptor: d, filters: ["bogus_filter": "value"])
+            Issue.record("Expected error for unknown filter")
+        } catch let error as OpenStackError {
+            #expect(!error.message.contains("Did you mean"),
+                    "Nothing is close to 'bogus_filter'; got: \(error.message)")
+        } catch {
+            Issue.record("Expected OpenStackError, got \(error)")
+        }
+    }
+
     // MARK: - Projection
 
     @Test("projection keeps only named top-level fields")

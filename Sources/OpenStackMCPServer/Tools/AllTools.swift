@@ -40,7 +40,7 @@ public enum AllTools {
                     "type": .string("object"),
                     "properties": .object([
                         "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "id_or_name": .object(["type": .string("string")]),
+                        "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "region": .object(["type": .string("string")]),
                         "fields": .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
                     ]),
@@ -67,7 +67,7 @@ public enum AllTools {
                     "type": .string("object"),
                     "properties": .object([
                         "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "id_or_name": .object(["type": .string("string")]),
+                        "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "region": .object(["type": .string("string")]),
                         "depth": .object(["type": .string("integer")]),
                         "diagnosis": .object(["type": .string("boolean")]),
@@ -248,7 +248,7 @@ public enum AllTools {
                     "type": .string("object"),
                     "properties": .object([
                         "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "id_or_name": .object(["type": .string("string")]),
+                        "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "patch": .object(["type": .string("object")]),
                         "region": .object(["type": .string("string")]),
                         "dry_run": .object(["type": .string("boolean")]),
@@ -264,7 +264,7 @@ public enum AllTools {
                     "type": .string("object"),
                     "properties": .object([
                         "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "id_or_name": .object(["type": .string("string")]),
+                        "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "region": .object(["type": .string("string")]),
                         "dry_run": .object(["type": .string("boolean")]),
                     ]),
@@ -279,7 +279,7 @@ public enum AllTools {
                     "type": .string("object"),
                     "properties": .object([
                         "resource": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "id_or_name": .object(["type": .string("string")]),
+                        "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "action": .object(["type": .string("string")]),
                         "params": .object(["type": .string("object")]),
                         "region": .object(["type": .string("string")]),
