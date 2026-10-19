@@ -163,11 +163,19 @@ extension OAuthAuthorizationServer {
                 return Self.redirectWithCode(code: code, redirectURI: redirectURI, state: state)
             } catch {
                 var reason = "unknown"
+                var detail = "Mint failed (check credentials)."
                 if let osErr = error as? OpenStackError {
                     reason = "keystone-\(osErr.status)-\(osErr.code ?? "generic")"
+                    // The auto-scope refusal is our own actionable message
+                    // (no credential material): tell the user to pick a project
+                    // instead of implying their password was wrong.
+                    if osErr.message.contains(LoginMinter.needsProjectScopeMarker) {
+                        reason = "needs_project_scope"
+                        detail = osErr.message.replacingOccurrences(of: "\(LoginMinter.needsProjectScopeMarker): ", with: "")
+                    }
                 }
                 logger.warning("OAuth authorize mint failed", metadata: ["reason": .string(reason)])
-                return Self.oauthError(.invalidRequest(description: "Mint failed (check credentials)."), state: state, redirectURI: redirectURI)
+                return Self.oauthError(.invalidRequest(description: detail), state: state, redirectURI: redirectURI)
             }
         }
 

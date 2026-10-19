@@ -100,12 +100,18 @@ public struct LoginResponse: Sendable {
     public let storePath: String
     public let completion: Bool
     public let region: String?
+    /// Optional user-safe explanation shown on the failure page (e.g. the
+    /// auto-scope refusal "pick a project"). The adapter only renders text the
+    /// login handler deliberately puts here — never a raw Keystone error, which
+    /// may quote credential material.
+    public let failureReason: String?
 
-    public init(tokenID: String, storePath: String, completion: Bool, region: String? = nil) {
+    public init(tokenID: String, storePath: String, completion: Bool, region: String? = nil, failureReason: String? = nil) {
         self.tokenID = tokenID
         self.storePath = storePath
         self.completion = completion
         self.region = region
+        self.failureReason = failureReason
     }
 }
 
@@ -792,7 +798,7 @@ public struct MCPRoute: Sendable {
                       <div class="result">
                         <div class="icon err"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
                         <h1 class="title">Sign-in failed</h1>
-                        <p class="sub">Credentials could not be validated. Check the details and try again, or contact your cloud administrator.</p>
+                        <p class="sub">\(result.failureReason.map { "Pick a project and try again: " + Self.htmlEscape($0) } ?? "Credentials could not be validated. Check the details and try again, or contact your cloud administrator.")</p>
                         <a class="btn" href="\(loginPath)">Try again</a>
                       </div>
                     </main>
@@ -816,6 +822,17 @@ public struct MCPRoute: Sendable {
         }
     }
 
+    /// Minimal HTML escaping for interpolating server-generated text into the
+    /// login pages (failure reasons carry project counts/names).
+    static func htmlEscape(_ s: String) -> String {
+        var out = s
+        out = out.replacingOccurrences(of: "&", with: "&amp;")
+        out = out.replacingOccurrences(of: "<", with: "&lt;")
+        out = out.replacingOccurrences(of: ">", with: "&gt;")
+        out = out.replacingOccurrences(of: "\"", with: "&quot;")
+        return out
+    }
+
     /// Decode a login request body. Accepts two encodings:
     ///   - `application/json` (API clients, curl -d '{...}')
     ///   - `application/x-www-form-urlencoded` (browser form submission, the
@@ -823,6 +840,7 @@ public struct MCPRoute: Sendable {
     /// The `contentType` header is the primary signal; when it is absent or
     /// unrecognised, the body is sniffed (a body starting with `{` is treated
     /// as JSON, otherwise form-encoded).
+
     private static func decodeLoginRequest(_ data: Data, contentType: String) throws -> LoginRequest {
         let ct = contentType.lowercased()
         var fields: [String: String]

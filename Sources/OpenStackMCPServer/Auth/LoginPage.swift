@@ -98,6 +98,19 @@ public struct LoginPage: Sendable {
                 var reason = "unknown"
                 if let err = error as? OpenStackError {
                     reason = "keystone-\(err.status)"
+                    // The message is our own (normalized) text, never the raw
+                    // Keystone body — safe to log, and it distinguishes a real
+                    // credential rejection (401) from a client-side decode bug
+                    // (500) that previously looked like "bad credentials".
+                    reason += ":\(err.code ?? String(err.message.prefix(80)))"
+                }
+                let failureReason: String?
+                if let err = error as? OpenStackError,
+                   err.message.contains(LoginMinter.needsProjectScopeMarker) {
+                    failureReason = err.message.replacingOccurrences(
+                        of: "\(LoginMinter.needsProjectScopeMarker): ", with: "")
+                } else {
+                    failureReason = nil
                 }
                 logger.warning("Login mint failed", metadata: [
                     "elicitationId": "\(req.elicitationId)",
@@ -107,7 +120,8 @@ public struct LoginPage: Sendable {
                     tokenID: "",
                     storePath: "",
                     completion: false,
-                    region: nil
+                    region: nil,
+                    failureReason: failureReason
                 )
             }
         }

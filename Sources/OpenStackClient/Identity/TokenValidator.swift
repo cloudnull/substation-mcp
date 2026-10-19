@@ -39,7 +39,11 @@ public actor TokenValidator {
     ///   the service catalog reflects the selected region's endpoints — required for
     ///   multi-region clouds where each region has its own auth_url and catalog.
     public func validate(_ tokenID: String, region: String? = nil) async throws -> ValidatedToken {
-        let key = CacheKey(tokenID: tokenID, region: "_auth_", resource: "__token__", suffix: "")
+        // The region is part of the cache identity: tokens are NOT portable
+        // across regional keystones (live-verified on Rackspace: an IAD3 token
+        // 401s at DFW3), so the same bearer validated under two regions must
+        // not share one cached whoami.
+        let key = CacheKey(tokenID: tokenID, region: "_auth_\(region ?? "")", resource: "__token__", suffix: "")
 
         if let cached = await cache.get(key, ttl: tokenCacheTTL, as: Token.self) {
             let scopes = deriveScopes(roles: cached.roles, policy: policy)
@@ -108,8 +112,67 @@ public actor LoginMinter {
         self.logger = logger
     }
 
+    /// Error marker for a password login that reached Keystone successfully but
+    /// came back with no project scope and no project name to scope with. The
+    /// login page keys on this substring to render an actionable message
+    /// instead of a generic "check credentials".
+    public static let needsProjectScopeMarker = "needs_project_scope"
+
     /// Mint a token using the given method.
-    public func mint(method: MintMethod, region: String? = nil, domainScoped: Bool = false, cloudsFile: URL? = nil) async throws -> Token {
+    ///
+    /// Password special case: clouds like Rackspace answer an unscoped password
+    /// mint with a minimal body (no `roles`, no `catalog` — live-verified on
+    /// IAD3 2026-10-19), and the resulting token is useless for the data plane.
+    /// When the mint comes back unscoped AND the user can reach exactly ONE
+    /// project, we transparently re-mint project-scoped to that project (the
+    /// picker would have chosen it anyway; single-project users never see a
+    /// difference). More than one project → `needs_project_scope` error so the
+    /// form surfaces "use Detect projects / fill Project" rather than a
+    /// session that fails every later call.
+    ///
+    /// `autoScopeSingleProject` must stay false inside `detectProjects`: that
+    /// flow intentionally presents the minimal unscoped token to list projects,
+    /// and auto-scoping there would recurse on every detection click.
+    public func mint(method: MintMethod, region: String? = nil, domainScoped: Bool = false, cloudsFile: URL? = nil, autoScopeSingleProject: Bool = true) async throws -> Token {
+        let token = try await mintRaw(method: method, region: region, domainScoped: domainScoped, cloudsFile: cloudsFile)
+        guard autoScopeSingleProject, method.kind == .password,
+              (method.projectName ?? "").isEmpty, !domainScoped,
+              token.project.id == "unscoped",
+              let uid = method.userID, let pw = method.password else {
+            return token
+        }
+        let projects: [DetectedProject]
+        do {
+            projects = try await listAccessibleProjects(
+                token: token, user: uid, domain: method.domain,
+                password: pw, region: region, cloudsFile: cloudsFile
+            )
+        } catch {
+            // Listing failed — keep the unscoped token rather than failing the
+            // login outright; data-plane calls will report the scope problem.
+            logger.debug("auto-scope: project listing failed, keeping unscoped token", metadata: ["error": "\(error)"])
+            return token
+        }
+        guard !projects.isEmpty else { return token }
+        if projects.count > 1 {
+            throw OpenStackError(
+                service: "keystone",
+                status: 401,
+                message: "\(Self.needsProjectScopeMarker): account can reach \(projects.count) projects — pick one with Detect projects or fill the Project field"
+            )
+        }
+        let scoped = try await mintRaw(
+            method: .password(userID: uid, domain: method.domain, password: pw, projectName: projects[0].name),
+            region: region, domainScoped: false, cloudsFile: cloudsFile
+        )
+        logger.info("auto-scoped unscoped password login to sole accessible project", metadata: [
+            "project": "\(projects[0].name)",
+        ])
+        return scoped
+    }
+
+    /// The raw mint: one Keystone `POST /v3/auth/tokens`, no auto-scope logic.
+    public func mintRaw(method: MintMethod, region: String? = nil, domainScoped: Bool = false, cloudsFile: URL? = nil) async throws -> Token {
         let body: Data
 
         let id = method.appCredID
@@ -205,6 +268,9 @@ public actor LoginMinter {
                 )
             }
             overrideBase = regionURL
+            logger.debug("mint targeting regional keystone", metadata: [
+                "region": "\(region)", "authURL": "\(regionURL.absoluteString)",
+            ])
         }
         let (status, responseBody, _) = try await transport.request(
             method: "POST",
@@ -226,14 +292,15 @@ public actor LoginMinter {
             )
         }
 
-        guard let token = try? Token.decode(from: responseBody, tokenID: box.value) else {
-            throw OpenStackError(
-                service: "keystone",
-                status: 500,
-                message: "Failed to decode minted token"
-            )
-        }
-        return token
+        // A password mint WITHOUT a project scope (Rackspace live-validated
+        // 2026-10-19) returns a minimal body: `user` + `expires_at` only — no
+        // `id`, no `roles`, no `catalog`, and NO `project`. `Token.decode`
+        // requires expires_at + user and synthesizes everything else, so the
+        // mint succeeds here and the session lands unscoped (the MCP gate
+        // re-validates per request; whoami surfaces the scope). Decode
+        // failures surface as-is: a bare 500 "decode failed" used to look like
+        // "bad credentials" while the bug was decoder-side.
+        return try Token.decode(from: responseBody, tokenID: box.value)
     }
 
     /// A project returned by `detectProjects`.
@@ -291,10 +358,12 @@ public actor LoginMinter {
             regionalBase = url
         }
         // 1. Mint an UNSCOPED token carrying the user's domain — exactly the shape the
-        //    working /login path uses. No scope block at all.
+        //    working /login path uses. No scope block at all. Raw mint: the
+        //    listing intentionally presents the minimal unscoped token, so the
+        //    auto-scope wrapper must not run here (it would recurse).
         let token: Token
         do {
-            token = try await mint(
+            token = try await mintRaw(
                 method: .password(userID: user, domain: d, password: password, projectName: nil),
                 region: region,
                 domainScoped: false,
@@ -307,8 +376,27 @@ public actor LoginMinter {
             throw OpenStackError(service: "keystone", status: 401,
                                   message: "mint_failed")
         }
+        return try await listAccessibleProjects(
+            token: token, user: user, domain: d, password: password,
+            region: region, cloudsFile: cloudsFile
+        )
+    }
 
-        // 2. List the user's projects. Different clouds expose this differently:
+    /// List the projects an already-minted (unscoped) token can reach.
+    ///
+    /// Shared by `detectProjects` (the picker) and the login auto-scope path.
+    /// The listing MUST hit the same regional Keystone the token was minted
+    /// against; `regionalBase` is resolved from `region` here for that reason.
+    private func listAccessibleProjects(token: Token, user: String, domain: String?, password: String, region: String?, cloudsFile: URL?) async throws -> [DetectedProject] {
+        var regionalBase: URL? = nil
+        if let region, !region.isEmpty {
+            guard let file = Self.resolvedCloudsFile(cloudsFile), let url = Self.regionAuthURL(region: region, cloudsFile: file) else {
+                throw OpenStackError(service: "keystone", status: 400,
+                                      message: "Region '\(region)' is not configured in clouds.yaml")
+            }
+            regionalBase = url
+        }
+        // Different clouds expose the listing differently:
         //    - GET /v3/users/{id}/projects works for regular member accounts on
         //      Rackspace (and similar) where the broader endpoint is admin-only.
         //    - GET /v3/projects works on clouds where the token carries the
@@ -394,7 +482,7 @@ public actor LoginMinter {
             }
             // Next-page marker: last project id (Keystone's default sort).
             if arr.count < limit { break }
-            marker = (arr.last as? [String: Any])?["id"] as? String
+            marker = arr.last?["id"] as? String
             if marker == nil { break }
         }
         return projects
@@ -631,7 +719,7 @@ public actor LoginMinter {
                 projects.append(DetectedProject(id: id, name: name, domainName: dom))
             }
             if arr.count < limit { break }
-            marker = (arr.last as? [String: Any])?["id"] as? String
+            marker = arr.last?["id"] as? String
             if marker == nil { break }
         }
         return projects
@@ -668,8 +756,22 @@ extension Token {
             }
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
-                identity_provider = try c.decodeIfPresent(String.self, forKey: .identity_provider)
-                fedProtocol = try c.decodeIfPresent(String.self, forKey: .fedProtocol)
+                // Keystone emits `identity_provider` and `protocol` as OBJECTS
+                // ({"id":...,"name":...}) on OS-FEDERATION tokens — live-verified
+                // on Rackspace IAD3 — while some clouds emit bare strings. The
+                // old String-only decode threw typeMismatch, which the mint
+                // swallowed into a 500 "Failed to decode minted token" that the
+                // login page rendered as "bad credentials". Accept both.
+                if let s = try? c.decode(String.self, forKey: .identity_provider) {
+                    identity_provider = s
+                } else {
+                    identity_provider = try c.decodeIfPresent(RawDomain.self, forKey: .identity_provider)?.id
+                }
+                if let s = try? c.decode(String.self, forKey: .fedProtocol) {
+                    fedProtocol = s
+                } else {
+                    fedProtocol = try c.decodeIfPresent(RawDomain.self, forKey: .fedProtocol)?.id
+                }
                 // Keystone emits groups as an ARRAY OF OBJECTS ([{"id":...}]);
                 // some clouds send plain strings. Accept both.
                 if let strs = try? c.decode([String].self, forKey: .groupsRaw) {

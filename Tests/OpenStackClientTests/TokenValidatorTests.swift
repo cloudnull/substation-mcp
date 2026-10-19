@@ -506,6 +506,40 @@ struct LoginMinterTests {
         #expect(proj["name"] == nil, "must NOT also carry a name")
     }
 
+    /// Rackspace (live-validated 2026-10-19, IAD3) answers an unscoped
+    /// password mint with a MINIMAL body: `user` + `expires_at` only — no
+    /// `id`, no `roles`, no `catalog`, no `project` — and the real token id
+    /// ONLY in the `X-Subject-Token` header. The mint must succeed and carry
+    /// the header token, not fail decode (which surfaced to the login form as
+    /// a bogus keystone-500 / "bad credentials").
+    @Test func mintAcceptsMinimalUnscopedPasswordBody() async throws {
+        let server = TestServer()
+        try server.start()
+        defer { server.stop() }
+        server.addHandler("/v3/auth/tokens") { req in
+            _ = req
+            return (201, #"{"token":{"methods":["password"],"user":{"domain":{"id":"d1","name":"rackspace_cloud_domain"},"id":"fdff75","name":"cloudnull","OS-FEDERATION":{"groups":[],"identity_provider":{"id":"rackspace"},"protocol":{"id":"rackspace"}}},"audit_ids":["a"],"expires_at":"2026-10-19T17:14:46.000000Z","issued_at":"2026-10-19T05:14:46.000000Z"}}"#, [("Content-Type", "application/json"), ("X-Subject-Token", "real-token-1")])
+        }
+        let transport = Transport(
+            cloud: CloudEntry(name: "test", authURL: server.baseURL),
+            tokenSource: { "" },
+            maxConnectionsPerHost: 4,
+            requestTimeout: .seconds(10),
+            logger: Logger(label: "test")
+        )
+        defer { transport.syncShutdown() }
+        let minter = LoginMinter(transport: transport, logger: Logger(label: "test-minter"))
+        let token = try await minter.mint(
+            method: .password(userID: "cloudnull", domain: "rackspace_cloud_domain", password: "pw", projectName: nil)
+        )
+        #expect(token.id == "real-token-1", "token id must come from X-Subject-Token when the body omits it")
+        #expect(token.user.id == "fdff75")
+        #expect(token.project.id == "unscoped", "no project in body => sentinel unscoped project")
+        #expect(token.roles.isEmpty)
+        #expect(token.catalog.isEmpty)
+        #expect(token.fedInfo?.identityProvider == "rackspace")
+    }
+
     /// `listFedProjects` must reject a token whose `OS-FEDERATION.identity_provider`
     /// does not match `expectedIdP` (the paste-token trust boundary).
     @Test func listFedProjectsRejectsWrongIdP() async throws {
