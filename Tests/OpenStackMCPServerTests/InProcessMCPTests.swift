@@ -920,6 +920,19 @@ struct InProcessMCPTests {
                "expected actionable quota guidance, got: \(String(describing: err.hint))")
     }
 
+    @Test("upstream 503 (service-side Keystone hop down) explains it is not auth")
+    func errorHintUpstream503() {
+        // The exact Rackspace ZaQar/Blazar edge shape (live IAD3 2026-10-19).
+        let body = #"<html><body><h1>503 Service Unavailable</h1>The server is currently unavailable. Please try again at a later time.<br /><br />The Keystone service is temporarily unavailable.</body></html>"#.data(using: .utf8)
+        let err = OpenStackError.normalize(body: body, status: 503, service: "messaging",
+                                           requestID: nil, hasAccessRules: false)
+        #expect(err.retriable == true)
+        #expect(err.hint?.contains("upstream") == true,
+                "expected upstream-outage framing, got: \(String(describing: err.hint))")
+        #expect(err.hint?.lowercased().contains("not an auth") == true,
+                "hint must steer away from re-login, got: \(String(describing: err.hint))")
+    }
+
     @Test("publicNetworkRejected error has hint with creation sequence")
     func errorHintPublicNetwork() async throws {
         let handle = try await FakeApp.start()

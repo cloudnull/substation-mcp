@@ -112,6 +112,16 @@ public struct OpenStackError: Error, Sendable, Equatable {
             if msgLower.contains("required property") || msgLower.contains("missing") {
                 hint = "Missing required field. Call os_describe(<resource>) to see the expected schema."
             }
+        } else if status == 503 {
+            // Rackspace's ZaQar/Blazar edge answers a stable 503 whose HTML says
+            // "The Keystone service is temporarily unavailable" — that is the
+            // SERVICE's token-validation hop down, not Keystone itself (Keystone
+            // serves fine on the same session). Say so: the caller must not
+            // re-authenticate or blame the MCP server.
+            let msgLower = message.lowercased()
+            if msgLower.contains("temporarily unavailable") || msgLower.contains("try again at a later time") {
+                hint = "The \(service) service backend is down upstream (its Keystone token-validation hop fails; Keystone itself is healthy). This is not an auth or MCP problem — retry later; no re-login needed. os_describe(<resource>) may carry a note with the last live validation."
+            }
         }
 
         // AWS-query XML (heat-cfn) carries its own status semantics in the

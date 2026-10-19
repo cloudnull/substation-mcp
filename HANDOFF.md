@@ -45,6 +45,19 @@
   :show`) and the refusal carries the new migrationHint ("…need the cloud
   admin role. Re-login with an admin-scoped credential…") — cloud policy,
   not code; the admin path is fake-tested end-to-end.
+  **ZaQar/Blazar IAD3 re-probe (2026-10-19, supersedes the 2026-10-08 outage
+  notes below):** both still down, root cause pinned precisely — it is the
+  **service-side Keystone auth middleware**, not the queue/reservation APIs
+  and not our client: unauthenticated → 401 (edge + routing alive), ANY
+  token → stable 503 "The Keystone service is temporarily unavailable"
+  (zaqar v1+v2, blazar /v1 + /reservations + /hosts, 10+ retries, UA-
+  independent). ZaQar `/` serves the v2 version doc; DFW3 ZaQar is fully up
+  (401's the IAD3-scoped token cross-region — correct). Actions shipped:
+  `queue`/`reservation`/`allocation` carry `phase1Note` with the live
+  findings (surfaced via `os_describe` as `note`), and `OpenStackError
+  .normalize` now maps the upstream-503 HTML shape to a hint that names it
+  as an upstream backend outage (not auth, no re-login, retry later).
+  Zero code change needed when they heal — clients are wired + fake-tested.
 - **Metric deepening + region-selection fixes** (2026-10-18, supersedes the QoS
   bullet's test count). Catalog 65 → **66** (`archive_policy`); `metric` gained
   get-by-id, `measures` (raw + validated aggregation), `metrics` (resource join),
