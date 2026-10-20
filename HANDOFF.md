@@ -1,7 +1,21 @@
-# Handoff: OpenStack MCP — v0.2.0 PRODUCTION ROLLOUT COMPLETE
+# Handoff: OpenStack MCP — v0.2.1 (auth/region + tool-surface fixes); v0.2.0 in production
 
 ## Current State
 
+- **v0.2.1 tagged** (2026-10-19, `1c05b95`). Patch release over v0.2.0, three
+  fixes since the production rollout: (1) login-time **region selection works
+  end-to-end** — OS-FEDERATION object decode crash fixed (it presented as "bad
+  credentials"), unscoped password logins auto-scope to the sole accessible
+  project, and the token cache keys on region (tokens are not portable across
+  Rackspace regional keystones); (2) **tool surface hardened** —
+  `server_id`/`port_id`/`volume_id` filters actually work on the per-server
+  resources (they were forwarded to Nova and rejected), the per-server fan-out
+  is concurrent, `id`/`name` are accepted as aliases of `id_or_name`, and
+  unknown filters suggest the nearest match; (3) waiter timeouts name the
+  in-flight `task_state`. 723 tests green. Helm chart/appVersion/image tag
+  bumped to 0.2.1 in the chart, `values.yaml`, and the Genestack overrides
+  template — the **running regionone deployment is still 0.2.0** and needs a
+  chart bump to roll.
 - **Evacuation workflow** (2026-10-19). The "evacuate hypervisor X" entry point
   is now end-to-end. **`os_evacuation_plan`** (read-only; read-only sessions
   see 15 tools incl. it): joins per instance the flavor disk shape
