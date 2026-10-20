@@ -102,6 +102,10 @@ public struct Waiter: Sendable {
         let start = Date()
         let timeoutDate = start.addingTimeInterval(timeout)
         var lastStatus: String?
+        /// Last observed `OS-EXT-STS:task_state` — the timeout message must name
+        /// an in-flight task (e.g. `migrating`), otherwise a migration-timeout
+        /// reads as a plain state stall and the caller retries into the same
+        /// Nova refusal.
         var lastTaskState: String?
         var polls = 0
 
@@ -200,7 +204,7 @@ public struct Waiter: Sendable {
 
         throw OpenStackError(
             service: "mcp", status: 408, code: "timeout",
-            message: "Timed out after \(Int(timeout))s waiting for \(resource) \(id) to reach [\(targets.sorted().joined(separator: ", "))]. Last status: \(lastStatus ?? "unknown")"
+            message: "Timed out after \(Int(timeout))s waiting for \(resource) \(id) to reach [\(targets.sorted().joined(separator: ", "))]. Last status: \(lastStatus ?? "unknown")\(lastTaskState.map { " (task_state: \($0) — an async op is still in flight)" } ?? "")"
         )
     }
 
