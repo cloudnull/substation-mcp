@@ -58,9 +58,10 @@ struct ImageServiceTests {
 
         let region = images.region("RegionOne")
         let imgs = try await region.listImages(vt)
-        #expect(imgs.count == 1)
-        #expect(imgs.first?.name == "ubuntu-24.04")
-        #expect(imgs.first?.status == "active")
+        // Seed: img-1 (own project) + Debian-13 + two img-ambig-* rows (other
+        // project, public). The list is visibility-filtered, not project-filtered.
+        #expect(imgs.count == 4)
+        #expect(imgs.contains { $0.name == "ubuntu-24.04" && $0.status == "active" })
     }
 
     @Test("create image and upload via web-download", .timeLimit(.minutes(2)))

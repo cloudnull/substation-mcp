@@ -560,6 +560,79 @@ struct LinkToolsTests {
         #expect(text?.contains("cannot be detached") == true, "Error should explain, got: \(text ?? "nil")")
     }
 
+    // MARK: - floating_ip target name resolution
+    //
+    // `device_id` on a Neutron port is the server UUID and nothing else, so a
+    // server NAME has to be resolved before it is used as a port filter. These
+    // pin that the name form behaves exactly like the UUID form, and that a
+    // name matching nothing is reported as a resolution failure rather than as
+    // a topology verdict about a server that was never looked up.
+
+    @Test("floating_ip attach by server NAME reaches the same port as by UUID", )
+    func floatingIPAttachByServerName() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // server-1 is the NAME of srv-0001, whose seeded port-002 is the port a
+        // FIP association must land on.
+        let byName = try await bundle.mcpClient.callTool(name: "os_attach", arguments: [
+            "link": .string("floating_ip"),
+            "source": .string("fip-001"),
+            "source_type": .string("floating_ip"),
+            "target": .string("server-1"),
+            "target_type": .string("server"),
+        ])
+        let nameText = firstText(byName.content)
+        #expect(byName.isError != true, "Name form must succeed where the UUID form does, got: \(nameText ?? "nil")")
+        #expect(nameText?.contains("port-002") == true, "Name form should resolve to the server's port, got: \(nameText ?? "nil")")
+
+        // Detach, then attach by UUID: both forms must select the same port.
+        _ = try await bundle.mcpClient.callTool(name: "os_detach", arguments: [
+            "link": .string("floating_ip"),
+            "source": .string("fip-001"),
+            "source_type": .string("floating_ip"),
+            "target": .string("server-1"),
+            "target_type": .string("server"),
+        ])
+        let byID = try await bundle.mcpClient.callTool(name: "os_attach", arguments: [
+            "link": .string("floating_ip"),
+            "source": .string("fip-001"),
+            "source_type": .string("floating_ip"),
+            "target": .string("srv-0001"),
+            "target_type": .string("server"),
+        ])
+        let idText = firstText(byID.content)
+        #expect(byID.isError != true, "UUID form should still succeed, got: \(idText ?? "nil")")
+        #expect(idText?.contains("port-002") == true, "UUID form should pick the same port, got: \(idText ?? "nil")")
+    }
+
+    @Test("floating_ip attach with an unknown server name reports a resolution failure, not noReachablePort", )
+    func floatingIPAttachUnknownServerName() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_attach", arguments: [
+            "link": .string("floating_ip"),
+            "source": .string("fip-001"),
+            "source_type": .string("floating_ip"),
+            "target": .string("no-such-server"),
+            "target_type": .string("server"),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("nameNotResolved"), "Should be a name-resolution failure, got: \(text)")
+        // The wrong-attribution error is the actual defect: it sent the caller
+        // off debugging routers for a server that had never been looked up.
+        #expect(!text.contains("noReachablePort"), "Must not blame topology, got: \(text)")
+        #expect(!text.contains("no port on a subnet reachable"), "Must not claim a port/topology conclusion, got: \(text)")
+        #expect(text.contains("no-such-server"), "Should name the identifier that failed, got: \(text)")
+        #expect(text.contains("os_list(server)"), "Should say where to look instead, got: \(text)")
+    }
+
     // MARK: - read-only scope
 
     @Test("read-only token cannot call os_attach", )

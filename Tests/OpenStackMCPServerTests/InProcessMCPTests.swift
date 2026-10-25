@@ -481,6 +481,27 @@ struct InProcessMCPTests {
         #expect(text?.contains("Unknown resource") == true)
     }
 
+    @Test("os_list volume_type works for a member-role token (defect #8)")
+    func listVolumeTypesAsMember() async throws {
+        // `os_list {"resource":"volume_type"}` returned
+        // `HTTP 404 from volumev3 ... The resource could not be found.` on
+        // Rackspace IAD3 with a member token: the client requested
+        // `/v3/{project_id}/volume-types`, which is not a Cinder route. Cinder
+        // serves the member-readable list at `/v3/{project_id}/types`
+        // (policy `volume_extension:type_get_all`). The fake serves only the
+        // real route, so this fails if the path regresses.
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-member", secret: "secret-member")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_list", arguments: ["resource": .string("volume_type")])
+        #expect(result.isError != true)
+        let text = firstText(result.content)
+        #expect(text?.contains("lvmdriver-1") == true)
+        #expect(text?.contains("volume_type") == true)
+    }
+
     @Test("os_create validates and creates a volume")
     func createVolume() async throws {
         let handle = try await FakeApp.start()
@@ -684,71 +705,203 @@ struct InProcessMCPTests {
         #expect(!text.contains("No SSH keypairs"))
     }
 
+
     // MARK: - Flavor recommendation (Task 5)
 
-    @Test("recommend_flavor matches database workload to RAM-heavy flavor")
-    func recommendFlavorDatabase() async throws {
-        let handle = try await FakeApp.start()
-        defer { handle.stop() }
-        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
-        defer { bundle.shutdown() }
+    /// Rackspace IAD3's `gp.*` catalogue, deliberately ordered LARGEST-first —
+    /// the order the real cloud returned to the user, and the order that made
+    /// `os_recommend_flavor` hand back a 48-vCPU box for a hello-world app.
+    /// Names encode the shape as `gp.0.<vcpu>.<ram_gb>`.
+    private static let rackspaceGpFlavors: [(id: String, name: String, vcpus: Int, ramMb: Int, diskGb: Int)] = [
+        ("f-gp-48", "gp.0.48.192", 48, 196608, 320),
+        ("f-gp-32", "gp.0.32.128", 32, 131072, 160),
+        ("f-gp-24", "gp.0.24.96", 24, 98304, 160),
+        ("f-gp-16", "gp.0.16.64", 16, 65536, 80),
+        ("f-gp-8", "gp.0.8.32", 8, 32768, 80),
+        ("f-gp-4", "gp.0.4.8", 4, 8192, 80),
+        ("f-gp-2-4", "gp.0.2.4", 2, 4096, 40),
+        ("f-gp-2-2", "gp.0.2.2", 2, 2048, 40),
+        ("f-gp-1-2", "gp.0.1.2", 1, 2048, 20),
+        ("f-hr-1-8", "hr.0.1.8", 1, 8192, 20),
+        ("f-gpu-8", "oscpu-8-64-1-gpu", 8, 65536, 320),
+    ]
 
+    /// Order-preserving flavor names from a `recommendations` array.
+    private func recommendationNames(_ result: (content: [Tool.Content], isError: Bool?)) throws -> [String] {
+        let obj = try parseResult(result)
+        guard let recs = obj["recommendations"] as? [[String: Any]] else {
+            throw OpenStackError(service: "test", status: 500, message: "no recommendations array in \(firstText(result.content) ?? "nil")")
+        }
+        return recs.compactMap { $0["name"] as? String }
+    }
+
+    private func inferredRequirements(_ result: (content: [Tool.Content], isError: Bool?)) throws -> [String: Any] {
+        let obj = try parseResult(result)
+        guard let inferred = obj["inferred_requirements"] as? [String: Any] else {
+            throw OpenStackError(service: "test", status: 500, message: "no inferred_requirements in \(firstText(result.content) ?? "nil")")
+        }
+        return inferred
+    }
+
+    /// Swaps in the Rackspace-shaped catalogue and returns a live registry.
+    private func rackspaceRegistry() async throws -> (handle: FakeHandle, bundle: MCPTestBundle) {
+        let handle = try await FakeApp.start()
+        await handle.state.setFlavors(Self.rackspaceGpFlavors.map {
+            FakeState.FakeFlavor(id: $0.id, name: $0.name, vcpus: $0.vcpus, ram: $0.ramMb, disk: $0.diskGb)
+        })
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        return (handle, bundle)
+    }
+
+    @Test("recommend_flavor returns the smallest fitting flavor for a small workload", .timeLimit(.minutes(2)))
+    func recommendFlavorPrefersSmallestFitsFirst() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
+
+        // The user's exact repro, against a list ordered largest-first.
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("small python web app"),
+        ])
+        #expect(result.isError != true)
+        let names = try recommendationNames(result)
+        #expect(names.first == "gp.0.1.2", "Expected the smallest fitting flavor first, got: \(names)")
+        #expect(names.count == 3, "Expected 3 recommendations, got: \(names)")
+        // The regression: a 48-vCPU flavor must never appear for this workload.
+        #expect(!names.contains("gp.0.48.192"), "48-vCPU flavor offered for a small web app: \(names)")
+        #expect(!names.contains(where: { $0.hasPrefix("gp.0.48") || $0.hasPrefix("gp.0.32") || $0.hasPrefix("gp.0.24") }),
+                "Oversized flavors offered: \(names)")
+        // Ascending cost proxy across the whole page.
+        let obj = try parseResult(result)
+        let recs = try #require(obj["recommendations"] as? [[String: Any]])
+        let vcpus = recs.compactMap { $0["vcpus"] as? Int }
+        #expect(vcpus == vcpus.sorted(), "Recommendations are not ascending by vCPU: \(vcpus)")
+    }
+
+    @Test("recommend_flavor explicit minimums are hard floors and smallest survives first", .timeLimit(.minutes(2)))
+    func recommendFlavorMinimumsAreHardFloors() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
+
+        // The second form of the user's repro.
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("small python web app"),
+            "min_vcpu": .int(1),
+            "min_ram_gb": .int(2),
+        ])
+        #expect(result.isError != true)
+        let names = try recommendationNames(result)
+        #expect(names == ["gp.0.1.2", "gp.0.2.2", "gp.0.2.4"], "Expected the three smallest fits in ascending order, got: \(names)")
+
+        // A RAM floor of 8 GB must remove every flavor below it, not merely
+        // rank it lower — a floor the caller can see in the output is the point.
+        let ramFloor = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "min_ram_gb": .int(8),
+        ])
+        #expect(ramFloor.isError != true)
+        let ramNames = try recommendationNames(ramFloor)
+        #expect(!ramNames.contains("gp.0.1.2") && !ramNames.contains("gp.0.2.2") && !ramNames.contains("gp.0.2.4"),
+                "Flavors below the 8 GB floor were offered: \(ramNames)")
+        #expect(ramNames.first == "gp.0.4.8", "Expected the smallest flavor at/above 8 GB first, got: \(ramNames)")
+
+        // A vCPU floor behaves the same way.
+        let vcpuFloor = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "min_vcpu": .int(16),
+        ])
+        let vcpuNames = try recommendationNames(vcpuFloor)
+        #expect(vcpuNames.first == "gp.0.16.64", "Expected gp.0.16.64 first above a 16-vCPU floor, got: \(vcpuNames)")
+        #expect(!vcpuNames.contains("gp.0.8.32"), "Flavors below the 16-vCPU floor were offered: \(vcpuNames)")
+    }
+
+    @Test("recommend_flavor surfaces the inferred requirement so it can be overridden", .timeLimit(.minutes(2)))
+    func recommendFlavorSurfacesInferredRequirements() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
+
+        let vague = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("small python web app"),
+        ])
+        let inferred = try inferredRequirements(vague)
+        #expect(inferred["min_vcpu"] as? Int == 1, "Vague small workload inferred a non-small vCPU target: \(inferred)")
+        #expect(inferred["min_ram_gb"] as? Int == 2, "Vague small workload inferred a non-small RAM target: \(inferred)")
+        #expect(inferred["family"] as? String == "general-purpose")
+        #expect(inferred["defaulted"] as? Bool == false, "\"python\"/\"web\"/\"app\" are known keywords")
+        #expect(inferred["from_explicit_minimums"] as? Bool == false)
+        let basis = try #require(inferred["basis"] as? String)
+        #expect(!basis.isEmpty)
+        let text = firstText(vague.content) ?? ""
+        #expect(text.contains("\"ranking\":\"smallest_fits_first\""), "Ranking rule must be visible to the caller, got: \(text)")
+
+        // Unrecognised workload text defaults to the smallest useful shape and
+        // says so, rather than silently inheriting a big requirement.
+        let unknown = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("frobnicate the flux capacitor"),
+        ])
+        let unknownInferred = try inferredRequirements(unknown)
+        #expect(unknownInferred["defaulted"] as? Bool == true, "Unrecognised workload not flagged as defaulted: \(unknownInferred)")
+        #expect(unknownInferred["min_vcpu"] as? Int == 1, "Unknown workload invented a large vCPU requirement: \(unknownInferred)")
+
+        // No workload text at all still defaults small and is flagged defaulted.
+        let bare = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [:])
+        let bareInferred = try inferredRequirements(bare)
+        #expect(bareInferred["defaulted"] as? Bool == true)
+        #expect(bareInferred["min_vcpu"] as? Int == 1)
+        #expect(bareInferred["min_ram_gb"] as? Int == 2)
+
+        // Explicit minimums are reported as the caller's own, and win.
+        let explicit = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("small python web app"),
+            "min_vcpu": .int(4),
+        ])
+        let explicitInferred = try inferredRequirements(explicit)
+        #expect(explicitInferred["min_vcpu"] as? Int == 4)
+        #expect(explicitInferred["min_ram_gb"] as? Int == 2, "Unspecified dimension keeps the inferred target")
+        #expect(explicitInferred["from_explicit_minimums"] as? Bool == true)
+        #expect(try recommendationNames(explicit).first == "gp.0.4.8")
+    }
+
+    @Test("recommend_flavor biases family only within a size tier", .timeLimit(.minutes(2)))
+    func recommendFlavorFamilyBiasNeverBuysSize() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
+
+        // A database workload prefers the high-RAM family, but must still start
+        // at the smallest flavor that fits — `hr.0.1.8` is 1 vCPU / 8 GB.
         let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
             "workload": .string("database"),
         ])
         #expect(result.isError != true)
+        let names = try recommendationNames(result)
+        #expect(names.first == "hr.0.1.8", "Expected the smallest high-RAM flavor first, got: \(names)")
+        #expect(!names.contains("gp.0.48.192"), "48-vCPU flavor offered for a database: \(names)")
         let text = firstText(result.content) ?? ""
-        // The fake seeds m1.* flavors; the top pick must be the most RAM-heavy
-        // one and the response must carry reasoning + a volume type pairing.
-        #expect(text.contains("m1.xlarge"), "Expected the highest-RAM flavor first, got: \(text)")
-        #expect(text.contains("RAM"))
+        #expect(text.contains("high-RAM"), "Reason should name the preferred family, got: \(text)")
         #expect(text.contains("\"volume_type_recommendation\":\"HA-Performance\""))
-        #expect(text.contains("\"total_available\":3"))
+        #expect(text.contains("\"total_available\":\(Self.rackspaceGpFlavors.count)"))
     }
 
-    @Test("recommend_flavor handles unknown workload gracefully")
-    func recommendFlavorUnknown() async throws {
-        let handle = try await FakeApp.start()
-        defer { handle.stop() }
-        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
-        defer { bundle.shutdown() }
+    @Test("recommend_flavor scales up only when the workload text says so", .timeLimit(.minutes(2)))
+    func recommendFlavorScalesUpForExplicitLargeWorkload() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
 
+        // Guards against "conservative" being implemented as "always 1 vCPU":
+        // a large production database must lift the floor to 4 vCPU / 16 GB.
         let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
-            "workload": .string("quantum computing"),
+            "workload": .string("large production postgres database"),
         ])
         #expect(result.isError != true)
-        let text = firstText(result.content) ?? ""
-        // Unknown workload falls back to general-purpose scoring; reasons must
-        // say so rather than claim a family match.
-        #expect(text.contains("general-purpose") || text.contains("Balanced"), "Expected general-purpose fallback, got: \(text)")
-        #expect(text.contains("\"recommendations\""))
-        #expect(text.contains("\"volume_type_recommendation\""))
+        let inferred = try inferredRequirements(result)
+        #expect(inferred["min_vcpu"] as? Int == 4, "Large workload did not lift the vCPU target: \(inferred)")
+        #expect(inferred["min_ram_gb"] as? Int == 16, "Large workload did not lift the RAM target: \(inferred)")
+        let names = try recommendationNames(result)
+        #expect(names.first == "gp.0.4.8", "Expected the smallest 4-vCPU/16 GB flavor first, got: \(names)")
+        #expect(!names.contains("gp.0.2.4"), "Sub-floor flavor offered: \(names)")
     }
 
-    @Test("recommend_flavor min_ram_gb filter excludes small flavors")
-    func recommendFlavorMinRamFilter() async throws {
-        let handle = try await FakeApp.start()
-        defer { handle.stop() }
-        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
-        defer { bundle.shutdown() }
-
-        // Seeded: m1.small (2 GB), m1.large (8 GB), m1.xlarge (16 GB).
-        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
-            "min_ram_gb": .int(8),
-        ])
-        #expect(result.isError != true)
-        let text = firstText(result.content) ?? ""
-        #expect(!text.contains("m1.small"), "m1.small (2 GB) should be filtered out, got: \(text)")
-        #expect(text.contains("m1.large"))
-        #expect(text.contains("m1.xlarge"))
-    }
-
-    @Test("recommend_flavor returns empty recommendations when no flavor matches")
-    func recommendFlavorNoMatch() async throws {
-        let handle = try await FakeApp.start()
-        defer { handle.stop() }
-        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
-        defer { bundle.shutdown() }
+    @Test("recommend_flavor reports no-match with the requirement that caused it", .timeLimit(.minutes(2)))
+    func recommendFlavorNoMatchReportsRequirement() async throws {
+        let (handle, bundle) = try await rackspaceRegistry()
+        defer { bundle.shutdown(); handle.stop() }
 
         let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
             "min_vcpu": .int(99),
@@ -757,6 +910,30 @@ struct InProcessMCPTests {
         let text = firstText(result.content) ?? ""
         #expect(text.contains("\"recommendations\":[]"), "Expected empty recommendations, got: \(text)")
         #expect(text.contains("No flavors match the specified requirements"))
+        #expect(text.contains("Lower min_vcpu"), "No-match result must say how to recover, got: \(text)")
+        // total_available is the catalogue size, not the match count.
+        #expect(text.contains("\"total_available\":\(Self.rackspaceGpFlavors.count)"))
+    }
+
+    @Test("recommend_flavor ignores flavors whose specs the cloud omitted", .timeLimit(.minutes(2)))
+    func recommendFlavorSkipsFlavorsWithoutSpecs() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        // Rackspace's plain GET /flavors returns {id,name,links} with no specs;
+        // a flavor we cannot size must never be offered as a fit.
+        await handle.state.setFlavors([
+            FakeState.FakeFlavor(id: "opaque", name: "gp.0.unknown", vcpus: 0, ram: 0, disk: 0),
+            FakeState.FakeFlavor(id: "fit", name: "gp.0.1.2", vcpus: 1, ram: 2048, disk: 20),
+        ])
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_recommend_flavor", arguments: [
+            "workload": .string("web app"),
+        ])
+        #expect(result.isError != true)
+        let names = try recommendationNames(result)
+        #expect(names == ["gp.0.1.2"], "Zero-spec flavor offered as a fit: \(names)")
     }
 
     // MARK: - Server create dry-run validation (Task 2)
@@ -1036,6 +1213,101 @@ struct InProcessMCPTests {
         let text = firstText(result.content) ?? ""
         #expect(text.contains("next_steps"), "expected next_steps in server create response, got: \(text)")
         #expect(text.contains("os_wait"), "expected os_wait hint in server create response, got: \(text)")
+    }
+
+    // MARK: - Image reference resolution on create
+    //
+    // `os_create` resolved the image reference through its own project-local
+    // lookup while `os_get`/`os_list` used the shared resolver, so a PUBLIC
+    // image owned by another project — the ordinary shape of a public-cloud
+    // image, and metadata-poor to boot — produced
+    // `404 from image, itemNotFound: No image found matching 'Debian-13'`
+    // even though the same create with the UUID worked.
+
+    @Test("server create resolves a public metadata-poor image NAME exactly as the UUID does")
+    func serverCreateResolvesPublicImageByName() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // The fixture this test exists to keep honest: `Debian-13` is active,
+        // public, has NO properties and NO tags, and is owned by another
+        // project. Nothing about it is invalid — it simply lacks metadata.
+        let byName = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("byname-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("Debian-13"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        let nameText = firstText(byName.content) ?? ""
+        #expect(byName.isError != true, "image NAME must resolve on create, got: \(nameText)")
+        #expect(nameText.contains("img-public-other"), "should have booted from the resolved image id, got: \(nameText)")
+
+        let byID = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("byid-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("img-public-other"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        let idText = firstText(byID.content) ?? ""
+        #expect(byID.isError != true, "image id form should work, got: \(idText)")
+    }
+
+    @Test("server create with an ambiguous image NAME lists the candidates instead of picking or 404ing")
+    func serverCreateAmbiguousImageName() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // Two seeded images share the name `Debian-12`.
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("ambiguous-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("Debian-12"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("Ambiguous"), "should report ambiguity, got: \(text)")
+        #expect(text.contains("img-ambig-a") && text.contains("img-ambig-b"),
+                "should list every candidate id, got: \(text)")
+        #expect(!text.contains("No image found matching"), "must not degrade into a 404, got: \(text)")
+    }
+
+    @Test("server create with an unresolvable image NAME says it could not resolve it")
+    func serverCreateUnresolvableImageName() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("server"),
+            "spec": .object([
+                "name": .string("missing-image-server"),
+                "flavor": .string("m1.small"),
+                "image": .string("NoSuchImage-99"),
+                "networks": .array([.object(["network": .string("int-net")])]),
+            ]),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("nameNotResolved"), "should be a resolution failure, got: \(text)")
+        #expect(text.contains("NoSuchImage-99"), "should name the identifier, got: \(text)")
+        // The message must say what was searched, which is what lets a caller
+        // stop guessing (this 404 cost a 40-minute rebuild loop).
+        #expect(text.contains("id or name"), "should name the searched fields, got: \(text)")
     }
 
     // MARK: - Volume stuck-state diagnostics (Task 7)

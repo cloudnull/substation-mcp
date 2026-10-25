@@ -66,16 +66,13 @@ enum BlockStorageEntries {
         ResourceDescriptor(
             name: "volume_type",
             service: .blockStorage,
-            verbs: [.list, .get, .create, .delete],
-            createSchema: .init(
-                type: "object",
-                properties: [
-                    "name": .init(type: "string", description: "Volume type name"),
-                    "specifications": .init(type: "object", description: "Key-value specifications"),
-                    "extra_specs": .init(type: "object", description: "Extra specifications")
-                ],
-                required: ["name"]
-            ),
+            // `create` is advertised but not dispatchable: the blockStorage
+            // create switch only implements `volume`, so os_create would answer
+            // "Unknown volume create". Cinder's POST /v3/{project_id}/types is
+            // admin-only policy (`volume_extension:type_create` = admin_api),
+            // so the verb is not reachable for a member either. Listing/getting/
+            // deleting stay — list is member-readable.
+            verbs: [.list, .get, .delete],
             listFilters: ["name"],
             idField: "id",
             nameField: "name"

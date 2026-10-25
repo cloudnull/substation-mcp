@@ -564,7 +564,27 @@ public struct ToolRegistry: Sendable {
             "regions": .array(wm.regions.map { .string($0) }),
             "services": .object(wm.services.mapValues { .array($0.map { .string($0) }) }),
         ]
-        let (text, val) = resultText(result)
+        // Say WHY write is absent. Without this the only signal a read-only
+        // session gets is that os_create is missing from tools/list, so an
+        // agent concludes the server is broken instead of understanding that
+        // its token carries no role in policy.write_roles. os_whoami is
+        // read-only, so it is reachable from exactly the sessions that need
+        // the explanation.
+        var whoami: [String: JSONValue] = result
+        if wm.scopes.contains(.write) {
+            whoami["write_access"] = .string(
+                "granted: token roles [\(wm.roles.joined(separator: ", "))] include a write role"
+            )
+        } else {
+            whoami["write_access"] = .string(
+                "read-only: none of the token roles [\(wm.roles.joined(separator: ", "))] is a write role. "
+                + "Write roles on this deployment: [\(writeRoles.joined(separator: ", "))]. "
+                + "To enable writes, re-authenticate with a credential carrying one of those roles, "
+                + "or have the operator add this role to policy.write_roles. "
+                + "If you asked for read-only on the sign-in page, this is that choice taking effect."
+            )
+        }
+        let (text, val) = resultText(whoami)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
     }
 
@@ -590,7 +610,7 @@ public struct ToolRegistry: Sendable {
             let nets = try? await ns.listNetworks(vt, filters: [:], limit: 200)
 
             var entry: [String: JSONValue] = ["region": .string(region)]
-            // Always emit volume_types (empty array when Cinder /types is unreachable or member role lacks it) so the field doesn't silently vanish from the capability entry.
+            // Always emit volume_types (empty array when Cinder GET /v3/{project_id}/types is unreachable) so the field doesn't silently vanish from the capability entry. The list is member-readable, so a member token gets real names here — the names an agent should validate a volume_type_recommendation against.
             entry["volume_types"] = .array((vts ?? []).map { .string($0.name) })
             if let azs, !azs.isEmpty {
                 entry["availability_zones"] = .array(azs.map { .string($0.zoneName) })
@@ -984,7 +1004,9 @@ public struct ToolRegistry: Sendable {
 
     func handleWait(_ params: CallTool.Parameters, server: MCP.Server) async throws -> CallTool.Result {
         let resourceName = try argString(params, "resource")
-        let id = try argString(params, "id")
+        // `id` is the documented key; `id_or_name`/`name`/`uuid` are the
+        // aliases every other identifier-taking tool already accepts.
+        let idOrName = try argIDOrName(params)
         let region = try await resolveRegion(params)
         let until = argStringArray(params, "until")
         let timeoutSeconds = argTimeoutSeconds(params)
@@ -996,6 +1018,24 @@ public struct ToolRegistry: Sendable {
         let allowHandoff = arg(params, "async_on_timeout")?.boolValue ?? true
         let vt = identity.vt
         let progressToken = params._meta?.progressToken
+
+        // Resolve the identifier BEFORE polling. os_wait polls by id only, so
+        // a server name used to produce a 404 on the very first poll, which
+        // the loop then reported as "Resource server probe-01 no longer
+        // exists (last status: unknown)" about a server that was in BUILD.
+        // `last status: unknown` was the tell: there was never a status,
+        // because there was never a lookup that could return one. A name that
+        // matches nothing must fail as a resolution error, and the poll loop
+        // must only ever see a real id.
+        guard let descriptor = catalog.descriptor(resourceName) else {
+            throw OpenStackError(
+                service: "mcp", status: 400, code: "unknownResource",
+                message: "Unknown resource: \(resourceName). Valid: \(catalog.names.sorted().joined(separator: ", "))"
+            )
+        }
+        let resolver = NameResolver(catalog: catalog, client: client)
+        let id = try await resolver.resolveID(vt, descriptor: descriptor,
+                                              idOrName: idOrName, region: region)
 
         let waiter = Waiter(client: client, catalog: catalog, logger: logger)
         // Bounded synchronous attempt: settle within this window returns
@@ -1108,7 +1148,12 @@ public struct ToolRegistry: Sendable {
     /// Start a background wait and return a `task_id` immediately.
     private func handleTaskSubmit(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let resourceName = try argString(params, "resource")
-        let id = try argString(params, "id")
+        // Same identifier handling as os_wait: aliases accepted, and the value
+        // is RESOLVED before anything polls it. A name used to reach the poll
+        // loop verbatim, where the first 404 was recorded as lastStatus
+        // "deleted" — a live server reported as deleted because an identifier
+        // was never looked up.
+        let idOrName = try argIDOrName(params)
         let region = try await resolveRegion(params)
         let until = argStringArray(params, "until")
         let timeoutSeconds = argTimeoutSeconds(params)
@@ -1134,6 +1179,12 @@ public struct ToolRegistry: Sendable {
                 )
             }
         }
+
+        // Resolve after the resource/until checks so a bad `until` still fails
+        // first and no lookup is spent on a malformed call.
+        let resolver = NameResolver(catalog: catalog, client: client)
+        let id = try await resolver.resolveID(vt, descriptor: descriptor,
+                                              idOrName: idOrName, region: region)
 
         // Snapshot the current status so the submit response is informative
         // without blocking on the settle. Best-effort: a fetch failure just
@@ -1256,7 +1307,11 @@ public struct ToolRegistry: Sendable {
                         if let byId = try? await ri.getImage(vt, id: imageRef) {
                             img = byId
                         } else {
-                            let items = (try? await ri.listImages(vt)) ?? []
+                            // Name fallback for distro detection. High limit:
+                            // Glance's default page truncates a public catalogue
+                            // to ~25 images, so a name beyond it would mis-detect
+                            // as `.unknown` and render the wrong cloud-init.
+                            let items = (try? await ri.listImages(vt, limit: 500)) ?? []
                             let lower = imageRef.lowercased()
                             img = items.first { $0.id == imageRef || $0.name.lowercased() == lower }
                         }
@@ -1295,7 +1350,7 @@ public struct ToolRegistry: Sendable {
         let resolver = NameResolver(catalog: catalog, client: client)
         let raw = try await resolver.createPublic(vt, descriptor: d, body: spec, region: region, dryRun: dryRun)
         var result: [String: JSONValue] = ["resource": .string(d.name), "region": .string(region), "data": .object(raw)]
-        if let nextSteps = Self.nextStepsForCreate(resource: d.name, spec: spec, data: raw) {
+        if let nextSteps = nextStepsForCreate(resource: d.name, spec: spec, data: raw) {
             result["next_steps"] = .array(nextSteps.map { .string($0) })
         }
         let (text, val) = resultText(result)
@@ -1344,6 +1399,10 @@ public struct ToolRegistry: Sendable {
         let idOrName = try argIDOrName(params)
         let vt = identity.vt
         let dryRun = argBool(params, "dry_run")
+        // `cascade` is honored only by the Octavia load balancer (the one
+        // resource whose children block a plain delete). Other resources ignore
+        // it; the schema documents it as load_balancer-only.
+        let cascade = argBool(params, "cascade")
 
         let resolver = NameResolver(catalog: catalog, client: client)
         let (id, _) = try await resolver.resolve(vt, descriptor: d, idOrName: idOrName, region: region)
@@ -1407,7 +1466,7 @@ public struct ToolRegistry: Sendable {
             return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
         }
 
-        _ = try await resolver.deletePublic(vt, descriptor: d, id: id, region: region)
+        _ = try await resolver.deletePublic(vt, descriptor: d, id: id, region: region, cascade: cascade)
         let result: [String: JSONValue] = ["resource": .string(d.name), "id": .string(id), "region": .string(region), "deleted": .bool(true)]
         let (text, val) = resultText(result)
         return try CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], structuredContent: val)
@@ -1492,62 +1551,206 @@ public struct ToolRegistry: Sendable {
 
     // MARK: - Next-step hints
 
+    /// A follow-up tool call recommended by a `next_steps` hint.
+    ///
+    /// The hint line is RENDERED from this struct rather than hand-written, so
+    /// the arguments it shows are the arguments the target tool's published
+    /// `inputSchema` marks as `required` (`AllTools.requiredArguments`).
+    /// Hand-written argument lists drifted: the floating_ip create hint said
+    /// `os_attach(link:floating_ip, source:…, target:…)` and an agent that
+    /// copied it verbatim failed twice with `missingParam: source_type` /
+    /// `missingParam: target_type`, because `os_attach` requires all five.
+    struct NextStepCall: Sendable {
+        /// Leading prose, e.g. "Associate with a server:".
+        let lead: String
+        /// Target tool name, e.g. "os_attach".
+        let tool: String
+        /// Argument values keyed by argument name. Only the names that are
+        /// `required` on the target tool are rendered; a value of `nil` means
+        /// the caller must substitute it (rendered `<NAME>`), a non-nil value
+        /// is the real value taken from the just-created resource.
+        let values: [String: String?]
+        /// Trailing prose appended after the call, e.g. a caveat.
+        let note: String?
+
+        init(_ lead: String, _ tool: String, _ values: [String: String?], note: String? = nil) {
+            self.lead = lead
+            self.tool = tool
+            self.values = values
+            self.note = note
+        }
+    }
+
+    /// Render one hint line: `lead tool(k1: v1, k2: <K2 "what to supply">)`.
+    ///
+    /// Three properties, all asserted by `NextStepsHintCompletenessTests`:
+    /// - every `required` argument of `tool` appears in the line, in the
+    ///   schema's own order — a hint can never under-specify the call it
+    ///   recommends, which was the reported defect;
+    /// - the line never mentions an argument the tool does not require, so a
+    ///   hint cannot contradict the schema either;
+    /// - an argument the caller must still supply is rendered with the schema's
+    ///   own `description` inside the placeholder, so the hint says what belongs
+    ///   there instead of leaving a bare uppercase word to guess at.
+    private static func renderNextStep(_ call: NextStepCall,
+                                       required: [String: [ToolRequiredArgument]]) -> String {
+        let requiredArgs = (required[call.tool] ?? []).sorted { $0.order < $1.order }
+        // Anything the hint declares that the schema does not require is still
+        // rendered (appended after the required ones) rather than silently
+        // dropped; the completeness test flags it as a contradiction.
+        let extra = call.values.keys.sorted().filter { key in
+            !requiredArgs.contains { $0.name == key }
+        }
+        let ordered = requiredArgs.map(\.name) + extra
+        let args = ordered.map { key -> String in
+            if let value = call.values[key] ?? nil { return "\(key): \(value)" }
+            let description = requiredArgs.first { $0.name == key }?.description
+            if let description, !description.isEmpty {
+                return "\(key): <\(key.uppercased()) \"\(description)\">"
+            }
+            return "\(key): <\(key.uppercased())>"
+        }
+        var line = "\(call.lead) \(call.tool)(\(args.joined(separator: ", ")))"
+        if let note = call.note, !note.isEmpty { line += " — \(note)" }
+        return line
+    }
+
+    /// The identifier of a freshly created resource, or `nil` when the create
+    /// response carried no `id` (some resources are keyed by `name`).
+    private static func createdID(_ data: [String: JSONValue]) -> String? {
+        data["id"]?.stringValue
+    }
+
     /// Contextual follow-up instructions for a successful `os_create`, keyed by
     /// resource type. Returns `nil` when the resource has no known next steps so
-    /// the field is omitted entirely from the response. Placeholders like
-    /// `<id>` are filled from the create result where available; the LLM harness
-    /// substitutes them with the values in `data`.
-    private static func nextStepsForCreate(resource: String, spec: JSONValue, data: [String: JSONValue]) -> [String]? {
+    /// the field is omitted entirely from the response.
+    ///
+    /// Where the created resource's own id/name is known it is substituted into
+    /// the hint, so the recommended call is directly executable; anything the
+    /// caller must supply is rendered as its uppercase `<NAME>` placeholder.
+    private func nextStepsForCreate(resource: String, spec: JSONValue, data: [String: JSONValue]) -> [String]? {
+        let calls: [NextStepCall]?
+        let id = Self.createdID(data)
         switch resource {
         case "network":
-            return [
-                "Create a subnet on this network: os_create(subnet, {name, network_id: <this network's id>, cidr})",
-                "Create a router: os_create(router, {name, external_gateway_info})"
+            calls = [
+                NextStepCall("Create a subnet on this network:", "os_create",
+                             ["resource": "subnet", "spec": Self.specLiteral([
+                                ("network_id", .string(id ?? "<NETWORK_ID>")), ("cidr", .string("<CIDR>"))])],
+                             note: "os_describe(resource: subnet) for the optional fields (enable_dhcp is what a server needs to get an address)."),
+                NextStepCall("Create a router:", "os_create",
+                             ["resource": "router",
+                              "spec": Self.specLiteral([
+                                ("name", .string("<ROUTER_NAME>")),
+                                ("external_gateway_info", .object(["network_id": .string("<EXTERNAL_NETWORK_ID>")]))
+                              ])],
+                             note: "external_gateway_info.network_id must be an external (router:external) network — os_list(network) and check that field."),
             ]
         case "subnet":
-            return [
-                "Attach to router: os_attach(link:router_interface, source=<router>, target=<subnet-id>)"
+            calls = [
+                NextStepCall("Attach it to a router:", "os_attach",
+                             ["link": "router_interface", "source_type": "router",
+                              "target": id, "target_type": "subnet"]),
             ]
         case "router":
-            return [
-                "Attach private subnet: os_attach(link:router_interface, source=<router-id>, target=<subnet>)"
+            calls = [
+                NextStepCall("Attach a private subnet:", "os_attach",
+                             ["link": "router_interface", "source": id, "source_type": "router"]),
+                NextStepCall("Give it a gateway on the external network:", "os_attach",
+                             ["link": "router_gateway", "source": id, "source_type": "router",
+                              "target_type": "network"]),
             ]
         case "server":
-            var steps = ["Wait for ACTIVE: os_wait(server, <id>)"]
+            var steps = [NextStepCall("Wait for ACTIVE:", "os_wait", ["resource": "server", "id": id])]
             if case .object(let obj) = spec, case .object(let provObj)? = obj["provisioning"], !provObj.isEmpty {
-                steps.append("Verify provisioning: os_action(server, <name>, provisioning_status)")
+                steps.append(NextStepCall("Verify provisioning:", "os_action",
+                                          ["resource": "server", "id_or_name": id,
+                                           "action": "provisioning_status"]))
             }
-            return steps
-        case "volume":
-            if case .object(let obj) = spec, obj["imageRef"] != nil {
-                return ["Use as boot volume: os_create(server, {volumes: [{volume_id: <id>, boot: true}]})"]
-            }
-            return nil
+            calls = steps
+        // No `volume` hint. `NameResolver.createPublic` builds a
+        // `CreateVolumeSpec` from name/size/volume_type only, so a volume create
+        // can never carry `imageRef` — the old hint's branch was unreachable,
+        // and what it produced (`os_create(server, {volumes: [{volume_id,
+        // boot}]})`) named a field the server create path reads as a quota
+        // count, not a device list.
         case "floating_ip":
-            return [
-                "Associate with server: os_attach(link:floating_ip, source=<fip-id>, target=<server>)"
+            // `target_type: server` is the hint's own choice (the link also
+            // accepts a bare port); every other argument comes from the schema,
+            // and `target` is rendered as the schema's own description of it.
+            calls = [
+                NextStepCall("Associate with a server:", "os_attach",
+                             ["link": "floating_ip", "source": id, "source_type": "floating_ip",
+                              "target_type": "server"]),
             ]
         case "keypair":
-            let name = data["name"]?.stringValue ?? "<name>"
-            return [
-                "Reference in server create: os_create(server, {key_name: \"\(name)\"})"
+            let name = data["name"]?.stringValue ?? "<NAME>"
+            let kpSpec = Self.specLiteral([
+                ("name", .string("<SERVER_NAME>")),
+                ("flavor", .string("<FLAVOR_ID_OR_NAME>")),
+                ("image", .string("<IMAGE_ID_OR_NAME>")),
+                ("key_name", .string(name)),
+                ("networks", .array([.object(["network": .string("<NETWORK_ID_OR_NAME>")])])),
+            ])
+            calls = [
+                NextStepCall("Reference it when creating a server:", "os_create",
+                             ["resource": "server", "spec": kpSpec]),
             ]
         case "security_group":
-            return [
-                "Add rules: os_create(security_group_rule, {security_group_id: <id>, direction: ingress, ...})"
+            calls = [
+                NextStepCall("Add a rule:", "os_create",
+                             ["resource": "security_group_rule", "spec": Self.specLiteral([
+                                ("security_group_id", .string(id ?? "<SECURITY_GROUP_ID>")), ("direction", .string("ingress")),
+                                ("protocol", .string("tcp")), ("port_range_min", .integer(443)), ("port_range_max", .integer(443)),
+                                ("remote_ip_prefix", .string("0.0.0.0/0"))])],
+                             note: "repeat per port/protocol you need to open."),
             ]
         default:
-            return nil
+            calls = nil
+        }
+        guard let calls else { return nil }
+        let required = AllTools.requiredArguments(catalog: catalog)
+        return calls.map { Self.renderNextStep($0, required: required) }
+    }
+
+    /// Serialize a spec literal for a hint, substituting the real values of the
+    /// just-created resource. Placeholders (`"<CIDR>"`) render bare so they read
+    /// as "fill me in"; concrete strings are quoted.
+    ///
+    /// Built on `JSONValue` rather than `Any` so a hint literal is checked by
+    /// the compiler against the same value type the create path validates, and
+    /// so field order stays as written.
+    private static func specLiteral(_ fields: [(String, JSONValue)]) -> String {
+        "{" + fields.map { "\($0.0): \(hintValue($0.1))" }.joined(separator: ", ") + "}"
+    }
+
+    private static func hintValue(_ value: JSONValue) -> String {
+        switch value {
+        case .string(let s): return s.hasPrefix("<") ? s : "'\(s)'"
+        case .integer(let i): return "\(i)"
+        case .float(let d): return "\(d)"
+        case .bool(let b): return b ? "true" : "false"
+        case .null: return "null"
+        case .array(let items): return "[\(items.map(hintValue).joined(separator: ", "))]"
+        case .object(let obj):
+            return "{" + obj.keys.sorted().compactMap { k -> String? in
+                guard let v = obj[k] else { return nil }
+                return "\(k): \(hintValue(v))"
+            }.joined(separator: ", ") + "}"
         }
     }
 
     /// Contextual follow-up instructions for a successful `os_attach`, keyed by
     /// link kind. Returns `nil` when the link has no known next step.
+    ///
+    /// These are prose only — none of them recommends a tool call, so none of
+    /// them can drift from a schema. The `os_create` hints are the ones that
+    /// name calls, and those are rendered by `renderNextStep`.
     private static func nextStepsForAttach(link: String) -> [String]? {
         switch link {
         case "router_interface":
             return [
-                "Router interface attached. If this connects a private network, you can now create servers on it: os_create(server, {networks: [{network: <name>}]})"
+                "Router interface attached. The subnet is now routed through this router; servers on its network get an address only if the subnet has DHCP enabled and the router also has a gateway on the external network (os_attach(link: router_gateway))."
             ]
         case "floating_ip":
             return [

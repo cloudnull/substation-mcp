@@ -27,7 +27,10 @@ public struct AmbiguousNameError: Error, Sendable, CustomStringConvertible {
 /// 2. Exact name filter — `list` with `filters[nameField] = name`.
 /// 3. Case-insensitive scan of listed names.
 ///
-/// ≥2 matches → `AmbiguousNameError`. 0 matches → `OpenStackError` (404).
+/// ≥2 matches → `AmbiguousNameError` (candidate ids + names listed).
+/// 0 matches → `OpenStackError` 404 `nameNotResolved` — a *resolution* failure,
+/// distinct from `itemNotFound`, so a caller never reads "your identifier
+/// matched nothing" as "this resource does not exist".
 public actor NameResolver {
     private let catalog: ResourceCatalog
     private let client: OpenStackClient
@@ -35,6 +38,27 @@ public actor NameResolver {
     public init(catalog: ResourceCatalog, client: OpenStackClient) {
         self.catalog = catalog
         self.client = client
+    }
+
+    /// Resolve an `id_or_name` value to a concrete resource ID.
+    ///
+    /// Every verb that accepts a bare identifier must route through this (or
+    /// `resolve`, when the raw body is also needed) instead of feeding the
+    /// caller's string straight into a by-id route. Skipping it is what made
+    /// `os_attach(link:floating_ip, target:<server name>)` report
+    /// "Server … has no port on a subnet reachable from the floating IP" and
+    /// `os_wait` report "Resource server … no longer exists" for servers that
+    /// were alive: the by-id lookup found nothing under the name, and the
+    /// empty result was then attributed to the *domain* question instead of
+    /// to the failed lookup. A resolution failure says the identifier could
+    /// not be resolved and what was searched — never a downstream conclusion.
+    public func resolveID(
+        _ vt: ValidatedToken,
+        descriptor: ResourceDescriptor,
+        idOrName: String,
+        region: String
+    ) async throws -> String {
+        try await resolve(vt, descriptor: descriptor, idOrName: idOrName, region: region).id
     }
 
     /// Resolve an `id_or_name` value to a concrete (id, raw JSON) pair.
@@ -68,13 +92,9 @@ public actor NameResolver {
 
         // 2 & 3. Name-based resolution
         guard let nameField = descriptor.nameField else {
-            throw OpenStackError(
-                service: descriptor.service.rawValue,
-                status: 404,
-                code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'",
-                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
-            )
+            throw Self.notResolvedError(service: descriptor.service,
+                                        resource: descriptor.name, value: idOrName,
+                                        searched: [descriptor.idField], seen: 0)
         }
 
         // 2. Exact name filter
@@ -93,13 +113,9 @@ public actor NameResolver {
         // 3. Case-insensitive scan
         let result = try await list(vt: vt, descriptor: descriptor, filters: [:], limit: 500, region: region)
         guard let items = result["items"]?.arrayValue else {
-            throw OpenStackError(
-                service: descriptor.service.rawValue,
-                status: 404,
-                code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'",
-                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
-            )
+            throw Self.notResolvedError(service: descriptor.service,
+                                        resource: descriptor.name, value: idOrName,
+                                        searched: [descriptor.idField, nameField], seen: 0)
         }
 
         let nameLower = idOrName.lowercased()
@@ -112,13 +128,10 @@ public actor NameResolver {
 
         switch matches.count {
         case 0:
-            throw OpenStackError(
-                service: descriptor.service.rawValue,
-                status: 404,
-                code: "itemNotFound",
-                message: "No \(descriptor.name) found matching '\(idOrName)'",
-                hint: "Resource not found. Use os_list(\(descriptor.name)) to see available options."
-            )
+            throw Self.notResolvedError(service: descriptor.service,
+                                        resource: descriptor.name, value: idOrName,
+                                        searched: [descriptor.idField, nameField], seen: items.count,
+                                        items: items.compactMap { $0.objectValue })
         case 1:
             let match = matches[0]
             do {
@@ -366,7 +379,14 @@ public actor NameResolver {
                 let p = try await r.getPool(vt, id: id)
                 return try Self.encodeObject(p)
             case "member":
-                let m = try await r.getMember(vt, id: id)
+                // Members are a pool sub-resource; the MCP surface addresses them
+                // by id only, so resolve the owning pool first.
+                guard let pool = try await r.findMemberPool(vt, memberID: id) else {
+                    throw OpenStackError(service: "loadbalancer", status: 404, code: "nameNotResolved",
+                        message: "No member found matching '\(id)'.",
+                        hint: "Members live under a pool: os_list(member, filters:{pool_id: <pool>}) lists them.")
+                }
+                let m = try await r.getMember(vt, poolID: pool.id, id: id)
                 return try Self.encodeObject(m)
             case "health_monitor":
                 let h = try await r.getHealthMonitor(vt, id: id)
@@ -873,8 +893,19 @@ public actor NameResolver {
                 result["resource"] = .string("pool"); result["region"] = .string(region)
                 return result
             case "member":
-                let items = try await r.listMembers(vt, filters: filters, limit: limit, marker: filters["marker"])
-                var result: [String: JSONValue] = try Self.encodeList(items)
+                // Octavia has no top-level member collection: `os_list(member)`
+                // without a pool_id filter fans the pool-scoped list over every
+                // pool the project can see, so the resource still behaves like a
+                // flat collection from the caller's side.
+                var members: [Member] = []
+                if let poolFilter = filters["pool_id"], !poolFilter.isEmpty {
+                    members = try await r.listMembers(vt, poolID: poolFilter, limit: limit, marker: filters["marker"])
+                } else {
+                    for pool in try await r.listPools(vt) {
+                        members.append(contentsOf: ((try? await r.listMembers(vt, poolID: pool.id)) ?? []))
+                    }
+                }
+                var result: [String: JSONValue] = try Self.encodeList(members)
                 result["resource"] = .string("member"); result["region"] = .string(region)
                 return result
             case "health_monitor":
@@ -1088,34 +1119,65 @@ public actor NameResolver {
                 guard let name, let flavorRef, let imageRef else {
                     throw OpenStackError(service: "compute", status: 400, message: "Server create requires name, flavor, image")
                 }
-                // Resolve flavor name to UUID. In dry-run mode a missing flavor
-                // is reported in the validation result instead of thrown, so the
-                // caller sees every problem in one pass.
+                // Resolve the flavor and image references through the SAME
+                // resolver os_get/os_list/os_action use, so a name behaves
+                // identically on every verb. Resolution matches on id or name
+                // only; see `resolveRef` for why no item metadata may take part.
+                //
+                // In dry-run we do NOT hard-fail on an unresolvable ref: we
+                // resolve when possible (so the resolved id is used downstream)
+                // and keep the raw ref as a placeholder otherwise, and the
+                // single accumulator below (the `if dryRun` block) reports each
+                // problem ONCE. That removes the old fail-fast early return and
+                // the duplicate leaked-Swift-image error, so all issues surface
+                // in one response without internal type names.
                 let rc = await client.compute(region: region)
                 let flavors = try await rc.listFlavors(vt)
                 let flavorItems = try flavors.map { try Self.encodeObject($0) as [String: JSONValue] }
-                // In dry-run we do NOT hard-fail on unresolvable flavor/image refs. We resolve when
-                // possible (so the resolved ID is used downstream) but keep the raw ref as a
-                // placeholder otherwise; the single accumulator below (the `if dryRun` block) then
-                // reports each problem ONCE with a clean message. This removes the old fail-fast
-                // early return and the duplicate leaked-Swift-image error so all issues surface in
-                // one response without internal type names.
                 let flavorID: String
                 if dryRun {
                     flavorID = (try? Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")) ?? flavorRef
                 } else {
                     flavorID = try Self.resolveRef(value: flavorRef, resource: "flavor", items: flavorItems, service: "compute")
                 }
-                // Resolve image name to UUID. Same policy as flavor above: non-failing in dry-run.
+                // The Glance list used for name resolution. The list call is
+                // best-effort: a listing that fails must not become a 404 on a
+                // resource that exists.
+                //
+                // It must request a high limit, not Glance's default page. The
+                // default page truncates a public catalogue to ~25 images, so a
+                // name that `os_list image` finds (it filters server-side, or
+                // the caller raised `limit`) was invisible here and the create
+                // failed with `imageNotFound` — the exact defect this path is
+                // meant to avoid. 500 matches the case-insensitive scan the
+                // generic resolver uses for every other resource (see `resolve`),
+                // so a name resolves identically on create and on os_get.
                 let ri = await client.image(region: region)
-                let images = try await ri.listImages(vt)
+                let images = (try? await ri.listImages(vt, limit: 500)) ?? []
                 let imageItems = try images.map { try Self.encodeObject($0) as [String: JSONValue] }
                 var dryRunErrors: [String] = []
+                // The image resolved by name/id, carried forward so neither the
+                // distro probe nor the dry-run accumulator has to re-fetch by id
+                // (a re-fetch by id is exactly the step that fails for a public
+                // image outside the session's project).
+                var resolvedImage: Image?
                 let imageID: String
                 if dryRun {
-                    imageID = (try? Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")) ?? imageRef
+                    do {
+                        imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
+                        resolvedImage = images.first { $0.id == imageID }
+                    } catch is AmbiguousNameError {
+                        // Ambiguity is not a placeholder-worthy failure even in
+                        // dry-run: "several images match this name" is the one
+                        // finding the caller must act on, and the accumulator
+                        // has no way to express a choice.
+                        throw Self.ambiguousRefError(resource: "image", value: imageRef, items: imageItems)
+                    } catch {
+                        imageID = imageRef
+                    }
                 } else {
                     imageID = try Self.resolveRef(value: imageRef, resource: "image", items: imageItems, service: "image")
+                    resolvedImage = images.first { $0.id == imageID }
                 }
                 // Optional fields from the create schema
                 let keyName = obj["key_name"]?.stringValue ?? obj["keyName"]?.stringValue
@@ -1180,7 +1242,7 @@ public actor NameResolver {
                             if isExternal {
                                 throw OpenStackError(service: "compute", status: 400, code: "publicNetworkRejected",
                                     message: "Server cannot be created on external/public network '\(netID)'",
-                                    hint: "Create a private network first: (1) os_create(network, {name:'my-net'}) (2) os_create(subnet, {name:'my-subnet', network_id:'<net-id>', cidr:'192.168.0.0/24'}) (3) os_create(router, {name:'my-router', external_gateway_info:{network_id:'<PUBLICNET-id>'}}) (4) os_attach(link:router_interface, source:'<router-id>', target:'<subnet-id>'). Then create the server on 'my-net'.")
+                                    hint: "Create a private network first: (1) os_create(network, {name:'my-net'}) (2) os_create(subnet, {name:'my-subnet', network_id:'<net-id>', cidr:'192.168.0.0/24'}) (3) os_create(router, {name:'my-router', external_gateway_info:{network_id:'<PUBLICNET-id>'}}) (4) os_attach(link:router_interface, source:'<router-id>', source_type:router, target:'<subnet-id>', target_type:subnet). Then create the server on 'my-net'.")
                             }
                         }
                     }
@@ -1258,19 +1320,21 @@ public actor NameResolver {
                     if !flavorExists {
                         errors.append("flavorNotFound: flavor '\(flavorRef)' does not exist or is not visible to this project")
                     }
-                    // 3. Image is visible and active.
+                    // 3. Image is visible and active. The check runs against
+                    //    the same list name resolution used, so a name that
+                    //    resolved cannot then be reported as missing.
                     if let img = images.first(where: { $0.id == imageID }) {
                         if img.status != "active" {
                             errors.append("imageNotActive: image '\(imageRef)' (\(img.name)) has status '\(img.status)', expected 'active'")
                         }
                     } else {
-                        errors.append("imageNotFound: image '\(imageRef)' was not found or is not visible to this project")
+                        errors.append("imageNotFound: could not resolve image '\(imageRef)' — no match on id or name among the \(images.count) image(s) visible to this session. This is a name-resolution failure, not a missing image: check the spelling or use the id from os_list(image).")
                     }
                     // 4. Keypair exists (if specified).
                     if let keyName {
                         let kps = try await rc.listKeypairs(vt)
                         if !kps.contains(where: { $0.name == keyName }) {
-                            errors.append("keypairNotFound: keypair '\(keyName)' does not exist. Create it first with os_create(resource:keypair, spec:{name:'\(keyName)'}).")
+                            errors.append("keypairNotFound: keypair '\(keyName)' does not exist. Create it first with os_create(keypair, {name:'\(keyName)'}).")
                         }
                     }
                     // 5. Volume quota has room for requested volumes.
@@ -1328,9 +1392,26 @@ public actor NameResolver {
                         throw OpenStackError(service: "compute", status: 400, code: "provisioningEmpty",
                             message: "Server create: `provisioning` is empty — provide at least one of packages, services, users, firewall, extra_runcmd, final_message (or omit the block).")
                     }
-                    // Detect the target distro from image metadata.
+                    // Detect the target distro from the image already resolved
+                    // above. Detection is a SEPARATE concern from resolution:
+                    // an image with no `os_distro` property and no tags is
+                    // perfectly usable, it just yields `.unknown` (which the
+                    // renderer handles), so metadata must never gate whether the
+                    // image can be used at all. Deliberately NOT a second
+                    // get-by-id: for a public image outside the session's
+                    // project that route 404s even though the name resolved,
+                    // which would turn a working create into a spurious failure.
+                    // The fallback get is best-effort, and it is caught
+                    // explicitly rather than written as
+                    // `resolvedImage ?? (try? await …)`: that form puts the
+                    // `await` inside `try?`'s autoclosure, which is not an
+                    // async context.
                     let distro: Distro
-                    if let img = try? await ri.getImage(vt, id: imageID) {
+                    var distroImage = resolvedImage
+                    if distroImage == nil {
+                        distroImage = try? await ri.getImage(vt, id: imageID)
+                    }
+                    if let img = distroImage {
                         distro = Distro.detect(name: img.name, tags: img.tags.isEmpty ? nil : img.tags,
                                                properties: img.properties.isEmpty ? nil : img.properties)
                     } else {
@@ -1652,7 +1733,8 @@ public actor NameResolver {
                     protocolName: obj["protocol"]?.stringValue ?? "HTTP",
                     protocol_port: obj["protocol_port"]?.intValue ?? 80,
                     load_balancer_id: obj["load_balancer_id"]?.stringValue,
-                    connection_limit: obj["connection_limit"]?.intValue
+                    connection_limit: obj["connection_limit"]?.intValue,
+                    default_pool_id: obj["default_pool_id"]?.stringValue
                 )
                 return try Self.encodeObject(try await r.createListener(vt, spec))
             case "pool":
@@ -1661,17 +1743,23 @@ public actor NameResolver {
                     protocolName: obj["protocol"]?.stringValue ?? "HTTP",
                     lb_algorithm: obj["lb_algorithm"]?.stringValue ?? "ROUND_ROBIN",
                     load_balancer_id: obj["load_balancer_id"]?.stringValue,
+                    listener_id: obj["listener_id"]?.stringValue,
                     health_monitor_id: obj["health_monitor_id"]?.stringValue
                 )
                 return try Self.encodeObject(try await r.createPool(vt, spec))
             case "member":
-                guard let addr = obj["protocol_address"]?.stringValue, let port = obj["protocol_port"]?.intValue else {
-                    throw OpenStackError(service: "loadbalancer", status: 400, message: "member create requires protocol_address and protocol_port")
+                // `address` is the real Octavia attribute; `pool_id` selects the
+                // parent pool in the URL, not the body.
+                guard let addr = obj["address"]?.stringValue, let port = obj["protocol_port"]?.intValue else {
+                    throw OpenStackError(service: "loadbalancer", status: 400, code: "schemaValidation",
+                        message: "member create requires 'address' and 'protocol_port'",
+                        hint: "The field is `address` (not `protocol_address`). os_describe(member) lists the accepted spec.")
                 }
                 let spec = CreateMemberSpec(
                     name: obj["name"]?.stringValue,
-                    protocol_address: addr,
+                    address: addr,
                     protocol_port: port,
+                    subnet_id: obj["subnet_id"]?.stringValue,
                     weight: obj["weight"]?.intValue,
                     admin_state_up: obj["admin_state_up"]?.boolValue,
                     pool_id: obj["pool_id"]?.stringValue
@@ -1913,8 +2001,47 @@ public actor NameResolver {
             // Barbican secrets/containers are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "key-manager", status: 501, message: "Key-manager resources are not updatable (re-create instead)")
         case .loadBalancer:
-            // Octavia resources are immutable in phase 2 (re-create instead).
-            throw OpenStackError(service: "loadbalancer", status: 501, message: "Load-balancer resources are not updatable (re-create instead)")
+            // Octavia supports PUT on every lbaas resource; the update verbs are
+            // how a pool and a listener get bound after the fact (defect #6).
+            let r = await client.loadBalancer(region: region)
+            switch descriptor.name {
+            case "load_balancer":
+                return try Self.encodeObject(try await r.updateLoadBalancer(vt, id: id,
+                    .init(name: obj["name"]?.stringValue, description: obj["description"]?.stringValue)))
+            case "listener":
+                // `default_pool_id: null` in the patch unbinds the default pool.
+                let clearsPool: Bool
+                if case .null = obj["default_pool_id"] { clearsPool = true } else { clearsPool = false }
+                return try Self.encodeObject(try await r.updateListener(vt, id: id,
+                    .init(name: obj["name"]?.stringValue,
+                          connection_limit: obj["connection_limit"]?.intValue,
+                          default_pool_id: obj["default_pool_id"]?.stringValue,
+                          clearDefaultPool: clearsPool)))
+            case "pool":
+                if obj["listener_id"] != nil {
+                    throw OpenStackError(service: "loadbalancer", status: 400, code: "schemaValidation",
+                        message: "A pool cannot be re-bound to a listener by updating the pool (Octavia's PUT /pools/{id} has no listener_id).",
+                        hint: "Bind it from the listener instead: os_update(listener, <listener>, {default_pool_id: <pool-id>}).")
+                }
+                return try Self.encodeObject(try await r.updatePool(vt, id: id,
+                    .init(name: obj["name"]?.stringValue, description: obj["description"]?.stringValue,
+                          lb_algorithm: obj["lb_algorithm"]?.stringValue)))
+            case "member":
+                guard let pool = try await r.findMemberPool(vt, memberID: id) else {
+                    throw OpenStackError(service: "loadbalancer", status: 404, code: "nameNotResolved",
+                        message: "No member found matching '\(id)'.",
+                        hint: "Members live under a pool: os_list(member, filters:{pool_id: <pool>}) lists them.")
+                }
+                return try Self.encodeObject(try await r.updateMember(vt, poolID: pool.id, id: id,
+                    .init(name: obj["name"]?.stringValue, weight: obj["weight"]?.intValue,
+                          admin_state_up: obj["admin_state_up"]?.boolValue)))
+            case "health_monitor":
+                return try Self.encodeObject(try await r.updateHealthMonitor(vt, id: id,
+                    .init(name: obj["name"]?.stringValue, delay: obj["delay"]?.intValue,
+                          timeout: obj["timeout"]?.intValue, max_retries: obj["max_retries"]?.intValue)))
+            default:
+                throw OpenStackError(service: "loadbalancer", status: 400, message: "Unknown load-balancer update: \(descriptor.name)")
+            }
         case .dns:
             // Designate zones/recordsets are immutable in phase 2 (re-create instead).
             throw OpenStackError(service: "dns", status: 501, message: "DNS resources are not updatable (re-create instead)")
@@ -1956,7 +2083,7 @@ public actor NameResolver {
         }
     }
 
-    public func deletePublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String) async throws -> [String: JSONValue] {
+    public func deletePublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, region: String, cascade: Bool = false) async throws -> [String: JSONValue] {
         switch descriptor.service {
         case .compute:
             let r = await client.compute(region: region)
@@ -2037,13 +2164,18 @@ public actor NameResolver {
             let r = await client.loadBalancer(region: region)
             switch descriptor.name {
             case "load_balancer":
-                try await r.deleteLoadBalancer(vt, id: id)
+                try await r.deleteLoadBalancer(vt, id: id, cascade: cascade)
             case "listener":
                 try await r.deleteListener(vt, id: id)
             case "pool":
                 try await r.deletePool(vt, id: id)
             case "member":
-                try await r.deleteMember(vt, id: id)
+                guard let pool = try await r.findMemberPool(vt, memberID: id) else {
+                    throw OpenStackError(service: "loadbalancer", status: 404, code: "nameNotResolved",
+                        message: "No member found matching '\(id)'.",
+                        hint: "Members live under a pool: os_list(member, filters:{pool_id: <pool>}) lists them.")
+                }
+                try await r.deleteMember(vt, poolID: pool.id, id: id)
             case "health_monitor":
                 try await r.deleteHealthMonitor(vt, id: id)
             default:
@@ -2635,19 +2767,112 @@ public actor NameResolver {
         return [:]
     }
 
+    /// The error for "this identifier matched nothing". `code` is deliberately
+    /// NOT `itemNotFound` and the message names the fields that were searched:
+    /// a name that fails to resolve must never be reported as "the resource
+    /// does not exist" (or as a downstream domain conclusion), because the
+    /// caller's next move is to check the identifier, not the resource.
+    ///
+    /// `service` is the catalog service, named through `serviceTypeName` — the
+    /// same Keystone service-type vocabulary the rest of the resolver uses
+    /// (`blockStorage` → `volumev3`, `objectStorage` → `object-store`, …) — so
+    /// the error is attributed to the service the caller thinks they were
+    /// talking to, never to `mcp`.
+    static func notResolvedError(
+        service: Service,
+        resource: String,
+        value: String,
+        searched: [String],
+        seen: Int,
+        items: [[String: JSONValue]] = []
+    ) -> OpenStackError {
+        notResolvedError(service: service.serviceTypeName, resource: resource, value: value,
+                         searched: searched, seen: seen, items: items)
+    }
+
+    /// Overload for callers that already hold the service-type name as a plain
+    /// string (`resolveRef` is given `descriptor`-derived strings, not a
+    /// `Service` case). The message is identical; only the source of the
+    /// service label differs.
+    static func notResolvedError(
+        service: String,
+        resource: String,
+        value: String,
+        searched: [String],
+        seen: Int,
+        items: [[String: JSONValue]] = []
+    ) -> OpenStackError {
+        let seenText = seen == 0
+            ? "No \(resource)s were visible to this session at all"
+            : "\(seen) \(resource)(s) visible to this session were searched"
+        return OpenStackError(
+            service: service,
+            status: 404,
+            code: "nameNotResolved",
+            message: "Could not resolve \(resource) '\(value)': no match on \(searched.joined(separator: " or ")). \(seenText).",
+            hint: "This is a name-resolution failure, not a missing resource: the identifier matched nothing in what this session can see. Check the spelling, or list the available \(resource)s with os_list(\(resource)) and use the id.\(Self.candidatesClause(items: items))"
+        )
+    }
+
+    /// The visible candidates appended to a resolution failure, so the caller
+    /// sees what WAS available instead of having to round-trip a list call to
+    /// find out. Capped so a large catalogue cannot flood the error text; the
+    /// `os_list` pointer stays in the hint for the full set.
+    private static func candidatesClause(items: [[String: JSONValue]]) -> String {
+        let cap = 10
+        let named: [String] = items.compactMap { item in
+            guard let id = item["id"]?.stringValue else { return nil }
+            if let name = item["name"]?.stringValue, !name.isEmpty { return "\(name) [\(id)]" }
+            return id
+        }
+        guard !named.isEmpty else { return "" }
+        let shown = named.prefix(cap).map { "'\($0)'" }
+        let more = named.count > cap ? ", … (\(named.count - cap) more)" : ""
+        return " Available: \(shown.joined(separator: ", "))\(more)."
+    }
+
+    /// The error for "this identifier matched several resources". Lists every
+    /// candidate id and name so the caller picks one instead of guessing, and
+    /// names the field that was matched — a common name across versions or
+    /// architectures (several `Debian-13` images, for instance) must surface as
+    /// a choice, never as a silent pick or a 404. Only reachable from a caller
+    /// that already knows the value is ambiguous (i.e. from `resolveRef`'s own
+    /// ≥2-match branch), so the candidate list is never empty in practice.
+    static func ambiguousRefError(resource: String, value: String, items: [[String: JSONValue]]) -> AmbiguousNameError {
+        let lower = value.lowercased()
+        let candidates = items.compactMap { item -> (id: String, name: String)? in
+            guard let name = item["name"]?.stringValue, name.lowercased() == lower else { return nil }
+            return (id: item["id"]?.stringValue ?? "", name: name)
+        }
+        return AmbiguousNameError(candidates: candidates)
+    }
+
     /// Resolve a resource reference (ID or name) to its ID from a list of
     /// already-fetched items. Matches on ID first, then name (case-insensitive).
+    ///
+    /// Matching is on identity only — id or name. No item *metadata* (Glance
+    /// `properties`, `tags`, `os_distro`, …) participates in resolution: such
+    /// metadata is descriptive, and treating it as a validity gate silently
+    /// drops perfectly usable resources that happen to lack it. An image with
+    /// empty `properties` and no tags is as resolvable by name as one that
+    /// carries them.
+    ///
+    /// ≥2 name matches throw `AmbiguousNameError` listing every candidate.
     static func resolveRef(
         value: String,
         resource: String,
         items: [[String: JSONValue]],
         service: String
     ) throws -> String {
-        // 0. UUID passthrough: if the value looks like a canonical UUID and the
-        //    resource list doesn't contain it (Rackspace private networks are not
-        //    always visible via Neutron list for non-admin tokens), pass it
-        //    through — the downstream API (Nova) will validate it.
-        if Self.looksLikeUUID(value) {
+        // 0. UUID passthrough, but only when there is a listing to have missed
+        //    it in. A canonical UUID the list does not contain is normally a
+        //    resource the listing cannot show (Rackspace private networks are
+        //    not always visible to a non-admin Neutron list), so pass it
+        //    through and let the service validate it. With an EMPTY list there
+        //    is nothing that could have matched, so passing through would let a
+        //    bogus id sail into the create request and surface later as an
+        //    opaque downstream failure; report it as unresolved instead.
+        if !items.isEmpty, Self.looksLikeUUID(value) {
             return value
         }
         // 1. Exact ID match
@@ -2656,22 +2881,19 @@ public actor NameResolver {
         }
         // 2. Case-insensitive name match
         let lower = value.lowercased()
-        var matches: [String] = []
+        var matches: [(id: String, name: String)] = []
         for item in items {
-            if let n = item["name"]?.stringValue?.lowercased(), n == lower {
-                matches.append(item["id"]?.stringValue ?? "")
-            }
+            guard let name = item["name"]?.stringValue, name.lowercased() == lower else { continue }
+            matches.append((id: item["id"]?.stringValue ?? "", name: name))
         }
-        if matches.count == 1, let id = matches.first, !id.isEmpty {
+        if matches.count == 1, let id = matches.first?.id, !id.isEmpty {
             return id
         }
         if matches.count > 1 {
-            throw OpenStackError(service: service, status: 400,
-                message: "Ambiguous \(resource) '\(value)': \(matches.count) matches")
+            throw AmbiguousNameError(candidates: matches)
         }
-        throw OpenStackError(service: service, status: 404,
-            code: "itemNotFound",
-            message: "No \(resource) found matching '\(value)'")
+        throw notResolvedError(service: service, resource: resource, value: value,
+                               searched: ["id", "name"], seen: items.count, items: items)
     }
 
     /// Returns true if the string matches the canonical UUID format (8-4-4-4-12 hex).

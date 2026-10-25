@@ -26,7 +26,7 @@ scopes: a token without the `openstack:write` scope gets
 | `os_quota` | Quota usage for a resource type. |
 | `os_clouds` | Cloud catalog: regions, services, endpoints. |
 | `os_wait` | Poll a resource until it reaches a target state (with progress notifications). |
-| `os_recommend_flavor` | Recommend server flavors for a plain-English workload; returns top matches with reasoning. |
+| `os_recommend_flavor` | Recommend server flavors for a plain-English workload. Ranked **smallest-that-fits first** (vCPU, then RAM, then disk); `min_vcpu`/`min_ram_gb` are hard floors, and the inferred requirement is echoed in `inferred_requirements` so it can be checked and overridden. |
 | `os_task_submit` | Start a long-running wait as a background task; returns a `task_id` immediately and polls in the background. |
 | `os_task_status` | Poll a task submitted by `os_task_submit`; returns state, last observed status, and final result once terminal. |
 | `os_task_cancel` | Cancel a running task. No-op if unknown, foreign, or already terminal. |

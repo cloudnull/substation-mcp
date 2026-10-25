@@ -189,34 +189,73 @@ public struct CreateVolumeSpec: Sendable {
 
 // MARK: - Volume Type
 
+/// A Cinder volume type.
+///
+/// Field names follow the wire shape of `GET /v3/{project_id}/types` and
+/// `GET /v3/{project_id}/types/{id}` — the list view is *brief*: Cinder's
+/// `cinder/api/views/types.py` `ViewBuilder.index` trims each entry to
+/// `id`, `name`, `is_public`, `extra_specs`, `description`. Everything except
+/// `id` is optional on the wire, so decode leniently.
 public struct VolumeType: Sendable, Codable, Identifiable {
     public let id: String
     public var name: String
-    public var extra_specs: [String: String]?
+    public var description: String
+    public var isPublic: Bool?
+    public var extraSpecs: [String: String]?
 
-    public init(id: String, name: String = "", extra_specs: [String: String]? = nil) {
+    public init(
+        id: String,
+        name: String = "",
+        description: String = "",
+        isPublic: Bool? = nil,
+        extraSpecs: [String: String]? = nil
+    ) {
         self.id = id
         self.name = name
-        self.extra_specs = extra_specs
+        self.description = description
+        self.isPublic = isPublic
+        self.extraSpecs = extraSpecs
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case isPublic = "is_public"
+        case extraSpecs = "extra_specs"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        isPublic = try c.decodeIfPresent(Bool.self, forKey: .isPublic)
+        extraSpecs = try c.decodeIfPresent([String: String].self, forKey: .extraSpecs)
     }
 }
 
 public struct CreateVolumeTypeSpec: Sendable {
     public var name: String
-    public var extra_specs: [String: String]
+    public var description: String
+    public var extraSpecs: [String: String]
 
-    public init(name: String, extra_specs: [String: String] = [:]) {
+    public init(name: String, description: String = "", extra_specs extraSpecs: [String: String] = [:]) {
         self.name = name
-        self.extra_specs = extra_specs
+        self.description = description
+        self.extraSpecs = extraSpecs
     }
 
-    func body() -> String {
+    /// Cinder's create-type request body is `{"volume_type": {...}}` — snake
+    /// case, per `api-ref/source/v3/volumes-v3-types.inc`
+    /// (`POST /v3/{project_id}/types`). The old `{"volumeType": …}` camelCase
+    /// envelope is rejected by Cinder's body schema.
+    public func body() -> String {
         var parts: [String] = ["\"name\":\"\(name)\""]
-        if !extra_specs.isEmpty {
-            let specs = extra_specs.map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
+        if !description.isEmpty { parts.append("\"description\":\"\(description)\"") }
+        if !extraSpecs.isEmpty {
+            let specs = extraSpecs.map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
             parts.append("\"extra_specs\":{\(specs)}")
         }
-        return "{\"volumeType\":{\(parts.joined(separator: ","))}}"
+        return "{\"volume_type\":{\(parts.joined(separator: ","))}}"
     }
 }
 

@@ -328,19 +328,35 @@ public struct LinkExecutor: Sendable {
         let fip = try await ns.getFloatingIP(vt, id: fipID)
         let fixedIP = params["fixed_ip"]?.stringValue
 
-        // Resolve the target port
+        // Resolve the target port.
+        //
+        // A `server` target may be an id OR a name: `device_id` on a Neutron
+        // port is the server UUID and nothing else, so the name must be
+        // resolved before it is used as a filter. Passing the raw string
+        // through is what made a name fail as `noReachablePort` — the filter
+        // matched no port, and that empty result was reported as a topology
+        // verdict ("check that a router connects…") about a server that had
+        // never been looked up. The topology advice was then actively wrong,
+        // because routing was fine and only the lookup had failed.
         let port: NetPort
         switch targetType {
         case "port":
             port = try await ns.getPort(vt, id: target)
         case "server":
+            guard let descriptor = catalog.descriptor("server") else {
+                throw OpenStackError(service: "mcp", status: 500,
+                    message: "Server descriptor not found in catalog")
+            }
+            let resolver = NameResolver(catalog: catalog, client: client)
+            let serverID = try await resolver.resolveID(vt, descriptor: descriptor,
+                                                        idOrName: target, region: region)
             // First port on a router-reachable subnet
-            let ports = try await ns.listPorts(vt, filters: ["device_id": target], limit: 50)
+            let ports = try await ns.listPorts(vt, filters: ["device_id": serverID], limit: 50)
             let reachable = try await firstRouterReachablePort(vt, ports: ports, region: region)
             guard let p = reachable else {
                 throw OpenStackError(
                     service: "mcp", status: 404, code: "noReachablePort",
-                    message: "Server \(target) has no port on a subnet reachable from the floating IP's external network (\(fip.floatingNetworkID)). Check that a router connects the server's subnet to the external network (router_interface + router_gateway links)."
+                    message: "Server \(target) (\(serverID)) has no port on a subnet reachable from the floating IP's external network (\(fip.floatingNetworkID)). Check that a router connects the server's subnet to the external network (router_interface + router_gateway links)."
                 )
             }
             port = p

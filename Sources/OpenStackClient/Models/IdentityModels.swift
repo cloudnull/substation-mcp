@@ -95,10 +95,16 @@ public enum TokenScope: String, Sendable, Codable, CaseIterable {
 
 /// Policy for deriving scopes from roles.
 public struct PolicyRoles: Sendable, Codable {
-    /// Roles that grant write access. Default: ["admin"].
+    /// Roles that grant `openstack:write`. Default: `["admin", "member"]` —
+    /// `member` because public clouds gate ordinary project writes on it, not
+    /// on a literal `admin`. See `Policy.defaultWriteRoles` (server side),
+    /// which is the value production wiring passes in.
+    public static let defaultWriteRoles: [String] = ["admin", "member"]
+
+    /// Roles that grant `openstack:write`.
     public var writeRoles: [String]
 
-    public init(writeRoles: [String] = ["admin"]) {
+    public init(writeRoles: [String] = PolicyRoles.defaultWriteRoles) {
         self.writeRoles = writeRoles
     }
 }
@@ -117,7 +123,11 @@ public struct ValidatedToken: Sendable {
 /// Scope derivation: pure function, unit-testable without a cloud.
 /// - `read` is granted to any authenticated project token.
 /// - `write` is granted when roles include a mutating role (default: "admin").
-public func deriveScopes(roles: [String], policy: PolicyRoles = PolicyRoles()) -> [TokenScope] {
+/// - `requested` (the access level picked on the login / authorize form) can
+///   only ever NARROW the result: `["openstack:read"]` drops `write` even for
+///   an admin, and an unknown or empty request leaves the role-derived set
+///   alone. It can never widen it — a member asking for write still gets read.
+public func deriveScopes(roles: [String], policy: PolicyRoles = PolicyRoles(), requested: [String] = []) -> [TokenScope] {
     var scopes: [TokenScope] = [.read]
     for role in roles {
         if policy.writeRoles.contains(role) {
@@ -126,6 +136,9 @@ public func deriveScopes(roles: [String], policy: PolicyRoles = PolicyRoles()) -
             }
             break
         }
+    }
+    if requested.contains(TokenScope.read.rawValue) && !requested.contains(TokenScope.write.rawValue) {
+        scopes.removeAll { $0 == .write }
     }
     return scopes
 }

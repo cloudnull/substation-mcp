@@ -111,8 +111,51 @@ struct NameResolverTests {
         } catch let error as OpenStackError {
             #expect(error.status == 404, "Expected 404, got \(error.status)")
             #expect(error.message.contains("nonexistent-server-xyz"), "Message should mention the name")
+            // A failed LOOKUP is a distinct failure from a missing resource:
+            // callers branch on this code to avoid reporting "does not exist"
+            // for an identifier that was never resolved.
+            #expect(error.code == "nameNotResolved", "Expected code nameNotResolved, got \(String(describing: error.code))")
+            #expect(error.message.contains("id or name"), "Message should say what was searched, got: \(error.message)")
+            // Attributed to the compute service, never to the MCP layer.
+            #expect(error.service == "compute", "Should be attributed to compute, got \(error.service)")
         } catch {
             Issue.record("Expected OpenStackError, got \(error)")
+        }
+    }
+
+    @Test("image NAME resolves to the same id as the UUID, with no properties or tags", .timeLimit(.minutes(2)))
+    func imageMetadataPoorName() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+
+        // `Debian-13`: active, public, owned by ANOTHER project, empty
+        // `properties`, no `tags`. Metadata is descriptive — lacking it must
+        // never make an image unresolvable.
+        let byName = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "Debian-13", region: "RegionOne")
+        #expect(byName.id == "img-public-other", "Name should resolve to the public image, got \(byName.id)")
+
+        // The UUID form resolves to the same resource: name and id are aliases.
+        let byID = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "img-public-other", region: "RegionOne")
+        #expect(byID.id == byName.id, "NAME and UUID must resolve identically")
+        #expect(byName.raw["status"]?.stringValue == "active")
+        #expect(byName.raw["visibility"]?.stringValue == "public")
+    }
+
+    @Test("ambiguous image NAME lists every candidate id", .timeLimit(.minutes(2)))
+    func imageAmbiguousName() async throws {
+        let (handle, vt, _, resolver, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let descriptor = ResourceCatalog.phase1().descriptor("image")!
+
+        do {
+            _ = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "Debian-12", region: "RegionOne")
+            Issue.record("Expected AmbiguousNameError for a name matching two images")
+        } catch let error as AmbiguousNameError {
+            let ids = Set(error.candidates.map { $0.id })
+            #expect(ids == ["img-ambig-a", "img-ambig-b"], "Should list both candidates, got \(ids)")
+        } catch {
+            Issue.record("Expected AmbiguousNameError, got \(error)")
         }
     }
 

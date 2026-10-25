@@ -25,6 +25,11 @@ public final class JSONSchema: @unchecked Sendable {
     public let description: String?
     /// Whether additional properties are allowed on objects. `nil` = allow.
     public let additionalProperties: Bool?
+    /// Whether an explicit JSON `null` is an accepted value for this property,
+    /// on top of `type`. Octavia uses `"field": null` to CLEAR an optional
+    /// attribute (e.g. `default_pool_id: null` unbinds a listener's default
+    /// pool), so an update schema must be able to declare that.
+    public let allowsNull: Bool
 
     public init(
         type: String? = nil,
@@ -33,7 +38,8 @@ public final class JSONSchema: @unchecked Sendable {
         items: JSONSchema? = nil,
         enumValues: [JSONValue]? = nil,
         description: String? = nil,
-        additionalProperties: Bool? = nil
+        additionalProperties: Bool? = nil,
+        allowsNull: Bool = false
     ) {
         self.type = type
         self.properties = properties
@@ -41,6 +47,7 @@ public final class JSONSchema: @unchecked Sendable {
         self.items = items
         self.enumValues = enumValues
         self.description = description
+        self.allowsNull = allowsNull
         self.additionalProperties = additionalProperties
     }
 
@@ -74,7 +81,7 @@ public final class JSONSchema: @unchecked Sendable {
         // Check type
         if let expectedType = schema.type {
             let actualType = JSONSchema.typeName(of: value)
-            if actualType != expectedType {
+            if actualType != expectedType && !(schema.allowsNull && actualType == "null") {
                 issues.append(.init(
                     path: path,
                     expected: expectedType,
@@ -153,7 +160,7 @@ public final class JSONSchema: @unchecked Sendable {
     /// A short fragment of the schema for error messages.
     var fragment: String {
         var parts: [String] = []
-        if let type { parts.append("type: \(type)") }
+        if let type { parts.append("type: \(type)\(allowsNull ? " or null" : "")") }
         if let required, !required.isEmpty { parts.append("required: [\(required.joined(separator: ", "))]") }
         if let enumValues { parts.append("enum: [\(enumValues.map { $0.jsonDescription }.joined(separator: ", "))]") }
         if let properties { parts.append("properties: [\(properties.keys.sorted().joined(separator: ", "))]") }
@@ -168,7 +175,7 @@ public final class JSONSchema: @unchecked Sendable {
     /// additionalProperties.
     public func jsonValue() -> JSONValue {
         var obj: [String: JSONValue] = [:]
-        if let type { obj["type"] = .string(type) }
+        if let type { obj["type"] = allowsNull ? .array([.string(type), .string("null")]) : .string(type) }
         if let description { obj["description"] = .string(description) }
         if let properties, !properties.isEmpty {
             obj["properties"] = .object(properties.mapValues { $0.jsonValue() })

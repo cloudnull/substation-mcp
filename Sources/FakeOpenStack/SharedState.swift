@@ -116,6 +116,14 @@ public actor FakeState {
         public let vcpus: Int
         public let ram: Int
         public let disk: Int
+
+        public init(id: String, name: String, vcpus: Int, ram: Int, disk: Int) {
+            self.id = id
+            self.name = name
+            self.vcpus = vcpus
+            self.ram = ram
+            self.disk = disk
+        }
     }
 
     public struct FakeNetwork: Sendable, Identifiable {
@@ -481,14 +489,18 @@ public actor FakeState {
         public var status: String
         public var provisioningStatus: String
         public var vipAddress: String?
+        public var vipSubnetID: String?
+        public var description: String?
 
-        public init(id: String, projectID: String, name: String? = nil, status: String = "ACTIVE", provisioningStatus: String = "ACTIVE", vipAddress: String? = nil) {
+        public init(id: String, projectID: String, name: String? = nil, status: String = "ACTIVE", provisioningStatus: String = "ACTIVE", vipAddress: String? = nil, vipSubnetID: String? = nil, description: String? = nil) {
             self.id = id
             self.projectID = projectID
             self.name = name
             self.status = status
             self.provisioningStatus = provisioningStatus
             self.vipAddress = vipAddress
+            self.vipSubnetID = vipSubnetID
+            self.description = description
         }
     }
 
@@ -499,14 +511,19 @@ public actor FakeState {
         public var protocolName: String
         public var protocolPort: Int
         public var loadBalancerID: String?
+        /// The listener's default pool. Octavia binds a pool to a listener this
+        /// way (via `PUT /v2/lbaas/listeners/{id}` `default_pool_id`, or
+        /// `POST /v2/lbaas/pools` with `listener_id`).
+        public var defaultPoolID: String?
 
-        public init(id: String, projectID: String, name: String? = nil, protocolName: String = "HTTP", protocolPort: Int = 80, loadBalancerID: String? = nil) {
+        public init(id: String, projectID: String, name: String? = nil, protocolName: String = "HTTP", protocolPort: Int = 80, loadBalancerID: String? = nil, defaultPoolID: String? = nil) {
             self.id = id
             self.projectID = projectID
             self.name = name
             self.protocolName = protocolName
             self.protocolPort = protocolPort
             self.loadBalancerID = loadBalancerID
+            self.defaultPoolID = defaultPoolID
         }
     }
 
@@ -514,19 +531,25 @@ public actor FakeState {
         public let id: String
         public let projectID: String
         public var name: String?
+        public var description: String?
         public var protocolName: String
         public var lbAlgorithm: String
         public var loadBalancerID: String?
         public var healthMonitorID: String?
+        /// Set when the pool was created with `listener_id` (it then becomes
+        /// that listener's default pool).
+        public var listenerID: String?
 
-        public init(id: String, projectID: String, name: String? = nil, protocolName: String = "HTTP", lbAlgorithm: String = "ROUND_ROBIN", loadBalancerID: String? = nil, healthMonitorID: String? = nil) {
+        public init(id: String, projectID: String, name: String? = nil, description: String? = nil, protocolName: String = "HTTP", lbAlgorithm: String = "ROUND_ROBIN", loadBalancerID: String? = nil, healthMonitorID: String? = nil, listenerID: String? = nil) {
             self.id = id
             self.projectID = projectID
             self.name = name
+            self.description = description
             self.protocolName = protocolName
             self.lbAlgorithm = lbAlgorithm
             self.loadBalancerID = loadBalancerID
             self.healthMonitorID = healthMonitorID
+            self.listenerID = listenerID
         }
     }
 
@@ -534,19 +557,23 @@ public actor FakeState {
         public let id: String
         public let projectID: String
         public var name: String?
-        public var protocolAddress: String
+        /// Octavia's member attribute is `address`; `protocol_address` is not a
+        /// real field (defect #7).
+        public var address: String
         public var protocolPort: Int
+        public var subnetID: String?
         public var weight: Int?
         public var adminStateUp: Bool?
         public var poolID: String?
         public var status: String?
 
-        public init(id: String, projectID: String, name: String? = nil, protocolAddress: String, protocolPort: Int, weight: Int? = 1, adminStateUp: Bool? = true, poolID: String? = nil, status: String? = "ONLINE") {
+        public init(id: String, projectID: String, name: String? = nil, address: String, protocolPort: Int, subnetID: String? = nil, weight: Int? = 1, adminStateUp: Bool? = true, poolID: String? = nil, status: String? = "ONLINE") {
             self.id = id
             self.projectID = projectID
             self.name = name
-            self.protocolAddress = protocolAddress
+            self.address = address
             self.protocolPort = protocolPort
+            self.subnetID = subnetID
             self.weight = weight
             self.adminStateUp = adminStateUp
             self.poolID = poolID
@@ -1215,6 +1242,40 @@ public actor FakeState {
         return true
     }
 
+    /// Test-only knob: when set, the next octavia POST /lbaas/listeners returns
+    /// this raw body verbatim instead of the normal JSON — mirroring the real
+    /// create-listener response that carries `"name":null` /
+    /// `"default_pool_id":null` and used to fail our strict decoder, surfacing a
+    /// successful create as `HTTP 500 … The data is missing` (defect #5).
+    /// The listener IS created server-side either way. Consumed once.
+    public var listenerCreateRawBodyNext: String? = nil
+
+    /// Arm a one-shot raw create-response for the next fake octavia listener POST.
+    public func setListenerCreateRawBodyNext(_ value: String?) {
+        listenerCreateRawBodyNext = value
+    }
+
+    /// Consume the armed one-shot listener create-response if present.
+    public func consumeListenerCreateRawBodyNext() -> String? {
+        defer { listenerCreateRawBodyNext = nil }
+        return listenerCreateRawBodyNext
+    }
+
+    /// Test-only knob: same as `listenerCreateRawBodyNext`, for
+    /// POST /lbaas/pools/{pool_id}/members.
+    public var memberCreateRawBodyNext: String? = nil
+
+    /// Arm a one-shot raw create-response for the next fake octavia member POST.
+    public func setMemberCreateRawBodyNext(_ value: String?) {
+        memberCreateRawBodyNext = value
+    }
+
+    /// Consume the armed one-shot member create-response if present.
+    public func consumeMemberCreateRawBodyNext() -> String? {
+        defer { memberCreateRawBodyNext = nil }
+        return memberCreateRawBodyNext
+    }
+
     public func removeExtension(_ alias: String) {
         extensions.remove(alias)
     }
@@ -1519,15 +1580,33 @@ public actor FakeState {
                 userName: "admin",
                 domain: "default"
             ),
+            // The read-only identity. `observer` is deliberately NOT a write
+            // role, so this credential stays read-only under the DEFAULT
+            // `policy.write_roles` (`admin`, `member`) — tests that need a
+            // read-only session must not depend on a policy override.
             FakeCredential(
                 id: "fake-cred-ro",
                 name: "fake-cred-ro",
                 secret: "secret-ro",
                 projectID: "proj-one",
-                roles: ["member", "_member_"],
+                roles: ["observer"],
                 method: .applicationCredential,
                 userID: "user-ro",
                 userName: "readonly",
+                domain: "default"
+            ),
+            // A plain `member` identity: a project member, which IS a write
+            // role by default. Distinct from fake-cred-ro so tests can tell
+            // "no write role" apart from "member".
+            FakeCredential(
+                id: "fake-cred-member",
+                name: "fake-cred-member",
+                secret: "secret-member",
+                projectID: "proj-one",
+                roles: ["member", "_member_"],
+                method: .applicationCredential,
+                userID: "user-member",
+                userName: "member",
                 domain: "default"
             ),
             FakeCredential(
@@ -1688,6 +1767,45 @@ public actor FakeState {
             created: "2026-01-01T00:00:00.000",
             updated: "2026-01-01T00:00:00.000"
         ))
+        // A PUBLIC image owned by another project, with NO `properties` and NO
+        // `tags`. This is the shape a real public-cloud image has (Rackspace's
+        // `Debian-13` is active + public + metadata-poor), and it is the shape
+        // that used to 404 on os_create while os_get/os_list found it: an image
+        // outside the session's project is not visible to a project-scoped
+        // listing or a project-scoped get-by-id. Without this row the fake could
+        // never catch a create path that resolves images project-locally.
+        imgIDCounter += 1
+        images.append(FakeImage(
+            id: "img-public-other",
+            projectID: "proj-two",
+            name: "Debian-13",
+            status: "active",
+            visibility: "public",
+            diskFormat: "qcow2",
+            containerFormat: "bare",
+            size: 1024,
+            minRAM: 512,
+            created: "2026-01-01T00:00:00.000",
+            updated: "2026-01-01T00:00:00.000"
+        ))
+        // Two images sharing one name, both metadata-poor and both public to
+        // another project: a name that matches several images must surface as a
+        // choice listing the candidates, never as a silent pick and never as a
+        // 404.
+        for idSuffix in ["a", "b"] {
+            imgIDCounter += 1
+            images.append(FakeImage(
+                id: "img-ambig-\(idSuffix)",
+                projectID: "proj-two",
+                name: "Debian-12",
+                status: "active",
+                visibility: "public",
+                diskFormat: "qcow2",
+                containerFormat: "bare",
+                size: 1024,
+                minRAM: 512
+            ))
+        }
         // Router-interface port for router-1 -> subnet-int (mirrors routerInterfaces
         // above). Real Neutron exposes these as ports with device_owner
         // "network:router_interface"; topology reads them as the authoritative
@@ -1729,13 +1847,18 @@ public actor FakeState {
         secretContainerIDCounter = 1
         secretContainers.append(FakeSecretContainer(id: "sct-1", projectID: "proj-one", name: "fake-key-container", type: "generic", secretRefs: ["sec-1"]))
 
-        // Octavia (load balancer) seed: one active LB + a pool + a member.
+        // Octavia (load balancer) seed: one active LB + a listener + a pool bound
+        // to that listener + a member in the pool. The listener/pool pair is
+        // seeded bound (default_pool_id set) because that is the end state the
+        // Octavia surface must be able to produce.
         lbIDCounter = 1
-        loadBalancers.append(FakeLoadBalancer(id: "lb-1", projectID: "proj-one", name: "fake-lb", status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: "10.0.0.10"))
+        loadBalancers.append(FakeLoadBalancer(id: "lb-1", projectID: "proj-one", name: "fake-lb", status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: "10.0.0.10", vipSubnetID: "subnet-int"))
+        listenerIDCounter = 1
+        listeners.append(FakeListener(id: "listener-1", projectID: "proj-one", name: "fake-listener", protocolName: "HTTP", protocolPort: 80, loadBalancerID: "lb-1", defaultPoolID: "pool-1"))
         poolIDCounter = 1
-        pools.append(FakePool(id: "pool-1", projectID: "proj-one", name: "fake-pool", protocolName: "HTTP", lbAlgorithm: "ROUND_ROBIN", loadBalancerID: "lb-1"))
+        pools.append(FakePool(id: "pool-1", projectID: "proj-one", name: "fake-pool", protocolName: "HTTP", lbAlgorithm: "ROUND_ROBIN", loadBalancerID: "lb-1", listenerID: "listener-1"))
         memberIDCounter = 1
-        members.append(FakeMember(id: "member-1", projectID: "proj-one", name: "fake-member", protocolAddress: "10.0.0.20", protocolPort: 80, poolID: "pool-1", status: "ONLINE"))
+        members.append(FakeMember(id: "member-1", projectID: "proj-one", name: "fake-member", address: "10.0.0.20", protocolPort: 80, subnetID: "subnet-int", poolID: "pool-1", status: "ONLINE"))
 
         // Designate (DNS) seed: one active zone + one record set.
         zoneIDCounter = 1
@@ -1839,6 +1962,16 @@ public actor FakeState {
             FakeRole(id: "member-role", name: "member"),
             FakeRole(id: "reader-role", name: "reader"),
         ]
+    }
+
+    /// Replaces the flavor catalogue, preserving the given order.
+    ///
+    /// Nova promises no flavour ordering a caller can rely on: real clouds
+    /// return whatever their DB layer yields, and Rackspace IAD3 returns `gp.*`
+    /// largest-first (`gp.0.48.192` before `gp.0.1.2`). Tests use this to
+    /// reproduce that shape so a consumer that trusts list order fails loudly.
+    public func setFlavors(_ newFlavors: [FakeFlavor]) {
+        flavors = newFlavors
     }
 
     // MARK: - Token minting
@@ -2941,9 +3074,20 @@ public actor FakeState {
 
     // MARK: - Glance: Images
 
+    /// Glance `GET /v2/images`. Real Glance returns the caller's own images
+    /// PLUS every image whose visibility makes it readable (`public`,
+    /// `community`, `shared`); filtering the listing to the caller's project
+    /// would hide exactly the public images a member is expected to boot from,
+    /// which is what made a public image unresolvable by name here.
+    ///
+    /// The `name` filter is EXACT (`name=Debian-13` matches that name and
+    /// nothing else), per the Glance API reference: "As with regular filtering
+    /// by name, you must specify the complete name you are looking for." A
+    /// substring filter here would let the fake resolve names a real cloud
+    /// rejects, so resolution tests would prove nothing.
     public func listImages(projectID: String, name: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeImage] {
-        var result = images.filter { $0.projectID == projectID }
-        if let name { result = result.filter { $0.name.contains(name) } }
+        var result = images.filter { $0.projectID == projectID || $0.visibility == "public" || $0.visibility == "community" }
+        if let name { result = result.filter { $0.name == name } }
         if let marker, let idx = result.firstIndex(where: { $0.id == marker }) {
             result = Array(result[(idx + 1)...])
         }
@@ -2951,8 +3095,12 @@ public actor FakeState {
         return result
     }
 
+    /// Glance `GET /v2/images/{id}`: readable when owned by the caller or when
+    /// its visibility makes it public to every project.
     public func getImage(id: String, projectID: String) -> FakeImage? {
-        images.first { $0.id == id && $0.projectID == projectID }
+        images.first {
+            $0.id == id && ($0.projectID == projectID || $0.visibility == "public" || $0.visibility == "community")
+        }
     }
 
     @discardableResult
@@ -3182,16 +3330,48 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createLoadBalancer(projectID: String, name: String? = nil, vipAddress: String? = nil) -> FakeLoadBalancer {
+    public func createLoadBalancer(projectID: String, name: String? = nil, vipAddress: String? = nil, vipSubnetID: String? = nil) -> FakeLoadBalancer {
         lbIDCounter += 1
-        let lb = FakeLoadBalancer(id: "lb-\(lbIDCounter)", projectID: projectID, name: name, status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: vipAddress ?? "10.0.0.\(lbIDCounter + 9)")
+        let lb = FakeLoadBalancer(id: "lb-\(lbIDCounter)", projectID: projectID, name: name, status: "ACTIVE", provisioningStatus: "ACTIVE", vipAddress: vipAddress ?? "10.0.0.\(lbIDCounter + 9)", vipSubnetID: vipSubnetID)
         loadBalancers.append(lb)
         return lb
     }
 
-    public func deleteLoadBalancer(id: String, projectID: String) -> Bool {
+    /// `PUT /v2/lbaas/loadbalancers/{id}` — name/description only.
+    public func updateLoadBalancer(id: String, projectID: String, name: String?, description: String?) -> FakeLoadBalancer? {
+        guard let idx = loadBalancers.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { loadBalancers[idx].name = name }
+        if let description { loadBalancers[idx].description = description }
+        return loadBalancers[idx]
+    }
+
+    /// Delete a load balancer. Mirrors Octavia: a plain delete is refused
+    /// (`false`) while the LB still has children — listeners, pools, members,
+    /// or health monitors — because Octavia never deletes a parent out from
+    /// under its children. `cascade: true` deletes the LB and every child in
+    /// one call. `hasChildren` reports the blocker so the route can return the
+    /// real `400 … it has children` rather than a generic not-found.
+    public func loadBalancerHasChildren(id: String, projectID: String) -> Bool {
+        if listeners.contains(where: { $0.projectID == projectID && $0.loadBalancerID == id }) { return true }
+        if pools.contains(where: { $0.projectID == projectID && $0.loadBalancerID == id }) { return true }
+        let childPools = Set(pools.filter { $0.projectID == projectID && $0.loadBalancerID == id }.map(\.id))
+        if members.contains(where: { $0.projectID == projectID && $0.poolID.map { childPools.contains($0) } == true }) { return true }
+        if healthMonitors.contains(where: { $0.projectID == projectID && $0.poolID.map { childPools.contains($0) } == true }) { return true }
+        return false
+    }
+
+    @discardableResult
+    public func deleteLoadBalancer(id: String, projectID: String, cascade: Bool = false) -> Bool {
         let idx = loadBalancers.firstIndex { $0.id == id && $0.projectID == projectID }
         guard let idx else { return false }
+        if !cascade && loadBalancerHasChildren(id: id, projectID: projectID) { return false }
+        if cascade {
+            let childPools = Set(pools.filter { $0.projectID == projectID && $0.loadBalancerID == id }.map(\.id))
+            listeners.removeAll { $0.projectID == projectID && $0.loadBalancerID == id }
+            members.removeAll { $0.projectID == projectID && $0.poolID.map { childPools.contains($0) } == true }
+            healthMonitors.removeAll { $0.projectID == projectID && $0.poolID.map { childPools.contains($0) } == true }
+            pools.removeAll { $0.projectID == projectID && $0.loadBalancerID == id }
+        }
         loadBalancers.remove(at: idx)
         return true
     }
@@ -3208,11 +3388,45 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createListener(projectID: String, name: String?, protocolName: String, protocolPort: Int, loadBalancerID: String?) -> FakeListener {
+    public func createListener(projectID: String, name: String?, protocolName: String, protocolPort: Int, loadBalancerID: String?, defaultPoolID: String? = nil) -> FakeListener {
         listenerIDCounter += 1
-        let l = FakeListener(id: "listener-\(listenerIDCounter)", projectID: projectID, name: name, protocolName: protocolName, protocolPort: protocolPort, loadBalancerID: loadBalancerID)
+        let l = FakeListener(id: "listener-\(listenerIDCounter)", projectID: projectID, name: name, protocolName: protocolName, protocolPort: protocolPort, loadBalancerID: loadBalancerID, defaultPoolID: defaultPoolID)
         listeners.append(l)
+        if let defaultPoolID { bindPool(defaultPoolID, toListener: l.id) }
         return l
+    }
+
+    /// `PUT /v2/lbaas/listeners/{id}`. `defaultPoolID` binds a pool as this
+    /// listener's default pool; `clearsDefaultPool` unbinds (explicit null).
+    public func updateListener(id: String, projectID: String, name: String?, defaultPoolID: String?, clearsDefaultPool: Bool = false) -> FakeListener? {
+        guard let idx = listeners.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { listeners[idx].name = name }
+        if let defaultPoolID {
+            listeners[idx].defaultPoolID = defaultPoolID
+            bindPool(defaultPoolID, toListener: id)
+        } else if clearsDefaultPool {
+            if let previous = listeners[idx].defaultPoolID { unbindPool(previous) }
+            listeners[idx].defaultPoolID = nil
+        }
+        return listeners[idx]
+    }
+
+    /// Mirror Octavia's relationship bookkeeping: the pool records the listener
+    /// it is the default pool of, and the previous default pool is unbound
+    /// (a listener has exactly one default pool).
+    private func bindPool(_ poolID: String, toListener listenerID: String) {
+        guard let pIdx = pools.firstIndex(where: { $0.id == poolID }) else { return }
+        if let previous = pools[pIdx].listenerID, previous != listenerID,
+           let lIdx = listeners.firstIndex(where: { $0.id == previous }),
+           listeners[lIdx].defaultPoolID == poolID {
+            listeners[lIdx].defaultPoolID = nil
+        }
+        pools[pIdx].listenerID = listenerID
+    }
+
+    private func unbindPool(_ poolID: String) {
+        guard let pIdx = pools.firstIndex(where: { $0.id == poolID }) else { return }
+        pools[pIdx].listenerID = nil
     }
 
     public func deleteListener(id: String, projectID: String) -> Bool {
@@ -3234,11 +3448,25 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createPool(projectID: String, name: String?, protocolName: String, lbAlgorithm: String, loadBalancerID: String?, healthMonitorID: String?) -> FakePool {
+    public func createPool(projectID: String, name: String?, protocolName: String, lbAlgorithm: String, loadBalancerID: String?, healthMonitorID: String?, listenerID: String? = nil) -> FakePool {
         poolIDCounter += 1
-        let p = FakePool(id: "pool-\(poolIDCounter)", projectID: projectID, name: name, protocolName: protocolName, lbAlgorithm: lbAlgorithm, loadBalancerID: loadBalancerID, healthMonitorID: healthMonitorID)
+        let p = FakePool(id: "pool-\(poolIDCounter)", projectID: projectID, name: name, protocolName: protocolName, lbAlgorithm: lbAlgorithm, loadBalancerID: loadBalancerID, healthMonitorID: healthMonitorID, listenerID: listenerID)
         pools.append(p)
+        // A pool created with listener_id becomes that listener's default pool.
+        if let listenerID, let lIdx = listeners.firstIndex(where: { $0.id == listenerID && $0.projectID == projectID }) {
+            listeners[lIdx].defaultPoolID = p.id
+        }
         return p
+    }
+
+    /// `PUT /v2/lbaas/pools/{id}` — `PoolPUT` accepts name/description/
+    /// lb_algorithm (NOT listener_id; rebinding is a listener update).
+    public func updatePool(id: String, projectID: String, name: String?, description: String?, lbAlgorithm: String?) -> FakePool? {
+        guard let idx = pools.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { pools[idx].name = name }
+        if let description { pools[idx].description = description }
+        if let lbAlgorithm { pools[idx].lbAlgorithm = lbAlgorithm }
+        return pools[idx]
     }
 
     public func deletePool(id: String, projectID: String) -> Bool {
@@ -3248,8 +3476,10 @@ public actor FakeState {
         return true
     }
 
-    public func listMembers(projectID: String, limit: Int? = nil, marker: String? = nil) -> [FakeMember] {
+    /// Members are scoped to a pool (`GET /v2/lbaas/pools/{pool_id}/members`).
+    public func listMembers(projectID: String, poolID: String? = nil, limit: Int? = nil, marker: String? = nil) -> [FakeMember] {
         var result = members.filter { $0.projectID == projectID }
+        if let poolID { result = result.filter { $0.poolID == poolID } }
         if let marker, let idx = result.firstIndex(where: { $0.id == marker }) { result = Array(result[(idx + 1)...]) }
         if let limit, limit < result.count { result = Array(result[0..<limit]) }
         return result
@@ -3260,11 +3490,20 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createMember(projectID: String, name: String?, protocolAddress: String, protocolPort: Int, weight: Int?, adminStateUp: Bool?, poolID: String?) -> FakeMember {
+    public func createMember(projectID: String, name: String?, address: String, protocolPort: Int, subnetID: String? = nil, weight: Int?, adminStateUp: Bool?, poolID: String?) -> FakeMember {
         memberIDCounter += 1
-        let m = FakeMember(id: "member-\(memberIDCounter)", projectID: projectID, name: name, protocolAddress: protocolAddress, protocolPort: protocolPort, weight: weight, adminStateUp: adminStateUp, poolID: poolID, status: "ONLINE")
+        let m = FakeMember(id: "member-\(memberIDCounter)", projectID: projectID, name: name, address: address, protocolPort: protocolPort, subnetID: subnetID, weight: weight, adminStateUp: adminStateUp, poolID: poolID, status: "ONLINE")
         members.append(m)
         return m
+    }
+
+    /// `PUT /v2/lbaas/pools/{pool_id}/members/{member_id}`.
+    public func updateMember(id: String, projectID: String, name: String?, weight: Int?, adminStateUp: Bool?) -> FakeMember? {
+        guard let idx = members.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { members[idx].name = name }
+        if let weight { members[idx].weight = weight }
+        if let adminStateUp { members[idx].adminStateUp = adminStateUp }
+        return members[idx]
     }
 
     public func deleteMember(id: String, projectID: String) -> Bool {
@@ -3290,7 +3529,20 @@ public actor FakeState {
         healthMonitorIDCounter += 1
         let h = FakeHealthMonitor(id: "hm-\(healthMonitorIDCounter)", projectID: projectID, name: name, type: type, delay: delay, timeout: timeout, maxRetries: maxRetries, poolID: poolID)
         healthMonitors.append(h)
+        if let poolID, let pIdx = pools.firstIndex(where: { $0.id == poolID && $0.projectID == projectID }) {
+            pools[pIdx].healthMonitorID = h.id
+        }
         return h
+    }
+
+    /// `PUT /v2/lbaas/healthmonitors/{id}`.
+    public func updateHealthMonitor(id: String, projectID: String, name: String?, delay: Int?, timeout: Int?, maxRetries: Int?) -> FakeHealthMonitor? {
+        guard let idx = healthMonitors.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if let name { healthMonitors[idx].name = name }
+        if let delay { healthMonitors[idx].delay = delay }
+        if let timeout { healthMonitors[idx].timeout = timeout }
+        if let maxRetries { healthMonitors[idx].maxRetries = maxRetries }
+        return healthMonitors[idx]
     }
 
     public func deleteHealthMonitor(id: String, projectID: String) -> Bool {

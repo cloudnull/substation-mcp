@@ -56,9 +56,9 @@ Fast, safe, confirms the server is up/authenticated and the non-expert UX layer 
 | A3 | `os_describe(server)` | verbs incl. create/update/delete; actions incl. `reboot`,`console_output`,`provisioning_status`; `create_schema` has field names; `networks` description documents the private-network prerequisite chain |
 | A4 | `os_describe(network)` | includes a note that external/public networks cannot host servers directly |
 | A5 | `os_project_readiness` | returns `ready_for_servers` (bool) + `blockers[]` that accurately reflect missing prereqs |
-| A6 | `os_recommend_flavor(workload="database")` | ≤3 recs, each with `reason`; RAM-favored choice |
-| A7 | `os_recommend_flavor(workload="quantum computing")` | does NOT error; falls back to general purpose with sensible reason |
-| A8 | `os_recommend_flavor(workload="web app", min_ram_gb=<large>)` | respects filter (fewer/no results), never ignores it |
+| A6 | `os_recommend_flavor(workload="database")` | ≤3 recs, each with `reason`; **smallest-that-fits first** (never the biggest flavor), family-biased toward high-RAM at that smallest size |
+| A7 | `os_recommend_flavor(workload="quantum computing")` | does NOT error; falls back to general purpose at the conservative default (1 vCPU / 2 GB) with `inferred_requirements.defaulted: true` |
+| A8 | `os_recommend_flavor(workload="web app", min_ram_gb=<large>)` | minimums are **hard floors**: flavors below them are never offered; an empty result comes with a hint to lower them |
 | A9 | `os_find(value=<known IP/name from Part 0>)` | finds ≥1 match |
 | A10 | `os_get(server,"definitely-not-real-xyz")` | 404 with `Hint:` mentioning `os_list` |
 | A11 | `os_create(server,{name:"smoke-x",flavor:$FLAVOR,image:$IMAGE,networks:[{network:$PUBNET}]},dry_run=true)` | `valid:false` + `publicNetworkRejected`/external-network message + `Hint:` listing network→subnet→router→router_interface sequence |
@@ -213,11 +213,11 @@ If you have a way to present a read-only token (separate harness/session): confi
 | object (object_storage) | L G C D | `{container, name, content}` | — | — | needs parent container. |
 | secret (key_manager) | L G C D | `{name, ...payload fields from os_describe}` | get_payload | — | payload is secret — never echo it in output. |
 | secret_container (key_manager) | L G D | — | — | — | |
-| load_balancer (loadbalancer) | L G C D | `{name, vip_subnet_id:$LB_SUBNET}` | — | — | Needs a VIP subnet (reuse e2e subnet or make one). Ordering: lb → listener + pool → member + health_monitor. |
-| listener (loadbalancer) | L G C D | `{name, protocol:"HTTP", protocol_port:80, load_balancer_id:$LB}` | — | — | parent lb. |
-| pool (loadbalancer) | L G C D | `{name, protocol:"HTTP", lb_algorithm:"ROUND_ROBIN", load_balancer_id:$LB}` | — | — | parent lb. |
-| member (loadbalancer) | L G C D | `{name, protocol_address:<ip>, protocol_port:80, pool_id:$POOL}` | — | — | parent pool; terminal ONLINE/OFFLINE. |
-| health_monitor (loadbalancer) | L G C D | `{name, type:"PING", delay:5, timeout:5, max_retries:3, pool_id:$POOL}` | — | — | parent pool. |
+| load_balancer (loadbalancer) | L G C U D | `{name, vip_subnet_id:$LB_SUBNET}` | — | — | Needs a VIP subnet (reuse e2e subnet or make one). Ordering: lb → listener + pool → member + health_monitor. |
+| listener (loadbalancer) | L G C U D | `{name, protocol:"HTTP", protocol_port:80, load_balancer_id:$LB}` | `{default_pool_id:$POOL}` | — | parent lb; update binds the default pool. |
+| pool (loadbalancer) | L G C U D | `{name, protocol:"HTTP", lb_algorithm:"ROUND_ROBIN", listener_id:$LISTENER}` | `{lb_algorithm:"LEAST_CONNECTIONS"}` | — | bind via `listener_id` (or `load_balancer_id`). |
+| member (loadbalancer) | L G C U D | `{name, address:<ip>, protocol_port:80, pool_id:$POOL}` | `{weight:5}` | — | pool sub-resource; terminal ONLINE/OFFLINE. Field is `address`. |
+| health_monitor (loadbalancer) | L G C U D | `{name, type:"PING", delay:5, timeout:5, max_retries:3, pool_id:$POOL}` | `{delay:10}` | — | parent pool. |
 | zone (dns) | L G C D | `{name:"<fqdn>."}` (trailing dot) | — | — | |
 | recordset (dns) | L G C D | `{zone_id/name, name:"host.", type:"A", ttl:60, records:["1.2.3.4"]}` (fields per os_describe) | — | — | parent zone. |
 | cluster (container_infra) | L G C D | `{name, ...per os_describe}` | — | — | Expensive; create then delete promptly. |

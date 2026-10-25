@@ -163,66 +163,18 @@ public struct CinderFake {
         }
 
         // MARK: - Volume Types
+        //
+        // Real Cinder v3 registers the collection as `types`, project-scoped:
+        // `GET/POST /v3/{project_id}/types`, `GET/DELETE /v3/{project_id}/types/{id}`
+        // (cinder/api/v3/router.py `mapper.resource("type", "types", ...)`;
+        // api-ref/source/v3/volumes-v3-types.inc). `volume-types` is NOT a Cinder
+        // route — serving it here is what let the client's wrong path pass the
+        // suite while 404'ing on Rackspace. The routes below mirror the real
+        // mapper, including Cinder's microversion-3.67 unscoped alias `/types`,
+        // which is why the project segment is a literal UUID-ish segment and not
+        // a catch-all.
 
-        router.get("\(base)/:projectId/volume-types") { req, ctx in
-            guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
-            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
-                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
-            }
-            _ = ctx.parameters.get("projectId")
-            let types = await state.listVolumeTypes()
-            let items = types.map { Self.volumeTypeJSON($0) }.joined(separator: ",")
-            return Self.jsonResponse(status: .ok, body: """
-            {"volumeTypes":[\(items)]}
-            """)
-        }
-
-        router.get("\(base)/:projectId/volume-types/:id") { req, ctx in
-            guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
-            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
-                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
-            }
-            _ = ctx.parameters.get("projectId")
-            let id = ctx.parameters.get("id") ?? ""
-            guard let vt = await state.getVolumeType(id: id) else {
-                return Self.itemNotFound(message: "Volume type \(id) could not be found.")
-            }
-            return Self.jsonResponse(status: .ok, body: """
-            {"volumeType":\(Self.volumeTypeJSON(vt))}
-            """)
-        }
-
-        router.post("\(base)/:projectId/volume-types") { req, ctx in
-            guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
-            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
-                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
-            }
-            _ = ctx.parameters.get("projectId")
-            let body = try await Self.readBody(req)
-            let vtBody = Self.objectForKey("volumeType", in: body) ?? body
-            let name = Self.extractString("name", from: vtBody) ?? "new-type"
-            let vt = await state.createVolumeType(name: name)
-            return Self.jsonResponse(status: .created, body: """
-            {"volumeType":\(Self.volumeTypeJSON(vt))}
-            """)
-        }
-
-        router.delete("\(base)/:projectId/volume-types/:id") { req, ctx in
-            guard req.headers[FakeHeaders.xAuthToken] != nil else { return Self.unauthorized() }
-            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
-                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
-            }
-            _ = ctx.parameters.get("projectId")
-            let id = ctx.parameters.get("id") ?? ""
-            guard await state.deleteVolumeType(id: id) else {
-                return Self.itemNotFound(message: "Volume type \(id) could not be found.")
-            }
-            return Response(status: .noContent)
-        }
-
-        // MARK: - Snapshots
-
-        router.get("\(base)/snapshots") { req, _ in
+        router.get("\(base)/:projectId/types") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.unauthorized()
@@ -230,6 +182,100 @@ public struct CinderFake {
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            // Cinder scopes the list to the token's project: a token may only
+            // address its own project id in the path.
+            let projectId = ctx.parameters.get("projectId") ?? ""
+            guard projectId == token.projectID else {
+                return Self.forbidden(message: "Not allowed to access project \(projectId).")
+            }
+            let types = await state.listVolumeTypes()
+            let items = types.map { Self.volumeTypeJSON($0) }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"volume_types":[\(items)]}
+            """)
+        }
+
+        router.get("\(base)/:projectId/types/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.unauthorized()
+            }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            let projectId = ctx.parameters.get("projectId") ?? ""
+            guard projectId == token.projectID else {
+                return Self.forbidden(message: "Not allowed to access project \(projectId).")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard let vt = await state.getVolumeType(id: id) else {
+                return Self.itemNotFound(message: "Volume type \(id) could not be found.")
+            }
+            return Self.jsonResponse(status: .ok, body: """
+            {"volume_type":\(Self.volumeTypeJSON(vt))}
+            """)
+        }
+
+        router.post("\(base)/:projectId/types") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.unauthorized()
+            }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            let projectId = ctx.parameters.get("projectId") ?? ""
+            guard projectId == token.projectID else {
+                return Self.forbidden(message: "Not allowed to access project \(projectId).")
+            }
+            let body = try await Self.readBody(req)
+            // Cinder's create body is the snake_case `volume_type` envelope.
+            guard Self.objectForKey("volume_type", in: body) != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Could not parse body for volume_type.")
+            }
+            let vtBody = Self.objectForKey("volume_type", in: body) ?? body
+            let name = Self.extractString("name", from: vtBody) ?? "new-type"
+            let vt = await state.createVolumeType(name: name)
+            return Self.jsonResponse(status: .created, body: """
+            {"volume_type":\(Self.volumeTypeJSON(vt))}
+            """)
+        }
+
+        router.delete("\(base)/:projectId/types/:id") { req, ctx in
+            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
+                  let token = await state.validateToken(tokenID) else {
+                return Self.unauthorized()
+            }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            let projectId = ctx.parameters.get("projectId") ?? ""
+            guard projectId == token.projectID else {
+                return Self.forbidden(message: "Not allowed to access project \(projectId).")
+            }
+            let id = ctx.parameters.get("id") ?? ""
+            guard await state.deleteVolumeType(id: id) else {
+                return Self.itemNotFound(message: "Volume type \(id) could not be found.")
+            }
+            return Response(status: .accepted)
+        }
+
+        // MARK: - Snapshots
+        //
+        // Cinder registers snapshots project-scoped:
+        // `GET /v3/{project_id}/snapshots`, `GET /v3/{project_id}/snapshots/detail`,
+        // `POST /v3/{project_id}/snapshots`, `GET|DELETE /v3/{project_id}/snapshots/{id}`
+        // (cinder/api/v3/router.py `mapper.resource("snapshot", "snapshots",
+        // collection: {'detail': 'GET'})`; api-ref volumes-v3-snapshots.inc).
+        // `snapshots/detail` is registered BEFORE `snapshots/:id` so the literal
+        // `detail` segment wins over the id parameter, as it does in Cinder.
+
+        router.get("\(base)/:projectId/snapshots/detail") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let limit = Self.queryParam("limit", from: req).flatMap { Int($0) } ?? 25
             let marker = Self.queryParam("marker", from: req)
             let snaps = await state.listSnapshots(projectID: token.projectID, limit: limit, marker: marker)
@@ -239,14 +285,27 @@ public struct CinderFake {
             """)
         }
 
-        router.get("\(base)/snapshots/:id") { req, ctx in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.get("\(base)/:projectId/snapshots") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
+            let limit = Self.queryParam("limit", from: req).flatMap { Int($0) } ?? 25
+            let marker = Self.queryParam("marker", from: req)
+            let snaps = await state.listSnapshots(projectID: token.projectID, limit: limit, marker: marker)
+            let items = snaps.map { Self.snapshotJSON($0) }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"snapshots":[\(items)]}
+            """)
+        }
+
+        router.get("\(base)/:projectId/snapshots/:id") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let id = ctx.parameters.get("id") ?? ""
             guard let snap = await state.getSnapshot(id: id, projectID: token.projectID) else {
                 return Self.itemNotFound(message: "Snapshot \(id) could not be found.")
@@ -256,14 +315,12 @@ public struct CinderFake {
             """)
         }
 
-        router.post("\(base)/snapshots") { req, _ in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.post("\(base)/:projectId/snapshots") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let body = try await Self.readBody(req)
             let snapBody = Self.objectForKey("snapshot", in: body) ?? body
             let volumeID = Self.extractString("volume_id", from: snapBody) ?? ""
@@ -277,11 +334,9 @@ public struct CinderFake {
             """)
         }
 
-        router.delete("\(base)/snapshots/:id") { req, ctx in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.delete("\(base)/:projectId/snapshots/:id") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
@@ -293,15 +348,20 @@ public struct CinderFake {
         }
 
         // MARK: - Backups
+        //
+        // Also project-scoped in Cinder: `GET|POST /v3/{project_id}/backups`,
+        // `GET /v3/{project_id}/backups/detail`,
+        // `GET|DELETE /v3/{project_id}/backups/{id}`,
+        // `POST /v3/{project_id}/backups/{id}/restore`
+        // (cinder/api/v3/router.py `mapper.resource("backup", "backups",
+        // collection: {'detail': 'GET'})`; api-ref ext-backups.inc).
 
-        router.get("\(base)/backups") { req, _ in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.get("\(base)/:projectId/backups/detail") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let limit = Self.queryParam("limit", from: req).flatMap { Int($0) } ?? 25
             let marker = Self.queryParam("marker", from: req)
             let backups = await state.listBackups(projectID: token.projectID, limit: limit, marker: marker)
@@ -311,14 +371,27 @@ public struct CinderFake {
             """)
         }
 
-        router.get("\(base)/backups/:id") { req, ctx in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.get("\(base)/:projectId/backups") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
+            let limit = Self.queryParam("limit", from: req).flatMap { Int($0) } ?? 25
+            let marker = Self.queryParam("marker", from: req)
+            let backups = await state.listBackups(projectID: token.projectID, limit: limit, marker: marker)
+            let items = backups.map { Self.backupJSON($0) }.joined(separator: ",")
+            return Self.jsonResponse(status: .ok, body: """
+            {"backups":[\(items)]}
+            """)
+        }
+
+        router.get("\(base)/:projectId/backups/:id") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
+            guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
+                return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
+            }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let id = ctx.parameters.get("id") ?? ""
             guard let backup = await state.getBackup(id: id, projectID: token.projectID) else {
                 return Self.itemNotFound(message: "Backup \(id) could not be found.")
@@ -328,14 +401,12 @@ public struct CinderFake {
             """)
         }
 
-        router.post("\(base)/backups") { req, _ in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.post("\(base)/:projectId/backups") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let body = try await Self.readBody(req)
             let backupBody = Self.objectForKey("backup", in: body) ?? body
             let volumeID = Self.extractString("volume_id", from: backupBody) ?? ""
@@ -348,14 +419,12 @@ public struct CinderFake {
             """)
         }
 
-        router.delete("\(base)/backups/:id") { req, ctx in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.delete("\(base)/:projectId/backups/:id") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let id = ctx.parameters.get("id") ?? ""
             guard await state.deleteBackup(id: id, projectID: token.projectID) else {
                 return Self.itemNotFound(message: "Backup \(id) could not be found.")
@@ -363,14 +432,12 @@ public struct CinderFake {
             return Response(status: .noContent)
         }
 
-        router.post("\(base)/backups/:id/restore") { req, ctx in
-            guard let tokenID = req.headers[FakeHeaders.xAuthToken],
-                  let token = await state.validateToken(tokenID) else {
-                return Self.unauthorized()
-            }
+        router.post("\(base)/:projectId/backups/:id/restore") { req, ctx in
+            guard let token = await Self.token(req, state: state) else { return Self.unauthorized() }
             guard req.headers[FakeHeaders.openstackAPIVersion] != nil else {
                 return Self.cinderError(status: .badRequest, type: "badRequest", message: "Missing OpenStack-API-Version header.")
             }
+            guard Self.projectMatches(ctx, token: token) else { return Self.projectForbidden(ctx) }
             let id = ctx.parameters.get("id") ?? ""
             guard let vol = await state.restoreBackup(id: id, projectID: token.projectID) else {
                 return Self.itemNotFound(message: "Backup \(id) could not be found.")
@@ -381,6 +448,17 @@ public struct CinderFake {
         }
 
         // MARK: - Quotas
+        //
+        // Deliberately NOT project-prefixed. Cinder's api-ref documents quota
+        // sets as `GET /v3/{admin_project_id}/os-quota-sets/{project_id}`
+        // (api-ref/source/v3/quota-sets.inc), and the controller authorizes with
+        // `volume_extension:quotas:show`, whose default is
+        // `rule:system_reader_or_project_reader` scoped to the TARGET project
+        // (cinder/policies/quotas.py) — a project member reads its OWN quota by
+        // naming itself as the target, which is what the client does
+        // (`GET os-quota-sets/{token.project.id}`). Cinder's extension router
+        // registers the collection without a `{project_id}` prefix, so the
+        // client's path is correct and needs no change.
 
         router.get("\(base)/os-quota-sets/:projectId") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
@@ -397,6 +475,27 @@ public struct CinderFake {
             {"quota_set":{"volumes":10,"gigabytes":1000,"snapshots":10}}
             """)
         }
+    }
+
+    // MARK: - Auth / project scoping
+
+    /// Validated token for the request, or nil when unauthenticated.
+    static func token(_ req: Request, state: FakeState) async -> FakeState.FakeToken? {
+        guard let tokenID = req.headers[FakeHeaders.xAuthToken] else { return nil }
+        return await state.validateToken(tokenID)
+    }
+
+    /// Cinder's `{project_id}` path segment must name the token's own project.
+    static func projectMatches(_ ctx: BasicRequestContext, token: FakeState.FakeToken) -> Bool {
+        (ctx.parameters.get("projectId") ?? "") == token.projectID
+    }
+
+    static func projectForbidden(_ ctx: BasicRequestContext) -> Response {
+        forbidden(message: "Not allowed to access project \(ctx.parameters.get("projectId") ?? "").")
+    }
+
+    static func forbidden(message: String) -> Response {
+        cinderError(status: .forbidden, type: "forbidden", message: message)
     }
 
     // MARK: - JSON builders
@@ -428,9 +527,12 @@ public struct CinderFake {
         return "{" + parts.joined(separator: ",") + "}"
     }
 
+    /// Cinder's volume-type view builder (`cinder/api/views/types.py`) trims a
+    /// list entry to `id`, `name`, `is_public`, `extra_specs`, `description`.
     static func volumeTypeJSON(_ vt: FakeState.FakeVolumeType) -> String {
+        let specs = (vt.extraSpecs ?? [:]).map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
         return """
-        {"id":"\(vt.id)","name":"\(vt.name)"}
+        {"id":"\(vt.id)","name":"\(vt.name)","description":"\(vt.name) volume type","is_public":true,"extra_specs":{\(specs)}}
         """
     }
 

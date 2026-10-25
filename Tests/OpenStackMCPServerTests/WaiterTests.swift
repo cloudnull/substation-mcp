@@ -368,6 +368,81 @@ struct WaiterTests {
             #expect(e.code == "itemNotFound", "Expected code 'itemNotFound', got \(String(describing: e.code))")
         }
     }
+
+    // MARK: - Identifier resolution (os_wait accepts a name)
+    //
+    // os_wait polled by id only, so `{"resource":"server","id":"probe-01"}`
+    // 404'd on the first poll and the loop reported "Resource server probe-01
+    // no longer exists (last status: unknown)" about a server that was in
+    // BUILD. `(last status: unknown)` was the tell: a poll that never resolved
+    // an id can never have a status.
+
+    @Test("os_wait by server NAME waits on the same server as by UUID", )
+    func waitByNameMatchesWaitByID() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        // server-1 is the NAME of srv-0001.
+        let byName = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("server-1"),
+            "timeout_seconds": .int(10),
+        ])
+        let nameText = firstText(byName.content)
+        #expect(byName.isError != true, "Name form must wait successfully, got: \(nameText ?? "nil")")
+        #expect(nameText?.contains("ACTIVE") == true, "Should reach ACTIVE, got: \(nameText ?? "nil")")
+        // The response carries the RESOLVED id, so a caller can correlate it
+        // with os_list/os_get output rather than with the string they typed.
+        #expect(nameText?.contains("srv-0001") == true, "Should report the resolved id, got: \(nameText ?? "nil")")
+
+        let byID = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("srv-0001"),
+            "timeout_seconds": .int(10),
+        ])
+        let idText = firstText(byID.content)
+        #expect(byID.isError != true, "UUID form should still work, got: \(idText ?? "nil")")
+        #expect(idText?.contains("ACTIVE") == true, "Should reach ACTIVE, got: \(idText ?? "nil")")
+    }
+
+    @Test("os_wait accepts the id_or_name alias for the identifier", )
+    func waitAcceptsIDOrNameAlias() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id_or_name": .string("server-2"),
+            "timeout_seconds": .int(10),
+        ])
+        let text = firstText(result.content)
+        #expect(result.isError != true, "id_or_name should be honored, got: \(text ?? "nil")")
+        #expect(text?.contains("srv-0002") == true, "Should resolve server-2 to srv-0002, got: \(text ?? "nil")")
+    }
+
+    @Test("os_wait with an unresolvable name reports a resolution failure, never a deletion", )
+    func waitUnknownNameIsNotReportedAsDeleted() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_wait", arguments: [
+            "resource": .string("server"),
+            "id": .string("probe-01"),
+            "timeout_seconds": .int(5),
+        ])
+        #expect(result.isError == true)
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("nameNotResolved"), "Should be a name-resolution failure, got: \(text)")
+        #expect(!text.contains("no longer exists"), "Must not claim the resource was deleted, got: \(text)")
+        #expect(!text.contains("deleted"), "Must not report deletion, got: \(text)")
+        #expect(text.contains("probe-01"), "Should name the identifier that failed, got: \(text)")
+    }
 }
 
 /// Sendable collector for progress notification messages.

@@ -10,7 +10,53 @@ import OpenStackClient
 ///
 /// The `resource`/`link` enums are derived from the effective catalog so the
 /// schemas always match what the deployment actually exposes.
+
+/// One required argument of a tool, as the published schema describes it.
+///
+/// `order` is the argument's position in the schema's own `required` array, so
+/// a hint renders arguments in the order a client reads them.
+public struct ToolRequiredArgument: Sendable, Equatable {
+    public let name: String
+    public let order: Int
+    /// The schema's `description` for this argument, when it has one. A hint
+    /// renders it inside the placeholder so the caller is told what to supply
+    /// (`target: <TARGET "Port ID or name">`) rather than guessing.
+    public let description: String?
+
+    public init(name: String, order: Int, description: String?) {
+        self.name = name
+        self.order = order
+        self.description = description
+    }
+}
+
 public enum AllTools {
+    /// Every required argument of every tool, keyed by tool name, read straight
+    /// off the `inputSchema` published through `tools/list`.
+    ///
+    /// `os_create`'s `next_steps` hints are rendered from this table so a hint
+    /// can never advertise a call that omits a parameter the schema demands.
+    /// That drift was live: the floating_ip hint said
+    /// `os_attach(link:floating_ip, source:…, target:…)` while `os_attach`
+    /// requires `source_type` and `target_type` as well, and an agent that
+    /// copied the hint failed twice with `missingParam`.
+    public static func requiredArguments(catalog: ResourceCatalog) -> [String: [ToolRequiredArgument]] {
+        var out: [String: [ToolRequiredArgument]] = [:]
+        for tool in tools(catalog: catalog) {
+            guard case .object(let schema) = tool.inputSchema,
+                  case .array(let req)? = schema["required"] else { continue }
+            let properties = schema["properties"]?.objectValue ?? [:]
+            var args: [ToolRequiredArgument] = []
+            for (index, value) in req.enumerated() {
+                guard let name = value.stringValue else { continue }
+                args.append(.init(name: name, order: index,
+                                  description: properties[name]?.objectValue?["description"]?.stringValue))
+            }
+            out[tool.name] = args
+        }
+        return out
+    }
+
     public static func tools(catalog: ResourceCatalog) -> [Tool] {
         let resourceEnum = catalog.names.sorted().map { Value.string($0) }
         let linkEnum = catalog.allLinks.keys.sorted().map { Value.string($0) }
@@ -259,7 +305,7 @@ public enum AllTools {
             ),
             Tool(
                 name: "os_delete",
-                description: "Delete an OpenStack resource. dry_run:true returns dependent resources that block deletion.",
+                description: "Delete an OpenStack resource. dry_run:true returns dependent resources that block deletion. For a load balancer, cascade:true also deletes its children (listeners, pools, members, health monitors).",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -267,6 +313,7 @@ public enum AllTools {
                         "id_or_name": .object(["type": .string("string"), "description": .string("Resource ID or name. Aliases id, name, uuid are accepted.")]),
                         "region": .object(["type": .string("string")]),
                         "dry_run": .object(["type": .string("boolean")]),
+                        "cascade": .object(["type": .string("boolean"), "description": .string("Load balancer only: delete the load balancer and all its children (listeners, pools, members, health monitors) in one call. Without it an LB with children is rejected with 'it has children'.")]),
                     ]),
                     "required": .array([.string("resource"), .string("id_or_name")]),
                 ]),
@@ -294,11 +341,16 @@ public enum AllTools {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "link": .object(["type": .string("string"), "enum": .array(linkEnum)]),
-                        "source": .object(["type": .string("string")]),
-                        "source_type": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "target": .object(["type": .string("string")]),
-                        "target_type": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
+                        "link": .object(["type": .string("string"), "enum": .array(linkEnum),
+                                         "description": .string("Link kind: volume, interface, security_group, floating_ip, router_interface, router_gateway, qos_policy.")]),
+                        "source": .object(["type": .string("string"),
+                                           "description": .string("ID or name of the resource the link starts from: the floating IP (floating_ip), the router (router_interface / router_gateway), or the server (volume / interface / security_group).")]),
+                        "source_type": .object(["type": .string("string"), "enum": .array(resourceEnum),
+                                                "description": .string("Resource type of `source` — floating_ip, router, or server. Required: os_attach rejects the call without it.")]),
+                        "target": .object(["type": .string("string"),
+                                           "description": .string("ID or name of the resource the link points at: a server or port (floating_ip), a subnet or port (router_interface), an EXTERNAL network (router_gateway), a volume (volume).")]),
+                        "target_type": .object(["type": .string("string"), "enum": .array(resourceEnum),
+                                                "description": .string("Resource type of `target` — server, port, subnet, network, or volume. Required: os_attach rejects the call without it.")]),
                         "params": .object(["type": .string("object")]),
                         "region": .object(["type": .string("string")]),
                         "wait": .object(["type": .string("boolean")]),
@@ -313,11 +365,16 @@ public enum AllTools {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "link": .object(["type": .string("string"), "enum": .array(linkEnum)]),
-                        "source": .object(["type": .string("string")]),
-                        "source_type": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
-                        "target": .object(["type": .string("string")]),
-                        "target_type": .object(["type": .string("string"), "enum": .array(resourceEnum)]),
+                        "link": .object(["type": .string("string"), "enum": .array(linkEnum),
+                                         "description": .string("Link kind to remove: volume, interface, security_group, floating_ip, router_interface, router_gateway, qos_policy.")]),
+                        "source": .object(["type": .string("string"),
+                                           "description": .string("ID or name of the resource the link starts from: the floating IP (floating_ip), the router (router_interface / router_gateway), or the server (volume / interface / security_group).")]),
+                        "source_type": .object(["type": .string("string"), "enum": .array(resourceEnum),
+                                                "description": .string("Resource type of `source` — floating_ip, router, or server. Required: os_detach rejects the call without it.")]),
+                        "target": .object(["type": .string("string"),
+                                           "description": .string("ID or name of the resource the link points at: a server or port (floating_ip), a subnet or port (router_interface), an EXTERNAL network (router_gateway), a volume (volume).")]),
+                        "target_type": .object(["type": .string("string"), "enum": .array(resourceEnum),
+                                                "description": .string("Resource type of `target` — server, port, subnet, network, or volume. Required: os_detach rejects the call without it.")]),
                         "params": .object(["type": .string("object")]),
                         "region": .object(["type": .string("string")]),
                         "wait": .object(["type": .string("boolean")]),

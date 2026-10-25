@@ -291,29 +291,89 @@ struct BlockStorageServiceTests {
         #expect(types.contains(where: { $0.name == "lvmdriver-1" }))
     }
 
-    @Test("volume types path is project-scoped (Cinder v3)", .timeLimit(.minutes(2)))
+    @Test("volume types are listed from /{project_id}/types, not /volume-types", .timeLimit(.minutes(2)))
     func volumeTypesPathIsProjectScoped() async throws {
+        // Cinder v3's collection is `types` under the project, NOT
+        // `volume-types` (cinder/api/v3/router.py registers
+        // `mapper.resource("type", "types", ...)`; api-ref
+        // volumes-v3-types.inc `GET /v3/{project_id}/types`). The old path
+        // matched no Cinder route, so `os_list volume_type` returned
+        // `404 The resource could not be found.` on Rackspace IAD3 even though
+        // the list is member-readable (policy
+        // `volume_extension:type_get_all` = system_reader_or_project_reader).
+        //
+        // The fake now serves only the real routes, so each assertion below
+        // fails if the path regresses: a wrong collection name or a dropped
+        // project segment 404s, and a wrong project id is refused.
         let (handle, vt, blockStorage, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
 
-        // Pin the URL contract: Cinder v3 serves volume types only under the
-        // project-scoped path GET /v3/{project_id}/volume-types. The unscoped
-        // path returns 404 on real clouds, so the client must embed the
-        // project id in the path. The fake rejects the unscoped route, so a
-        // regression to /cinder/v3/volume-types 404s and the call throws.
-        let region = blockStorage.region("RegionOne")
+        let base = handle.url
+        let tokenID = vt.token.id
         let projectID = vt.token.project.id
         #expect(!projectID.isEmpty, "token must carry a project id")
 
+        func get(_ path: String) async -> Int {
+            var req = URLRequest(url: base.appendingPathComponent(path))
+            req.httpMethod = "GET"
+            req.setValue(tokenID, forHTTPHeaderField: "X-Auth-Token")
+            req.setValue("volume 3.70", forHTTPHeaderField: "OpenStack-API-Version")
+            // A transport failure is reported as a status the assertions will
+            // reject, rather than thrown: this helper exists to compare status
+            // codes, and a 0 makes the failing path obvious in the message.
+            guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return 0 }
+            return (resp as? HTTPURLResponse)?.statusCode ?? 0
+        }
+
+        // The correct, project-scoped collection route serves the list.
+        #expect(await get("cinder/v3/\(projectID)/types") == 200)
+        // The old client path is not a Cinder route at all.
+        #expect(await get("cinder/v3/\(projectID)/volume-types") == 404)
+        // Nor is the same collection without the project segment.
+        #expect(await get("cinder/v3/types") == 404)
+        #expect(await get("cinder/v3/volume-types") == 404)
+        // A foreign project id in the path is refused even with a valid token.
+        #expect(await get("cinder/v3/proj-two/types") == 403)
+
+        // And the client itself goes through the working route.
+        let region = blockStorage.region("RegionOne")
         do {
             let types = try await region.listVolumeTypes(vt)
-            #expect(types.count >= 1)
+            #expect(types.contains(where: { $0.name == "lvmdriver-1" }))
         } catch {
-            Issue.record("Project-scoped volume-types list should succeed, got: \(error)")
+            Issue.record("Project-scoped /types list should succeed, got: \(error)")
         }
     }
 
-    @Test("create and delete volume type", .timeLimit(.minutes(2)))
+    @Test("volume type decodes Cinder's brief list view", .timeLimit(.minutes(2)))
+    func volumeTypeDecodesCinderListView() throws {
+        // Verbatim shape of Cinder's `GET /v3/{project_id}/types` response
+        // (api-ref samples/volume_type/volume-types-list-response.json). The
+        // envelope key is `volume_types` (snake_case) — the client used to
+        // decode `volumeTypes`, which would have thrown even on a 200.
+        let json = """
+        {"volume_types":[{"description":"Default Volume Type","extra_specs":{},"id":"7a56b996-b73f-4233-9f00-dd6a68b49b27","is_public":true,"name":"__DEFAULT__","os-volume-type-access:is_public":true,"qos_specs_id":null}]}
+        """
+        struct List: Decodable { let volume_types: [VolumeType] }
+        let decoded = try JSONDecoder().decode(List.self, from: json.data(using: .utf8)!)
+        let vt = decoded.volume_types[0]
+        #expect(vt.id == "7a56b996-b73f-4233-9f00-dd6a68b49b27")
+        #expect(vt.name == "__DEFAULT__")
+        #expect(vt.description == "Default Volume Type")
+        #expect(vt.isPublic == true)
+        #expect(vt.extraSpecs == [:])
+    }
+
+    @Test("volume type create posts the snake_case volume_type envelope", .timeLimit(.minutes(2)))
+    func createVolumeTypeBodyShape() throws {
+        // Cinder's create-type body is `{"volume_type": {...}}`
+        // (api-ref volumes-v3-types.inc). The camelCase `volumeType` envelope
+        // fails Cinder's body validation.
+        let spec = CreateVolumeTypeSpec(name: "fast-ssd", extra_specs: ["volume_backend_name": "ssd"])
+        #expect(spec.body() == "{\"volume_type\":{\"name\":\"fast-ssd\",\"extra_specs\":{\"volume_backend_name\":\"ssd\"}}}")
+    }
+
+    @Test("create, get and delete volume type through /types", .timeLimit(.minutes(2)))
     func createDeleteVolumeType() async throws {
         let (handle, vt, blockStorage, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
@@ -321,6 +381,9 @@ struct BlockStorageServiceTests {
         let region = blockStorage.region("RegionOne")
         let type = try await region.createVolumeType(vt, CreateVolumeTypeSpec(name: "fast-ssd"))
         #expect(type.name == "fast-ssd")
+
+        let fetched = try await region.getVolumeType(vt, id: type.id)
+        #expect(fetched.id == type.id)
 
         try await region.deleteVolumeType(vt, id: type.id)
         do {

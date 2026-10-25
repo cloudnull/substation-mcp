@@ -209,43 +209,67 @@ public struct BlockStorageRegion: Sendable {
 
     // MARK: - Volume Types
 
+    /// Cinder v3 serves volume types under the project-scoped collection
+    /// `types` — **not** `volume-types`. Verified against the Cinder api-ref
+    /// (`api-ref/source/v3/volumes-v3-types.inc`, mirrored at
+    /// https://docs.openstack.org/api-ref/block-storage/v3/):
+    ///   GET    /v3/{project_id}/types
+    ///   GET    /v3/{project_id}/types/{volume_type_id}
+    ///   POST   /v3/{project_id}/types
+    ///   DELETE /v3/{project_id}/types/{volume_type_id}
+    /// The old `volume-types` segment matched no route in Cinder's v3 mapper
+    /// (`cinder/api/v3/router.py` registers `mapper.resource("type", "types")`),
+    /// so every call 404'd with `itemNotFound` — including `os_list volume_type`
+    /// for a plain project member.
+    ///
+    /// The `{project_id}` prefix is kept deliberately. Cinder ≥ Xena (microversion
+    /// 3.67, `cinder/api/openstack/rest_api_version_history.rst`) also accepts the
+    /// unscoped form `/v3/types`, but that form exists for *system- and
+    /// domain-scoped* tokens; a project-scoped token — which is what a password
+    /// login to a project yields — must send the project id. Listing is policy
+    /// `volume_extension:type_get_all` = `rule:system_reader_or_project_reader`
+    /// (`cinder/policies/volume_type.py`), i.e. any project member can read it;
+    /// this is a path bug, never a permissions one.
+    ///
+    /// `is_public` is deliberately NOT sent: Cinder ignores it for non-admin
+    /// callers (`cinder/api/v3/types.py` forces `filters['is_public'] = True`).
     public func listVolumeTypes(_ vt: ValidatedToken) async throws -> [VolumeType] {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/volume-types", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/types", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
-        struct List: Decodable { let volumeTypes: [VolumeType] }
-        return try JSONDecoder().decode(List.self, from: result.body).volumeTypes
+        struct List: Decodable { let volume_types: [VolumeType] }
+        return try JSONDecoder().decode(List.self, from: result.body).volume_types
     }
 
     public func getVolumeType(_ vt: ValidatedToken, id: String) async throws -> VolumeType {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/volume-types/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/types/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
-        struct Resp: Decodable { let volumeType: VolumeType }
-        return try JSONDecoder().decode(Resp.self, from: result.body).volumeType
+        struct Resp: Decodable { let volume_type: VolumeType }
+        return try JSONDecoder().decode(Resp.self, from: result.body).volume_type
     }
 
     public func createVolumeType(_ vt: ValidatedToken, _ spec: CreateVolumeTypeSpec) async throws -> VolumeType {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(projectID)/volume-types", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(projectID)/types", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
-        struct Resp: Decodable { let volumeType: VolumeType }
-        return try JSONDecoder().decode(Resp.self, from: result.body).volumeType
+        struct Resp: Decodable { let volume_type: VolumeType }
+        return try JSONDecoder().decode(Resp.self, from: result.body).volume_type
     }
 
     public func deleteVolumeType(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
         let projectID = vt.token.project.id
-        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(projectID)/volume-types/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(projectID)/types/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -255,6 +279,16 @@ public struct BlockStorageRegion: Sendable {
 
     // MARK: - Snapshots
 
+    /// Cinder v3 registers snapshots project-scoped — `GET /v3/{project_id}/snapshots`,
+    /// `POST …/snapshots`, `GET|DELETE …/snapshots/{id}`
+    /// (`cinder/api/v3/router.py` `mapper.resource("snapshot", "snapshots", …)`;
+    /// api-ref `volumes-v3-snapshots.inc`). Same class of bug as the volume-type
+    /// path above: without the `{project_id}` segment the request matches no
+    /// Cinder route and 404s. Detail listing is a separate collection route
+    /// (`…/snapshots/detail`) whose rows carry `status`, `volume_id`, `size` and
+    /// `created_at` (`cinder/api/views/snapshots.py`), which is what the models
+    /// here decode, so listings go to `/detail`.
+
     public func listSnapshots(
         _ vt: ValidatedToken,
         filters: [String: String] = [:],
@@ -262,12 +296,13 @@ public struct BlockStorageRegion: Sendable {
         marker: String? = nil
     ) async throws -> [Snapshot] {
         let region = try resolveRegion(vt)
+        let projectID = vt.token.project.id
         var query: [URLQueryItem] = []
         for (k, v) in filters { query.append(URLQueryItem(name: k, value: v)) }
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/snapshots", query: query, extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(projectID)/snapshots/detail", query: query, extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -277,7 +312,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func getSnapshot(_ vt: ValidatedToken, id: String) async throws -> Snapshot {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/snapshots/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(vt.token.project.id)/snapshots/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -287,7 +322,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func createSnapshot(_ vt: ValidatedToken, _ spec: CreateSnapshotSpec) async throws -> Snapshot {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/snapshots", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(vt.token.project.id)/snapshots", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -297,7 +332,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func deleteSnapshot(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/snapshots/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(vt.token.project.id)/snapshots/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -306,6 +341,14 @@ public struct BlockStorageRegion: Sendable {
     }
 
     // MARK: - Backups
+
+    /// Backups are project-scoped in Cinder too
+    /// (`GET /v3/{project_id}/backups/detail`, `POST …/backups`,
+    /// `GET|DELETE …/backups/{id}`, `POST …/backups/{id}/restore`;
+    /// cinder/api/v3/router.py + api-ref ext-backups.inc). The plain
+    /// `…/backups` index is a *summary* view — `id`/`name`/`links` only
+    /// (`cinder/api/views/backups.py` `summary`), which cannot satisfy the
+    /// `Backup` model — so listings use `/detail`.
 
     public func listBackups(
         _ vt: ValidatedToken,
@@ -319,7 +362,7 @@ public struct BlockStorageRegion: Sendable {
         if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
         if let marker { query.append(URLQueryItem(name: "marker", value: marker)) }
 
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/backups", query: query, extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(vt.token.project.id)/backups/detail", query: query, extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -329,7 +372,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func getBackup(_ vt: ValidatedToken, id: String) async throws -> Backup {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "GET", path: "\(basePath)/backups/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "GET", path: "\(basePath)/\(vt.token.project.id)/backups/\(id)", extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -339,7 +382,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func createBackup(_ vt: ValidatedToken, _ spec: CreateBackupSpec) async throws -> Backup {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/backups", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(vt.token.project.id)/backups", body: spec.body().data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }
@@ -349,7 +392,7 @@ public struct BlockStorageRegion: Sendable {
 
     public func deleteBackup(_ vt: ValidatedToken, id: String) async throws {
         let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/backups/\(id)", extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/\(vt.token.project.id)/backups/\(id)", extraHeaders: versionHeader)
         if ![200, 202, 204].contains(result.status) {
             if !(200...299).contains(result.status) {
                 throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
@@ -361,7 +404,7 @@ public struct BlockStorageRegion: Sendable {
     public func restoreBackup(_ vt: ValidatedToken, id: String) async throws -> Volume {
         let region = try resolveRegion(vt)
         let body = "{\"restore\":{}}"
-        let result = try await req(vt, region, method: "POST", path: "\(basePath)/backups/\(id)/restore", body: body.data(using: .utf8), extraHeaders: versionHeader)
+        let result = try await req(vt, region, method: "POST", path: "\(basePath)/\(vt.token.project.id)/backups/\(id)/restore", body: body.data(using: .utf8), extraHeaders: versionHeader)
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "volume", requestID: result.requestID, hasAccessRules: false)
         }

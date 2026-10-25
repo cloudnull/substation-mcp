@@ -86,6 +86,35 @@ struct LoadBalancerServiceTests {
         let after = try await region.listLoadBalancers(vt)
         #expect(!after.contains { $0.id == created.id })
     }
+
+    @Test("load balancer with children refuses a plain delete; cascade deletes the children")
+    func deleteLoadBalancerCascade() async throws {
+        let (handle, vt, svc, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = svc.region("RegionOne")
+        let lb = try await region.createLoadBalancer(vt, CreateLoadBalancerSpec(name: "cascade-lb", vip_address: "10.0.0.98"))
+        let listener = try await region.createListener(vt, CreateListenerSpec(name: "cascade-lst", protocolName: "HTTP", protocol_port: 80, load_balancer_id: lb.id))
+        _ = try await region.createPool(vt, CreatePoolSpec(name: "cascade-pool", protocolName: "HTTP", lb_algorithm: "ROUND_ROBIN", load_balancer_id: lb.id, listener_id: listener.id))
+
+        // A plain delete is refused while children exist (Octavia "it has children").
+        do {
+            try await region.deleteLoadBalancer(vt, id: lb.id)
+            Issue.record("plain delete of an LB with children must be refused")
+        } catch let e as OpenStackError {
+            #expect(e.status == 400, "expected 400, got \(e.status): \(e.message)")
+        }
+        // The LB and its listener survive the refused delete.
+        #expect(try await region.getLoadBalancer(vt, id: lb.id).id == lb.id)
+        #expect(try await region.getListener(vt, id: listener.id).id == listener.id)
+
+        // cascade:true deletes the LB and all children in one call.
+        try await region.deleteLoadBalancer(vt, id: lb.id, cascade: true)
+        let lbs = try await region.listLoadBalancers(vt)
+        #expect(!lbs.contains { $0.id == lb.id }, "LB must be gone after cascade")
+        let listeners = try await region.listListeners(vt)
+        #expect(!listeners.contains { $0.id == listener.id }, "listener must be gone after cascade")
+    }
     @Test("create load balancer recovers from a minimal/non-JSON response (ISSUE 18)")
     func createLoadBalancerRecoversFromEmptyBody() async throws {
         let (handle, vt, svc, _, transport) = try await makeSetup()
@@ -145,7 +174,8 @@ struct LoadBalancerServiceTests {
         defer { handle.stop(); transport.syncShutdown() }
 
         let region = svc.region("RegionOne")
-        let members = try await region.listMembers(vt)
+        // Members are a pool sub-resource: the client requires a pool id.
+        let members = try await region.listMembers(vt, poolID: "pool-1")
         #expect(members.count == 1)
         #expect(members.first?.id == "member-1")
         #expect(members.first?.status == "ONLINE")

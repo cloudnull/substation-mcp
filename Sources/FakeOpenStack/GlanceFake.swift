@@ -42,13 +42,17 @@ public struct GlanceFake {
             // Build a Link: rel=next header if more pages remain.
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
-            let allCount = await state.listImages(projectID: token.projectID).count
+            let all = await state.listImages(projectID: token.projectID)
             var nextIndex = -1
-            if let marker, let idx = imgs.firstIndex(where: { $0.id == marker }) {
+            // The marker is the LAST id of the previous page, so it is not in
+            // the current page — look it up in the full list. (Matching it
+            // against `imgs` left nextIndex at -1 and the subscript below
+            // trapped on Index out of range.)
+            if let marker, let idx = all.firstIndex(where: { $0.id == marker }) {
                 nextIndex = idx
             }
             if marker == nil { nextIndex = imgs.count - 1 }
-            if imgs.count == limit && nextIndex + 1 < allCount {
+            if imgs.count == limit && nextIndex >= 0 && nextIndex + 1 < all.count {
                 let nextMarker = imgs[nextIndex].id
                 headers[HTTPField.Name("Link")!] = ";\(base)/images?marker=\(nextMarker)&limit=\(limit); rel=\"next\""
             }
