@@ -98,6 +98,52 @@ Under `<endpoint>` (default `/v1`):
 | `GET <endpoint>/oauth/federate` | WebSSO entry: 302 redirect to Keystone's OS-FEDERATION route. Mounted when `federation.enabled: true` |
 | `GET/POST <endpoint>/oauth/federation/callback` | Keystone WebSSO callback (form_post). Receives the unscoped token, renders the project picker |
 | `POST <endpoint>/oauth/federation/pick-project` | Project selection from the picker: exchanges the unscoped token for a scoped one, mints an authorization code, redirects to the client |
+
+## Access level (read vs read + write)
+
+Both browser forms — `/v1/login` and `/v1/oauth/authorize` — carry an
+**Access level** select with the same two values:
+
+| Value | Effect |
+|---|---|
+| `openstack:read` (pre-selected) | Read-only session: the read tool surface only |
+| `openstack:read openstack:write` | Requests write access as well |
+
+The selection is a **request, never a grant**. What you actually get is the
+intersection of the request with the scopes your Keystone token's roles
+derive (`policy.write_roles`):
+
+- `member` role, "Read" requested → **read-only**. Least privilege is honoured
+  even though `member` is a write role by default.
+- A role outside `policy.write_roles` (e.g. `observer`), "Read + write"
+  requested → **read-only**. The login page says so on the completion screen;
+  the OAuth code records only `openstack:read`.
+- No selection at all (an API client that never sends `scope`) → the
+  Keystone-role-derived scopes, unchanged from earlier behavior.
+
+The narrowing is enforced server-side in both directions, so editing the
+form's HTML cannot widen a session. The token endpoint applies the same rule:
+redeeming a read-only code while asking the token endpoint for
+`openstack:write` issues read-only.
+
+The two paths carry the result differently, because their tokens work
+differently:
+
+- **OAuth** — the scopes live in the authorization code and then in the
+  `stst.at.` access token, which the server mints and re-reads per request.
+- **`/v1/login`** — the result is a raw Keystone token whose scopes would
+  otherwise be re-derived from its roles on every request, silently restoring
+  write. So a read-only result is handed back as `scope:ro:<token>` (with the
+  region prefix in front when a region was picked:
+  `region:IAD3:scope:ro:<token>`). `AppTokenValidator` strips the marker
+  before the token reaches Keystone and drops `openstack:write` from the
+  session. `scope:rw:` is accepted but is a no-op; a missing marker means
+  "derive from roles", which keeps every pre-existing bearer working.
+
+`admin` and `member` are write roles out of the box. To make another role able
+to obtain write — or to *remove* `member` on a cloud where it must not imply
+write — edit `policy.write_roles`; see [configuration.md](configuration.md).
+
 The issuer defaults to `<server.public_url><endpoint>/oauth`. Set
 `server.public_url` for production so the issuer matches the externally
 visible URL.

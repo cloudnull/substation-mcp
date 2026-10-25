@@ -43,7 +43,7 @@ separator. Example: `OSMCP_SERVER__PORT=9090` sets `server.port`.
 | `policy.read_only` | `false` | Restrict to read-only tools |
 | `policy.deny_resources` | `[project, user, group, role, role_assignment, domain]` | Resources hidden from the catalog |
 | `policy.max_list_limit` | `200` | Max `limit` for list operations |
-| `policy.write_roles` | `[admin]` | Token roles that grant `openstack:write` scope (e.g. add `creator`, `member` for clouds whose writer role is not `admin`) |
+| `policy.write_roles` | `[admin, member]` | Token roles that grant `openstack:write` scope and satisfy `adminOnly` actions. `member` is in the default because public clouds (Rackspace included) gate ordinary project writes on it, not on a literal `admin`; add the cloud's own writer role (e.g. `creator`) if it differs. Also the ceiling for the **Access level** select on `/v1/login` and `/v1/oauth/authorize`: a login whose token carries none of these roles signs in read-only no matter what was requested |
 | `client.request_timeout` | `60s` | Upstream request timeout |
 | `cache.ttl.<resource>` | per resource | Cache TTL per resource type |
 | `log.level` | `info` | Log level |

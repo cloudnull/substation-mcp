@@ -57,4 +57,45 @@ struct AppTokenValidatorRegionTests {
             _ = try await validator.validate(tokenID: "region:RegionOne:not-a-real-token")
         }
     }
+
+    @Test("splitBearer parses region + scope prefixes in either order")
+    func scopeParsing() {
+        typealias S = AppTokenValidator.BearerScope
+        #expect(AppTokenValidator.splitBearer("abc123") == (nil, nil, "abc123"))
+        #expect(AppTokenValidator.splitBearer("scope:ro:abc123") == (nil, .readOnly, "abc123"))
+        #expect(AppTokenValidator.splitBearer("scope:rw:abc123") == (nil, .readWrite, "abc123"))
+        #expect(AppTokenValidator.splitBearer("region:IAD3:scope:ro:abc123") == ("IAD3", .readOnly, "abc123"))
+        #expect(AppTokenValidator.splitBearer("scope:ro:region:IAD3:abc123") == ("IAD3", .readOnly, "abc123"))
+        // A token that merely starts with `scope:` (no valid marker) is left whole.
+        #expect(AppTokenValidator.splitBearer("scope:maybe:abc") == (nil, nil, "scope:maybe:abc"))
+        #expect(AppTokenValidator.splitBearer("scope:ro:") == (nil, nil, "scope:ro:"))
+        // The token payload keeps its own colons.
+        #expect(AppTokenValidator.splitBearer("region:DFW3:scope:ro:a:b:c") == ("DFW3", .readOnly, "a:b:c"))
+    }
+
+    @Test("scope:ro: narrows the session to read; scope:rw: leaves roles alone")
+    func scopeBearerNarrowsScopes() async throws {
+        let (handle, validator, transport, tokenID) = try await makeValidator()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let full = try await validator.validate(tokenID: tokenID)
+        #expect(full.scopes.contains("openstack:write"), "the admin token's roles grant write: \(full.scopes)")
+
+        let narrowed = try await validator.validate(tokenID: "scope:ro:" + tokenID)
+        #expect(narrowed.scopes == ["openstack:read"], "scope:ro: must drop write: \(narrowed.scopes)")
+        #expect(narrowed.tokenID == tokenID, "the marker must not reach Keystone: \(narrowed.tokenID)")
+
+        let widened = try await validator.validate(tokenID: "scope:rw:" + tokenID)
+        #expect(widened.scopes == full.scopes, "scope:rw: must not change anything: \(widened.scopes)")
+    }
+
+    @Test("region + scope bearer carries both preferences and narrows scopes")
+    func regionAndScopeBearer() async throws {
+        let (handle, validator, transport, tokenID) = try await makeValidator()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let identity = try await validator.validate(tokenID: "region:RegionOne:scope:ro:" + tokenID)
+        #expect(identity.region == "RegionOne")
+        #expect(identity.scopes == ["openstack:read"], "combined bearer: \(identity.scopes)")
+    }
 }

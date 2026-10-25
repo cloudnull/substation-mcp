@@ -188,13 +188,22 @@ tool list instead of Code Mode.
 |------|-----|------|
 | **OAuth 2.1 flow (default, P3)** | Client follows the 401 challenge → PRM → substation-mcp's stateless OAuth AS → browser consent → presents the resulting `stst.at.` JWT | No pre-minted credential needed |
 | **Client-side mint (P1)** | Client mints a Keystone token and presents it as a Bearer header; on `401` it re-mints and retries. Tokens cached at `~/.config/openstack/mcp-tokens/<cloud>.token` (`0600`) | Simplest to reason about |
-| **URL-mode elicitation** | Client visits `/<endpoint>/login`, enters credentials (+ optional region), server mints a token; the completion page shows the bearer to use — on multi-region clouds it is shown as `region:<REGION>:<token>` so validation and API calls target the selected region | Interactive browser flow |
+| **URL-mode elicitation** | Client visits `/<endpoint>/login`, enters credentials (+ optional region and **Access level**), server mints a token; the completion page shows the exact bearer to use — `region:<REGION>:scope:ro:<token>`, where each prefix is present only when it applies | Interactive browser flow |
 
 Password logins without a Project are auto-scoped: if the account reaches exactly
 one project, the server transparently re-mints a project-scoped token (clouds like
 Rackspace return an unscoped password token with no roles or catalog, which fails
 every later call). When several projects are reachable, sign-in is refused with a
 message to pick one — use **Detect projects** on the form.
+
+The bearer's prefixes are what make the region and access-level choices
+stick. A plain Keystone token is re-evaluated on every request: its region
+comes from whichever Keystone validates it, and its scopes from the roles it
+carries. So the page encodes your choices in the string you copy —
+`region:IAD3:` routes validation and API calls to IAD3, and `scope:ro:` pins
+the session to the read tool surface. Neither prefix can widen access:
+`scope:ro:` only ever narrows, and an account whose roles carry none of
+`policy.write_roles` is read-only with or without it.
 
 Full details, including multi-replica replay-store configuration, are in
 [OAuth 2.1 login](oauth.md).

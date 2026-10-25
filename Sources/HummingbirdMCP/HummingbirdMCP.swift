@@ -68,6 +68,14 @@ public struct LoginRequest: Sendable {
     /// exchange needed for already-scoped tokens; unscoped ones are presented
     /// as-is and scoped at first use).
     public let fedToken: String?
+    /// The access level selected on the form (`scope` field, mirroring
+    /// `/v1/oauth/authorize`'s "Access level" select): `openstack:read` or
+    /// `openstack:read openstack:write`. The server INTERSECTS this with the
+    /// scopes the token's Keystone roles actually grant, so a read+write
+    /// request from a member-only account still yields a read-only session
+    /// instead of a token that 403s on every mutating call. Absent/empty =
+    /// "no narrowing" (role-derived scopes unchanged).
+    public let scope: String?
 
     public init(
         elicitationId: String,
@@ -79,7 +87,8 @@ public struct LoginRequest: Sendable {
         userDomain: String? = nil,
         projectName: String? = nil,
         region: String? = nil,
-        fedToken: String? = nil
+        fedToken: String? = nil,
+        scope: String? = nil
     ) {
         self.elicitationId = elicitationId
         self.method = method
@@ -91,6 +100,7 @@ public struct LoginRequest: Sendable {
         self.projectName = projectName
         self.region = region
         self.fedToken = fedToken
+        self.scope = scope
     }
 }
 
@@ -100,18 +110,24 @@ public struct LoginResponse: Sendable {
     public let storePath: String
     public let completion: Bool
     public let region: String?
+    /// The scopes the minted token actually carries, after the server
+    /// intersected the form's requested access level with the token's
+    /// Keystone-role-derived scopes (e.g. `["openstack:read"]`). `nil` =
+    /// unknown, and the completion page omits the line.
+    public let scopes: [String]?
     /// Optional user-safe explanation shown on the failure page (e.g. the
     /// auto-scope refusal "pick a project"). The adapter only renders text the
     /// login handler deliberately puts here — never a raw Keystone error, which
     /// may quote credential material.
     public let failureReason: String?
 
-    public init(tokenID: String, storePath: String, completion: Bool, region: String? = nil, failureReason: String? = nil) {
+    public init(tokenID: String, storePath: String, completion: Bool, region: String? = nil, failureReason: String? = nil, scopes: [String]? = nil) {
         self.tokenID = tokenID
         self.storePath = storePath
         self.completion = completion
         self.region = region
         self.failureReason = failureReason
+        self.scopes = scopes
     }
 }
 
@@ -411,6 +427,15 @@ public struct MCPRoute: Sendable {
                   <option value="password">User + password</option>
                   \(showFederatedMethod ? "<option value=\"federated\">Federated token (paste)</option>" : "")
                 </select>
+              </div>
+
+              <div class="group">
+                <label for="scope">Access level</label>
+                <select id="scope" name="scope" class="field">
+                  <option value="openstack:read" selected>Read</option>
+                  <option value="openstack:read openstack:write">Read + write</option>
+                </select>
+                <p class="hint">Read-only sessions see only the read tool surface. Requesting <em>Read + write</em> never grants more than your Keystone roles allow: an account without a write role (<code>policy.write_roles</code>) still signs in read-only.</p>
               </div>
 
               <div class="method-fields" data-method="app-cred" id="methodFields">
@@ -718,11 +743,12 @@ public struct MCPRoute: Sendable {
                         <div class="icon ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
                         <h1 class="title">Signed in</h1>
                         <p class="sub">Your token was minted and stored for this session. You may close this tab.</p>
-                        <div class="token-box"><span class="k">Token ID</span><span id="tokenValue" class="v">\(result.region.map { "region:\($0):" } ?? "")\(result.tokenID)</span></div>
+                        <div class="token-box"><span class="k">Bearer token</span><span id="tokenValue" class="v">\(result.tokenID)</span></div>
                         <button type="button" class="btn copy-btn" id="copyBtn" onclick="copyToken(this)">
                           <span class="copy-label">Copy token</span>
                         </button>
-                        \(result.region.map { r in "<p class=\"sub\" style=\"margin-top:10px\">Multi-region bearer: <code>Authorization: Bearer region:\(r):&lt;token&gt;</code> validates and serves in <strong>\(r)</strong>.</p>" } ?? "")
+                        \(Self.bearerHintHTML(result))
+                        \(Self.scopeSummaryHTML(result.scopes))
                       </div>
                     </main>
                     <script>
@@ -822,6 +848,47 @@ public struct MCPRoute: Sendable {
         }
     }
 
+    /// The line under the token box explaining the bearer's prefixes. The
+    /// handler returns the bearer already composed (`region:<R>:scope:ro:<id>`),
+    /// so this only describes it — never re-derives it, which would risk
+    /// showing something other than what the box says to copy.
+    static func bearerHintHTML(_ result: LoginResponse) -> String {
+        var notes: [String] = []
+        if let r = result.region {
+            notes.append("validates and serves in <strong>\(Self.htmlEscape(r))</strong>")
+        }
+        if result.tokenID.hasPrefix("scope:ro:") || result.tokenID.contains(":scope:ro:") {
+            notes.append("the <code>scope:ro:</code> prefix pins this bearer to read-only")
+        }
+        guard !notes.isEmpty else { return "" }
+        return "<p class=\"sub\" style=\"margin-top:10px\">Send it as <code>Authorization: Bearer &lt;token&gt;</code> — \(notes.joined(separator: "; ")).</p>"
+    }
+
+    /// The scopes the login form's `scope` field requests, in canonical order.
+    /// Only the two known scope tokens are honoured; anything else in the value
+    /// is dropped, so a hand-edited form cannot ask for a scope this server
+    /// does not enforce. Empty result = "no request" (the caller keeps the
+    /// role-derived scopes).
+    public static func requestedScopes(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty else { return [] }
+        let wanted = Set(raw.split(separator: " ").map(String.init))
+        return ["openstack:read", "openstack:write"].filter { wanted.contains($0) }
+    }
+
+    /// The "Access" line on the completion page: what the minted token can
+    /// actually do, so a read+write request that the roles narrowed to
+    /// read-only is visible at sign-in rather than at the first 403.
+    static func scopeSummaryHTML(_ scopes: [String]?) -> String {
+        guard let scopes, !scopes.isEmpty else { return "" }
+        let label = scopes.contains("openstack:write") ? "Read + write" : "Read-only"
+        let codes = scopes.map { "<code>\(Self.htmlEscape($0))</code>" }.joined(separator: " ")
+        return "<p class=\"sub\" style=\"margin-top:10px\">Access: <strong>\(label)</strong> (\(codes))."
+            + (label == "Read-only"
+                ? " Your Keystone roles do not include a write role for this project, so mutating tools are not available."
+                : "")
+            + "</p>"
+    }
+
     /// Minimal HTML escaping for interpolating server-generated text into the
     /// login pages (failure reasons carry project counts/names).
     static func htmlEscape(_ s: String) -> String {
@@ -886,7 +953,8 @@ public struct MCPRoute: Sendable {
             userDomain: fields["userDomain"],
             projectName: fields["projectName"],
             region: fields["region"],
-            fedToken: fields["fedToken"]
+            fedToken: fields["fedToken"],
+            scope: fields["scope"]
         )
     }
 

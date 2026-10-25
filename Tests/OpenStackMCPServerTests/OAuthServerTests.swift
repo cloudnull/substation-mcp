@@ -581,7 +581,9 @@ private func mintCodeViaDevMint(
     clientID: String,
     verifier: String = pkceVerifier,
     scope: String = "openstack:read",
-    state: String = "st-mint"
+    state: String = "st-mint",
+    appCredId: String = "fake-cred-admin",
+    secret: String = "secret-admin"
 ) async throws -> (code: String, state: String) {
     let r = try await httpForm(client, uri: issuer + "/dev-mint", fields: [
         "client_id": clientID,
@@ -590,8 +592,8 @@ private func mintCodeViaDevMint(
         "code_verifier": verifier,
         "scope": scope,
         "method": "app-cred",
-        "appCredId": "fake-cred-admin",
-        "secret": "secret-admin",
+        "appCredId": appCredId,
+        "secret": secret,
     ])
     #expect(r.status == .found, "dev-mint: \(r.status) \(bodyString(r))")
     let f = parseLocation(try #require(header(r, "Location")))
@@ -883,6 +885,34 @@ private func exchangeAccessToken(_ client: any TestClientProtocol, issuer: Strin
     return at
 }
 
+/// Exchange a code minted with an explicit access level + credential, and
+/// return the issued access token together with the scope the AS granted.
+/// `scope: ""` reproduces a client that never asks (inherit-from-Keystone).
+private func exchangeForScope(
+    _ client: any TestClientProtocol,
+    issuer: String,
+    clientID: String,
+    scope: String,
+    appCredId: String,
+    secret: String
+) async throws -> (accessToken: String, scope: String) {
+    let (code, _) = try await mintCodeViaDevMint(
+        client, issuer: issuer, clientID: clientID, scope: scope,
+        appCredId: appCredId, secret: secret
+    )
+    let r = try await httpPost(client, uri: issuer + "/token", headers: ["Content-Type": "application/x-www-form-urlencoded"], body: Data(
+        "grant_type=authorization_code&code=\(code)&code_verifier=\(pkceVerifier)&redirect_uri=\(loopback)&client_id=\(clientID)".utf8))
+    #expect(r.status == .ok, "exchange: \(r.status) \(bodyString(r))")
+    guard
+        let data = bodyString(r).data(using: .utf8),
+        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let at = obj["access_token"] as? String, at.hasPrefix(OAuthAccessTokenPrefix)
+    else {
+        throw OAuthProtocolError.invalidGrant(description: "no access token in \(bodyString(r))")
+    }
+    return (at, (obj["scope"] as? String) ?? "")
+}
+
 @Suite("Composite gate on a real MCP session", .timeLimit(.minutes(5)))
 struct CompositeGateTests {
 
@@ -953,6 +983,174 @@ struct CompositeGateTests {
             try await Task.sleep(nanoseconds: 1_300_000_000) // 1.3 s
             let initResp = try await mcpInitialize(client, bearer: at)
             #expect(initResp.status == .unauthorized, "expected 401, got \(initResp.status) \(initResp.body)")
+        }
+    }
+}
+
+// MARK: - Access-level selection (the login / authorize "Access level" select)
+
+@Suite("Access level selection end-to-end", .timeLimit(.minutes(5)))
+struct AccessLevelSelectionTests {
+
+    @Test("an admin asking for read-only gets a read-only session")
+    func adminRequestingReadIsNarrowed() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let issued = try await exchangeForScope(
+                client, issuer: issuer, clientID: "client_e2e",
+                scope: "openstack:read", appCredId: "fake-cred-admin", secret: "secret-admin"
+            )
+            #expect(issued.scope == "openstack:read", "issued scope: \(issued.scope)")
+            let initResp = try await mcpInitialize(client, bearer: issued.accessToken)
+            #expect(initResp.status == .ok, "initialize: \(initResp.status) \(initResp.body)")
+            let list = try await mcpToolsList(client, bearer: issued.accessToken, sessionID: initResp.sessionID)
+            #expect(list.status == .ok, "tools/list: \(list.status) \(list.body)")
+            #expect(list.body.contains("os_list"), "read surface must include os_list: \(list.body)")
+            #expect(!list.body.contains("\"name\":\"os_create\""), "read-only request must not see os_create: \(list.body)")
+        }
+    }
+
+    @Test("an admin asking for read+write keeps write")
+    func adminRequestingReadWriteKeepsWrite() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let issued = try await exchangeForScope(
+                client, issuer: issuer, clientID: "client_e2e",
+                // The form's value, percent-encoded as a browser sends it.
+                scope: "openstack:read%20openstack:write",
+                appCredId: "fake-cred-admin", secret: "secret-admin"
+            )
+            #expect(issued.scope.contains("openstack:write"), "admin read+write must keep write: \(issued.scope)")
+            let initResp = try await mcpInitialize(client, bearer: issued.accessToken)
+            #expect(initResp.status == .ok, "initialize: \(initResp.status) \(initResp.body)")
+            let list = try await mcpToolsList(client, bearer: issued.accessToken, sessionID: initResp.sessionID)
+            #expect(list.body.contains("\"name\":\"os_create\""), "write session must see os_create: \(list.body)")
+        }
+    }
+
+    @Test("a role with no write role asking for read+write is issued read-only")
+    func nonWriteRoleRequestingReadWriteCannotWiden() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let issued = try await exchangeForScope(
+                client, issuer: issuer, clientID: "client_e2e",
+                scope: "openstack:read%20openstack:write",
+                appCredId: "fake-cred-ro", secret: "secret-ro"
+            )
+            // fake-cred-ro carries `observer`, not a write role by default.
+            #expect(issued.scope == "openstack:read", "a non-write role must be narrowed to read: \(issued.scope)")
+            let initResp = try await mcpInitialize(client, bearer: issued.accessToken)
+            #expect(initResp.status == .ok, "initialize: \(initResp.status) \(initResp.body)")
+            let list = try await mcpToolsList(client, bearer: issued.accessToken, sessionID: initResp.sessionID)
+            #expect(!list.body.contains("\"name\":\"os_create\""), "a non-write session must not see os_create: \(list.body)")
+        }
+    }
+
+    @Test("a member asking for read+write is issued write under the default policy")
+    func memberRequestingReadWriteGetsWriteByDefault() async throws {
+        // `member` is a default write role, so a member no longer needs the
+        // operator to extend policy.write_roles to get the write surface.
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let issued = try await exchangeForScope(
+                client, issuer: issuer, clientID: "client_e2e",
+                scope: "openstack:read%20openstack:write",
+                appCredId: "fake-cred-member", secret: "secret-member"
+            )
+            #expect(issued.scope == "openstack:read openstack:write", "member must keep write: \(issued.scope)")
+            let initResp = try await mcpInitialize(client, bearer: issued.accessToken)
+            #expect(initResp.status == .ok, "initialize: \(initResp.status) \(initResp.body)")
+            let list = try await mcpToolsList(client, bearer: issued.accessToken, sessionID: initResp.sessionID)
+            #expect(list.body.contains("\"name\":\"os_create\""), "member must see os_create: \(list.body)")
+        }
+    }
+
+
+    /// The authorization code is the consent record; the token request may
+    /// only narrow it. A client that redeems a read-only code while asking for
+    /// write must not receive write.
+    @Test("asking the token endpoint for write cannot widen a read-only grant")
+    func tokenEndpointCannotWidenScope() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let (code, _) = try await mintCodeViaDevMint(
+                client, issuer: issuer, clientID: "client_e2e",
+                scope: "openstack:read", appCredId: "fake-cred-admin", secret: "secret-admin"
+            )
+            let r = try await httpPost(client, uri: issuer + "/token", headers: ["Content-Type": "application/x-www-form-urlencoded"], body: Data(
+                "grant_type=authorization_code&code=\(code)&code_verifier=\(pkceVerifier)&redirect_uri=\(loopback)&client_id=client_e2e&scope=openstack:read%20openstack:write".utf8))
+            #expect(r.status == .ok, "exchange: \(r.status) \(bodyString(r))")
+            let body = bodyString(r)
+            #expect(!body.contains("openstack:write"), "token endpoint must not widen scope: \(body)")
+            #expect(body.contains("openstack:read"), "read must survive: \(body)")
+        }
+    }
+
+    /// `sco` empty on the code = "the user requested no narrowing", which the
+    /// token endpoint must preserve (the access token then inherits the
+    /// Keystone-role scopes at validation time).
+    @Test("a code minted without a scope request issues no explicit scope")
+    func codeWithoutScopeRequestIssuesInheritedScope() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        try await warmAndRun(app) { client in
+            let issued = try await exchangeForScope(
+                client, issuer: issuer, clientID: "client_e2e",
+                scope: "", appCredId: "fake-cred-admin", secret: "secret-admin"
+            )
+            #expect(issued.scope.isEmpty, "no request must issue no explicit scope: \(issued.scope)")
+            // The session still works, and its scopes come from the roles.
+            let initResp = try await mcpInitialize(client, bearer: issued.accessToken)
+            #expect(initResp.status == .ok, "initialize: \(initResp.status) \(initResp.body)")
+            let list = try await mcpToolsList(client, bearer: issued.accessToken, sessionID: initResp.sessionID)
+            #expect(list.body.contains("\"name\":\"os_create\""), "role-derived write must be available to an admin: \(list.body)")
+        }
+    }
+
+    @Test("the authorize consent page renders the Access level select")
+    func consentPageRendersAccessLevel() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = oauthServeApp(handle: handle)
+        defer { app.shutdown() }
+
+        let issuer = oauthIssuer(for: handle)
+        let challenge = pkceS256Challenge(pkceVerifier)
+        try await warmAndRun(app) { client in
+            let r = try await httpGet(client, uri: authorizeURI(issuer: issuer, clientID: "client_e2e", challenge: challenge, state: "st-1"))
+            #expect(r.status == .ok, "consent: \(r.status) \(bodyString(r))")
+            let body = bodyString(r)
+            #expect(body.contains("name=\"scope\""), "authorize form must submit a scope field: \(body)")
+            #expect(body.range(of: "value=\"openstack:read\" selected") != nil, "read must be pre-selected: \(body)")
         }
     }
 }

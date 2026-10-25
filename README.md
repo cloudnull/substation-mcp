@@ -25,7 +25,9 @@ graph LR
   token *is* the identity and it's used only on that one request.
 - **Auth.** Two profiles: `oauth` (default — substation-mcp fronts Keystone as
   its own stateless OAuth 2.1 AS with browser login) or `keystone_token`
-  (raw bearer, unchanged). See [OAuth 2.1 login](docs/oauth.md).
+  (raw bearer, unchanged). Both browser forms offer an **Access level** select
+  (read / read + write): it requests, `policy.write_roles` grants. See
+  [OAuth 2.1 login](docs/oauth.md).
 - **Stable surface.** The verbs are additive-only. New services appear as new
   *resources* under the same verbs (currently 64 descriptors across ~19 types),
   never as new tools.

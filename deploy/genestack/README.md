@@ -419,7 +419,10 @@ substation-mcp speaks the MCP **Streamable HTTP** protocol over
 `https://substation.api.regionone.yourcloud.dev/v1`). Authenticate with a Keystone
 Bearer token — mint one with the `openstack` CLI, an app-cred, or the
 `/v1/login` page in a browser (pick **Application credential** or
-**User + password** and submit; the page stores the token for the session).
+**User + password**, choose an **Access level**, and submit; the page displays
+the minted token). The Access level select is a request, not a grant: an
+account whose Keystone roles carry none of `policy.write_roles` signs in
+read-only even when **Read + write** is picked.
 
 > **Token tip:** store the token in an environment variable rather than in a
 > config file. Most MCP clients support `{env:NAME}` substitution.

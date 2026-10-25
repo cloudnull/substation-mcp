@@ -224,6 +224,169 @@ struct ServeSessionTests {
         }
     }
 
+    @Test("login page offers the same Access level select as /v1/oauth/authorize")
+    func loginPageOffersAccessLevel() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: TokenStore())
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            let response = try await sendRequest(client, uri: "/v1/login", method: .get)
+            #expect(response.status == .ok)
+            let body = bodyString(response)
+            #expect(body.contains("name=\"scope\""), "login form must submit a scope field: \(body)")
+            #expect(body.contains("id=\"scope\""), "login form must render the scope select: \(body)")
+            #expect(body.contains("openstack:read openstack:write"), "scope select must offer write: \(body)")
+            // Read is the default: a sign-in must not gain write silently.
+            #expect(
+                body.range(of: "value=\"openstack:read\" selected") != nil,
+                "read must be the pre-selected access level: \(body)"
+            )
+        }
+    }
+
+    @Test("login POST carries the selected access level to the minter")
+    func loginPostCarriesScope() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: TokenStore())
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            // A browser percent-encodes the space in the read+write value.
+            let body = "elicitationId=elicit-scope&method=app-cred"
+                + "&appCredId=fake-cred-admin&secret=secret-admin"
+                + "&scope=openstack%3Aread%20openstack%3Awrite"
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/x-www-form-urlencoded"],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "scope-bearing login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("Read + write"), "admin + read+write should be told it got write: \(respBody)")
+            #expect(respBody.contains("openstack:write"), "access line must name the granted scope: \(respBody)")
+        }
+    }
+
+    @Test("login with read+write requested but no write role signs in read-only")
+    func loginRequestedWriteIsNarrowedByRoles() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: TokenStore())
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            // fake-cred-ro carries `observer`, which is not a write role under
+            // the default policy, so the request cannot widen it.
+            let body = #"{"elicitationId":"E1","method":"app-cred","appCredId":"fake-cred-ro","secret":"secret-ro","scope":"openstack:read openstack:write"}"#
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/json"],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("Read-only"), "a non-write role must be told it is read-only: \(respBody)")
+            #expect(!respBody.contains("openstack:write"), "a non-write session must not be told it has write: \(respBody)")
+        }
+    }
+
+    @Test("a member signing in for read+write gets write under the default policy")
+    func loginMemberGetsWriteByDefault() async throws {
+        // The point of `member` being in the default write roles: a plain
+        // project member can actually obtain the write surface on a cloud like
+        // Rackspace without the operator editing policy.write_roles first.
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: TokenStore())
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            let body = #"{"elicitationId":"E1","method":"app-cred","appCredId":"fake-cred-member","secret":"secret-member","scope":"openstack:read openstack:write"}"#
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/json"],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("Read + write"), "member must get write: \(respBody)")
+            // …and the bearer carries no read-only pinning marker.
+            #expect(!respBody.contains("scope:ro:"), "a write session must not be pinned read-only: \(respBody)")
+        }
+    }
+
+    @Test("login with read requested signs an admin in read-only")
+    func loginRequestedReadNarrowsAdmin() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeApp(handle: handle, config: defaultConfig, tokenStore: TokenStore())
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            let body = #"{"elicitationId":"E1","method":"app-cred","appCredId":"fake-cred-admin","secret":"secret-admin","scope":"openstack:read"}"#
+            let response = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/json"],
+                body: Data(body.utf8)
+            )
+            #expect(response.status == .ok, "login POST failed: \(response.status) \(bodyString(response))")
+            let respBody = bodyString(response)
+            #expect(respBody.contains("Read-only"), "an explicit read request must yield read-only: \(respBody)")
+            #expect(!respBody.contains("openstack:write"), "read-only session must not advertise write: \(respBody)")
+            // The bearer the operator copies must carry the narrowing: a
+            // Keystone token's scopes are re-derived from its roles per
+            // request, so without the marker this session would keep write.
+            #expect(
+                respBody.range(of: "scope:ro:fake-tok") != nil,
+                "the displayed bearer must pin read-only: \(respBody)"
+            )
+        }
+    }
+
+    /// The full loop a real operator does: sign in on the page, copy the
+    /// bearer it displays, use it as the MCP credential. The access level must
+    /// survive that round-trip — the page cannot promise read-only while the
+    /// session keeps write, because the token's roles grant write.
+    @Test("the bearer displayed at sign-in yields the session it advertised")
+    func displayedBearerYieldsAdvertisedSession() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let app = makeServeAppReachable(handle: handle, config: defaultConfig)
+        defer { app.shutdown() }
+        try await app.app.test(.router) { client in
+            _ = try await sendRequest(client, uri: "/healthz", method: .get)
+            let login = try await sendRequest(
+                client, uri: "/v1/login", method: .post,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"elicitationId":"E1","method":"app-cred","appCredId":"fake-cred-admin","secret":"secret-admin","scope":"openstack:read"}"#.utf8)
+            )
+            #expect(login.status == .ok, "login POST failed: \(login.status) \(bodyString(login))")
+            let html = bodyString(login)
+            guard let bearer = Self.extractBearer(html) else {
+                throw OpenStackError(service: "test", status: 500, message: "no bearer in completion page: \(html)")
+            }
+            let sc = SessionClient(client: client, tokenID: bearer)
+            let initResp = try await sc.initialize()
+            #expect(initResp.status == .ok, "the displayed bearer must authenticate: \(initResp.status) \(bodyString(initResp))")
+            let listBody = String(buffer: try await sc.toolsList().body)
+            #expect(!listBody.contains("\"name\":\"os_create\""), "read-only bearer must not see os_create: \(listBody)")
+            let call = try await sc.callToolJSON("os_create", argumentsJSON: #"{"resource":"server","name":"x","region":"RegionOne"}"#)
+            #expect(call.status == .forbidden, "read-only bearer calling a write tool should 403, got \(call.status) \(bodyString(call))")
+        }
+    }
+
+    /// Pull the bearer out of the completion page's token box.
+    private static func extractBearer(_ html: String) -> String? {
+        guard let open = html.range(of: "id=\"tokenValue\" class=\"v\">") else { return nil }
+        let tail = html[open.upperBound...]
+        guard let close = tail.firstIndex(of: "<") else { return nil }
+        let value = String(tail[..<close]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
     @Test("login page POST mints a token and displays it (not stored server-side)")
     func loginPagePost() async throws {
         let handle = try await FakeApp.start()

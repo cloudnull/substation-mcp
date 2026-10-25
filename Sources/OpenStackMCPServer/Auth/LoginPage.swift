@@ -16,21 +16,29 @@ public struct LoginPage: Sendable {
     private let minter: LoginMinter
     private let logger: Logger
     private let cloudsFileURL: URL?
+    /// Roles that grant `openstack:write` (`policy.write_roles`). The form's
+    /// "Access level" select is only a REQUEST; the granted scopes are the
+    /// intersection of that request with what these roles allow, so the
+    /// completion page can state the real access level.
+    private let writeRoles: [String]
 
     public init(
         minter: LoginMinter,
         logger: Logger = Logger(label: "login-page"),
-        cloudsFileURL: URL? = nil
+        cloudsFileURL: URL? = nil,
+        writeRoles: [String] = PolicyRoles.defaultWriteRoles
     ) {
         self.minter = minter
         self.logger = logger
         self.cloudsFileURL = cloudsFileURL
+        self.writeRoles = writeRoles
     }
 
     /// The `login:` closure for `MCPRoute.install`.
     public func handler() -> @Sendable (LoginRequest) async -> LoginResponse {
         let minter = self.minter
         let logger = self.logger
+        let policy = PolicyRoles(writeRoles: writeRoles)
         return { req in
             let region = req.region?.isEmpty == false ? req.region! : nil
             let method: MintMethod
@@ -80,16 +88,32 @@ public struct LoginPage: Sendable {
                 // mint with a later use without leaking the secret.
                 let tokenRef = String(token.id.prefix(8))
                 let tokenSummary = "\(tokenRef)…(\(token.id.count) chars)"
+                // The access level the form asked for, intersected with what
+                // this token's roles actually grant. A member who picked
+                // "Read + write" gets read-only (and is told so on the
+                // completion page) instead of a session that 403s later.
+                let requested = MCPRoute.requestedScopes(req.scope)
+                let granted = deriveScopes(roles: token.roles, policy: policy, requested: requested)
                 logger.info("Login minted token", metadata: [
                     "elicitationId": "\(req.elicitationId)",
                     "tokenID": "\(tokenSummary)",
                     "project": "\(token.project.id)",
+                    "scopes": "\(granted.map(\.rawValue).joined(separator: ","))",
                 ])
+                // The bearer the operator copies out carries both prefixes, so
+                // the region and access-level choices survive into the session:
+                // a Keystone token's scopes are otherwise re-derived from its
+                // roles on every request, which would make the select purely
+                // cosmetic. Only a read-only result needs a marker
+                // (`scope:ro:`); read+write is what the roles already yield.
+                let narrowed = granted.contains(.write) ? "" : "scope:ro:"
+                let bearer = (region.map { "region:\($0):" } ?? "") + narrowed + token.id
                 return LoginResponse(
-                    tokenID: token.id,
+                    tokenID: bearer,
                     storePath: "display-only",
                     completion: true,
-                    region: region
+                    region: region,
+                    scopes: granted.map(\.rawValue)
                 )
             } catch {
                 // Log the mint failure with the structured error only — never

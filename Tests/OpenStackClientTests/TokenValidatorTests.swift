@@ -142,7 +142,9 @@ struct TokenValidatorTests {
         try server.start()
         defer { server.stop() }
 
-        let body = makeTokenResponse(projectID: "proj-one", roles: ["member"], tokenID: "tok-1")
+        // `observer` is outside the default write roles (`admin`, `member`),
+        // so this is the read-only shape; a plain `member` now derives write.
+        let body = makeTokenResponse(projectID: "proj-one", roles: ["observer"], tokenID: "tok-1")
         server.addHandler("/v3/auth/tokens") { req in
             #expect(req.headers["x-auth-token"] == "tok-1")
             return (200, body, [("Content-Type", "application/json")])
@@ -159,7 +161,7 @@ struct TokenValidatorTests {
 
         let validated = try await validator.validate("tok-1")
         #expect(validated.token.project.id == "proj-one")
-        #expect(validated.scopes == [.read], "member without write role should get read only")
+        #expect(validated.scopes == [.read], "a role outside policy.write_roles gets read only")
     }
 
     @Test func validateHappyPath_writeScope() async throws {
@@ -635,9 +637,17 @@ private final class Box<T>: @unchecked Sendable where T: Sendable {
 
 @Suite("ScopeDerivation")
 struct ScopeDerivationTests {
-    @Test func memberGetsRead() {
-        let scopes = deriveScopes(roles: ["member", "_member_"])
-        #expect(scopes == [.read])
+    @Test("member is a write role by default; _member_ alone is not")
+    func memberGetsReadWrite() {
+        // `member` is in the default write roles: public clouds (Rackspace
+        // included) gate ordinary project writes on it, so an admin-only
+        // default left every non-admin user on the read-only surface.
+        // `_member_` is Keystone's legacy role name and is deliberately NOT a
+        // write role — only the configured names count.
+        #expect(PolicyRoles.defaultWriteRoles == ["admin", "member"])
+        #expect(deriveScopes(roles: ["member"]) == [.read, .write])
+        #expect(deriveScopes(roles: ["member", "_member_"]) == [.read, .write])
+        #expect(deriveScopes(roles: ["_member_"]) == [.read])
     }
 
     @Test func adminGetsReadWrite() {
@@ -654,6 +664,39 @@ struct ScopeDerivationTests {
     @Test func noWriteRole() {
         let scopes = deriveScopes(roles: ["reader"])
         #expect(scopes == [.read])
+    }
+
+    // The login / authorize forms' "Access level" select can only narrow.
+    @Test("an explicit read request drops write even for an admin")
+    func requestedReadNarrowsAdmin() {
+        let scopes = deriveScopes(roles: ["admin"], requested: ["openstack:read"])
+        #expect(scopes == [.read])
+    }
+
+    @Test("requesting read+write keeps both for an admin")
+    func requestedReadWriteKeepsBoth() {
+        let scopes = deriveScopes(roles: ["admin"], requested: ["openstack:read", "openstack:write"])
+        #expect(scopes == [.read, .write])
+    }
+
+    @Test("requesting write never grants it without a write role")
+    func requestedWriteCannotWiden() {
+        // `observer` is not a write role; `member` now is, so it cannot
+        // demonstrate the ceiling anymore.
+        let scopes = deriveScopes(roles: ["observer"], requested: ["openstack:read", "openstack:write"])
+        #expect(scopes == [.read])
+    }
+
+    @Test("requesting read+write keeps both for a member")
+    func requestedReadWriteKeepsBothForMember() {
+        let scopes = deriveScopes(roles: ["member"], requested: ["openstack:read", "openstack:write"])
+        #expect(scopes == [.read, .write])
+    }
+
+    @Test("an empty or unrecognised request leaves the role-derived scopes alone")
+    func emptyRequestIsNoNarrowing() {
+        #expect(deriveScopes(roles: ["admin"], requested: []) == [.read, .write])
+        #expect(deriveScopes(roles: ["admin"], requested: ["openid", "email"]) == [.read, .write])
     }
 }
 

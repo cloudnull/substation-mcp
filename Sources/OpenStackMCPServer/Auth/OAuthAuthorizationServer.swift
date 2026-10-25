@@ -106,6 +106,10 @@ public struct OAuthAuthorizationServer: Sendable {
     /// The default Keystone domain pre-filled in the authorize form's user-domain
     /// field (e.g. `rackspace_cloud_domain`). When nil the form defaults to `default`.
     public let defaultDomain: String?
+    /// Roles that grant `openstack:write` (`policy.write_roles`). The consent
+    /// form's "Access level" select is a request, not a grant: the code's
+    /// scope claim is the intersection of that request with these roles.
+    public let writeRoles: PolicyRoles
     // MARK: Federation (OS-FEDERATION passthrough)
     /// Master switch for the browser-bounce WebSSO flow (`/oauth/federate` + callback).
     public let federationEnabled: Bool
@@ -137,6 +141,7 @@ public struct OAuthAuthorizationServer: Sendable {
         cloudName: String? = nil,
         cloudsFileURL: URL? = nil,
         defaultDomain: String? = nil,
+        writeRoles: PolicyRoles = PolicyRoles(),
         federationEnabled: Bool = false,
         federationPasteToken: Bool = true,
         federationIdP: String? = nil,
@@ -179,6 +184,7 @@ public struct OAuthAuthorizationServer: Sendable {
         self.cloudName = cloudName
         self.cloudsFileURL = cloudsFileURL
         self.defaultDomain = defaultDomain
+        self.writeRoles = writeRoles
         self.federationEnabled = federationEnabled
         self.federationPasteToken = federationPasteToken
         self.federationIdP = federationIdP

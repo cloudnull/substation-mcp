@@ -115,15 +115,18 @@ func yamlArrayFlattens() {
     #expect(cfg.policyDenyResources == ["project", "user", "role"])
 }
 
-@Test("policy.write_roles defaults to admin and is configurable")
+@Test("policy.write_roles defaults to admin+member and is configurable")
 func writeRolesConfig() {
-    #expect(OpenStackMCPConfig().policyWriteRoles == ["admin"])
+    // member is in the default: public clouds gate ordinary project writes on
+    // it, so an admin-only default left every non-admin on the read-only
+    // surface. An explicit setting still fully replaces it (no merge).
+    #expect(OpenStackMCPConfig().policyWriteRoles == ["admin", "member"])
     let resolved = ConfigLoader.resolve(
         cli: [:],
         env: [:],
-        yaml: ["policy__write_roles": "admin,creator,member"]
+        yaml: ["policy__write_roles": "admin,creator"]
     )
-    #expect(ConfigLoader.read(resolved).policyWriteRoles == ["admin", "creator", "member"])
+    #expect(ConfigLoader.read(resolved).policyWriteRoles == ["admin", "creator"])
 }
 
 @Test("log.audit is configurable and defaults true")

@@ -10,8 +10,9 @@ public struct Policy: Sendable {
     public var denyActions: [String: Set<String>]
     public var maxListLimit: Int
     public var maxCallsPerMinute: Int
-    /// Roles treated as cloud-admin for `adminOnly` action enforcement
-    /// (`policy.write_roles`, default `[admin]`).
+    /// Roles that grant `openstack:write` and satisfy `adminOnly` action
+    /// enforcement (`policy.write_roles`). `member` is included because most
+    /// public clouds gate writes on it rather than on a literal `admin`.
     public var writeRoles: [String]
 
     public init(
@@ -21,7 +22,7 @@ public struct Policy: Sendable {
         denyActions: [String: Set<String>] = [:],
         maxListLimit: Int = 200,
         maxCallsPerMinute: Int = 1024,
-        writeRoles: [String] = ["admin"]
+        writeRoles: [String] = Policy.defaultWriteRoles
     ) {
         self.readOnly = readOnly
         self.denyResources = denyResources
@@ -36,6 +37,13 @@ public struct Policy: Sendable {
     public static let defaultDenyResources: Set<String> = [
         "project", "user", "group", "role", "role_assignment", "domain"
     ]
+
+    /// `admin` plus `member`: `admin` is the conventional cloud-admin role and
+    /// `member` is what public clouds (Rackspace, and any cloud leaning on
+    /// Keystone's default member role) actually use to gate ordinary project
+    /// writes. A default of `[admin]` alone left every non-admin user on the
+    /// read-only surface with no explanation as to why.
+    public static let defaultWriteRoles: [String] = ["admin", "member"]
 
     /// The default policy: identity-admin resources denied, maxListLimit 200,
     /// maxCallsPerMinute 1024.

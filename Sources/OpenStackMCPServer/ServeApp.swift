@@ -87,6 +87,7 @@ public struct ServeApp: Sendable {
                 cloudName: cloud.name,
                 cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)),
                 defaultDomain: config.authDefaultDomain,
+                writeRoles: PolicyRoles(writeRoles: config.policyWriteRoles),
                 federationEnabled: config.federationEnabled,
                 federationPasteToken: config.federationPasteToken,
                 federationIdP: config.federationIdP,
@@ -124,7 +125,12 @@ public struct ServeApp: Sendable {
             routeValidator = appValidator
         }
 
-        let loginPage = LoginPage(minter: minter, logger: logger, cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)))
+        let loginPage = LoginPage(
+            minter: minter,
+            logger: logger,
+            cloudsFileURL: config.cloudsFile.flatMap(URL.init(fileURLWithPath:)),
+            writeRoles: config.policyWriteRoles
+        )
 
         let serverFactory = wiring.makeServerFactory(
             policy: policy,

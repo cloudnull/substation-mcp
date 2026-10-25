@@ -154,7 +154,8 @@ extension OAuthAuthorizationServer {
                 }
                 guard let code = mintCode(
                     clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge,
-                    scope: scope, keystoneTokenID: token.id, projectID: token.project.id,
+                    scope: Self.grantedScopes(requested: scope, roles: token.roles, policy: writeRoles),
+                    keystoneTokenID: token.id, projectID: token.project.id,
                     keystoneTokenExpiry: token.expiresAt,
                     region: formFields["region"].flatMap { $0.isEmpty ? nil : $0 }
                 ) else {
@@ -311,7 +312,23 @@ extension OAuthAuthorizationServer {
         }
 
         do {
-            let scopes = Self.scopes(from: params["scope"] ?? grant.scope)
+            // The scopes to issue. The authorization code is the consent
+            // record: it already carries the access level the user picked on
+            // the form, narrowed by what their Keystone roles grant (see
+            // `grantedScopes`). A `scope` parameter on the token request can
+            // only narrow that further — never widen it — so a client cannot
+            // mint itself `openstack:write` by re-asking for it here.
+            // An empty `sco` claim means "no access level was requested", so
+            // the token falls back to the Keystone-role-derived scopes.
+            let granted = Self.scopes(from: grant.scope)
+            let grantedSet = Set(granted)
+            let requested = Self.scopes(from: params["scope"] ?? "")
+            // Canonical order (read before write): `granted` is already ordered
+            // by `scopes(from:)`, and narrowing preserves that order. Going
+            // through `Array(Set)` would shuffle it per process (Swift Set
+            // iteration is hash-randomized), so the issued `scope` string would
+            // flip between "read write" and "write read" across runs.
+            let scopes = requested.isEmpty ? granted : requested.filter { grantedSet.contains($0) }
             let accessToken = mintAccessToken(
                 keystoneTokenID: vt.token.id,
                 projectID: vt.token.project.id,
@@ -372,7 +389,8 @@ extension OAuthAuthorizationServer {
             }
             guard let code = mintCode(
                 clientID: clientID, redirectURI: redirectURI, codeChallenge: challenge,
-                scope: scope, keystoneTokenID: token.id, projectID: token.project.id,
+                scope: Self.grantedScopes(requested: scope, roles: token.roles, policy: writeRoles),
+                keystoneTokenID: token.id, projectID: token.project.id,
                 keystoneTokenExpiry: token.expiresAt,
                 region: fields["region"].flatMap { $0.isEmpty ? nil : $0 }
             ) else {
@@ -443,15 +461,31 @@ extension OAuthAuthorizationServer {
         return constantTimeEquals(secret, expected)
     }
 
-    /// The scopes to issue: the requested `scope` (whitelisted). When no
-    /// scope is explicitly requested, returns an empty array so the access
-    /// token inherits the scopes derived from the underlying Keystone token
-    /// (role-based: admin → read+write, member → read). An explicit
-    /// `openstack:read` request still yields read-only.
+    /// The scopes to put in the code's `sco` claim: the requested access level
+    /// narrowed by what the minted Keystone token's roles actually grant
+    /// (`policy.write_roles`).
+    ///
+    /// A member who picks "Read + write" gets `openstack:read` only — the
+    /// request can never widen the token, and recording the un-narrowed
+    /// request would advertise a write scope the session cannot exercise.
+    /// When nothing recognised is requested, the request is dropped entirely so
+    /// the access token falls back to the Keystone-derived scopes (unchanged
+    /// behavior for clients that never send `scope`).
+    static func grantedScopes(requested: String, roles: [String], policy: PolicyRoles) -> String {
+        let wanted = MCPRoute.requestedScopes(requested)
+        guard !wanted.isEmpty else { return "" }
+        return deriveScopes(roles: roles, policy: policy, requested: wanted).map(\.rawValue).joined(separator: " ")
+    }
+
+    /// The scopes to issue: the requested `scope`, whitelisted to the two
+    /// scopes this server enforces and returned in canonical order
+    /// (`openstack:read` before `openstack:write`). When no recognised scope
+    /// is requested, returns an empty array so the access token inherits the
+    /// scopes derived from the underlying Keystone token (role-based: admin →
+    /// read+write, member → read). An explicit `openstack:read` request still
+    /// yields read-only.
     static func scopes(from raw: String) -> [String] {
-        let allowed: Set<String> = ["openstack:read", "openstack:write"]
-        let parts = raw.split(separator: " ").map(String.init).filter { allowed.contains($0) }
-        return Array(parts)
+        MCPRoute.requestedScopes(raw)
     }
 
     /// Read a `RequestBody` into at most `limit` bytes.
