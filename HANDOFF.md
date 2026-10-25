@@ -1,7 +1,80 @@
-# Handoff: OpenStack MCP — v0.2.1 (auth/region + tool-surface fixes); v0.2.0 in production
+# Handoff: OpenStack MCP — v0.2.2 (role select + defect sweep + cascade); v0.2.1 tagged, v0.2.0 in production
 
 ## Current State
 
+- **Tool-surface defect sweep: 9 reported defects fixed + live-verified**
+  (2026-10-25). All user-reported against live Rackspace DFW3: (1) flavor
+  recommendation ranks by ordered-family-prefix then ascending size; (2)
+  `os_attach floating_ip` by server NAME resolves through the port lookup —
+  no more misleading `noReachablePort`; (3) `os_create floating_ip`
+  `next_steps` carries `source_type`/`target_type`; (4) `os_wait` by server
+  name reports `not-found`, not "no longer exists"; (5) Octavia listener
+  create decoded `500`-though-created — `decodeOctaviaObject` now extracts
+  the **singular envelope** (`{"listener":{…}}`) before the bare object (the
+  lbaaS models decode tolerantly, so the old bare-first parse "succeeded"
+  with empty fields); the fake's create responses were wrapped in the
+  envelope too (fidelity gap that let the bug through); (6) pool schema
+  gains `listener_id`, listener gains `default_pool_id`, both gain update
+  verbs; (7) member create goes through the `pools/{id}/members`
+  sub-resource; (8) `os_list volume_type` reads `/v3/{proj}/types`; (9)
+  `os_create` image resolution — `listImages(vt)` with **no limit** returns
+  only Glance's default page ("25 images on Rackspace"), so a public image
+  beyond it 404'd on create even though `os_list` saw it; both create paths
+  now request `limit: 500` (matching the generic resolver's scan). Full
+  suite green; live DFW3 E2E of the whole Octavia flow (LB→listener→pool
+  (lb_algorithm)→member→delete), volume_type list, dry-run create resolving
+  Debian-13 by name.
+- **`os_delete` cascade wired to Octavia** (2026-10-25). The separate gap
+  found during that sweep: `deleteLoadBalancer` ignored `cascade`, so an LB
+  with children could never be deleted through the MCP. Now `cascade`
+  propagates `os_delete` schema → `handleDelete` → `deletePublic` →
+  `deleteLoadBalancer` (`?cascade=true`). The fake models Octavia: plain
+  delete of an LB with children → `400 … it has children`; cascade deletes
+  LB + listeners/pools/members/healthmonitors. Live DFW3 E2E (throwaway
+  container `substation-mcp-cascade` on :8091): create LB+listener → plain
+  delete → `400 it has children` → `cascade:true` → `deleted:true`, child
+  listener gone. **Test gotcha:** `os_create`/`os_get` return while the LB
+  is `PENDING_CREATE`; children/deletes need `os_wait(until:["ACTIVE"])`
+  first (the synchronous waiter window is 20 s; live provisioning took
+  ~45 s).
+- **next_steps test flake fixed** (2026-10-25).
+  `NextStepsHintCompletenessTests.floatingIPHintIsExecutable` failed ~40%
+  in-suite: tool results are serialized from `Swift.Dictionary` (**unstable
+  key order**), and the test extracted the created id by a positional text
+  scan (brace-adjacency), so it depended on where `id` happened to land
+  after `data":{`. Fixed by JSON-decoding the text and reading `data.id` as
+  a key. The async `MCP.Client.callTool` returns only `(content, isError)`
+  and **drops `structuredContent`** — decode the text content. Any test
+  that needs a field from a tool response must key it, never scan it.
+- **Login-time Access level select** (2026-10-25). Both browser
+  **Access level** select (`openstack:read` pre-selected / `openstack:read
+  openstack:write`). It is a **request, never a grant**: what you get is the
+  intersection of the request with the scopes `policy.write_roles` derives from
+  the token's Keystone roles, enforced server-side in both directions (editing
+  the form HTML cannot widen a session; neither can asking the OAuth token
+  endpoint for `openstack:write` on a read-only code). **The non-obvious part:
+  the two paths carry the result differently.** OAuth stores the scopes in the
+  authorization code and then in the `stst.at.` access token it mints and
+  re-reads per request. URL-mode login hands back a **raw Keystone token whose
+  scopes are re-derived from its roles on every request** — so mint-time
+  narrowing alone was cosmetic (the completion page said Read-only while the
+  session still listed `os_create`/`os_delete`; caught live on Rackspace IAD3).
+  Fix: the bearer the page displays carries the choice —
+  `region:<R>:scope:ro:<token>`, each prefix present only when it applies.
+  `AppTokenValidator.splitBearer` parses `region:` and `scope:` in either
+  order, strips them **before the token reaches Keystone**, and `scope:ro:`
+  drops `openstack:write` from the derived scopes. `scope:rw:` is a no-op; a
+  missing marker means "derive from roles", so every pre-existing
+  plain/region-prefixed bearer is unaffected. The completion page renders the
+  bearer verbatim (never re-composes it — the old `region:` re-prefixing in
+  `completionHTML` would have double-prefixed) and explains the prefixes.
+  **740 tests green.** Live IAD3 E2E (image `substation-mcp:role-selection`,
+  throwaway container on :8090): read request → bearer
+  `region:IAD3:scope:ro:gAA…` → 15 tools, `os_create` →
+  `{"error":"insufficient_scope"}`, `os_whoami` scopes `[openstack:read]`,
+  region still routed to IAD3; read+write request → bearer `region:IAD3:gAAA…`
+  (no marker) → 21 tools. **Gotcha:** `LoginResponse.tokenID` is now the
+  *already-composed* bearer, so nothing downstream may prepend anything.
 - **v0.2.1 tagged** (2026-10-19, `1c05b95`). Patch release over v0.2.0, three
   fixes since the production rollout: (1) login-time **region selection works
   end-to-end** — OS-FEDERATION object decode crash fixed (it presented as "bad

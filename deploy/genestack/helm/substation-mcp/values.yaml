@@ -17,7 +17,7 @@ image:
   # Cluster-registry path to the built image (operator builds from deploy/Dockerfile
   # and pushes to their registry before install).
   repository: registry.example.com/openstack/substation-mcp
-  tag: "0.2.1"
+  tag: "0.2.2"
   pullPolicy: IfNotPresent
 
 # Optional imagePullSecrets (name of a k8s Secret in the openstack namespace).
@@ -166,10 +166,14 @@ config:
       - domain
     max_list_limit: 200
     max_calls_per_minute: 120
-    # Roles that grant openstack:write scope. Default admin-only; add the
-    # cloud's writer role (e.g. creator/member) when it is not admin.
+    # Roles that grant openstack:write scope. admin + member: admin is the
+    # conventional cloud-admin role, member is what public clouds (Rackspace
+    # included) actually gate ordinary project writes on, so an admin-only
+    # default leaves every non-admin user on the read-only surface. Add the
+    # cloud's own writer role (e.g. creator) if it differs.
     write_roles:
       - admin
+      - member
   client:
     request_timeout: 60
     # AsyncHTTPClient's concurrent HTTP/1.1 connections-per-host soft limit.
