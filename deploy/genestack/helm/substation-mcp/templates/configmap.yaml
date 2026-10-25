@@ -17,7 +17,19 @@ metadata:
     {{- include "substation-mcp.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- toYaml .Values.config | nindent 4 }}
+    {{- $cfg := deepCopy .Values.config | default dict }}
+    {{- /*
+      server.public_url must match the Gateway FQDN (the OAuth issuer + the
+      protected-resource metadata derive from it). Derive it from gateway.fqdn
+      whenever the operator left it empty, so the chart placeholder can never
+      silently ship as the issuer.
+    */}}
+    {{- if and .Values.gateway.enabled .Values.gateway.fqdn (not (dig "server" "public_url" "" $cfg)) }}
+    {{-   $server := dig "server" dict $cfg }}
+    {{-   $_ := set $server "public_url" (printf "https://%s" .Values.gateway.fqdn) }}
+    {{-   $_ := set $cfg "server" $server }}
+    {{- end }}
+    {{- toYaml $cfg | nindent 4 }}
 ---
 # clouds.yaml Secret.
 #

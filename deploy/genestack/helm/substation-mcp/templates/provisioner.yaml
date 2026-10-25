@@ -164,13 +164,16 @@ spec:
                 "$PROVISION_JSON"
 
               # 3. Register the mcp catalog service + public/internal/admin
-              #    endpoints (idempotent).
+              #    endpoints (idempotent). Each falls back to the Gateway FQDN
+              #    (+ /v1) so the placeholder default can never be published
+              #    into the Keystone catalog.
+              {{- $catBase := printf "https://%s/v1" .Values.gateway.fqdn }}
               substation-mcp register-catalog \
                 --cloud "$CLOUD" \
                 --region "{{ .Values.serviceUser.region }}" \
-                --public-url "{{ .Values.serviceUser.catalog.publicURL }}" \
-                --internal-url "{{ .Values.serviceUser.catalog.internalURL }}" \
-                --admin-url "{{ .Values.serviceUser.catalog.adminURL }}" \
+                --public-url "{{ .Values.serviceUser.catalog.publicURL | default $catBase }}" \
+                --internal-url "{{ .Values.serviceUser.catalog.internalURL | default $catBase }}" \
+                --admin-url "{{ .Values.serviceUser.catalog.adminURL | default $catBase }}" \
                 {{- if not .Values.serviceUser.auth.secretName }}
                 --admin-user "{{ .Values.serviceUser.auth.password.username }}" \
                 --admin-user-domain "{{ .Values.serviceUser.auth.password.domain | default "" }}" \

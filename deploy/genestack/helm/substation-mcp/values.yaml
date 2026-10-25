@@ -86,8 +86,10 @@ config:
     host: 0.0.0.0
     port: 8080
     endpoint: /v1
-    # MCP endpoint path. /mcp is retained as an alias by the server.
-    public_url: https://substation-mcp.example.com
+    # Public URL the MCP is reached at (issuer + protected-resource metadata
+    # derive from it). Empty = derive from gateway.fqdn (https://<fqdn>) when
+    # the Gateway is enabled; set it explicitly for gateway-less setups.
+    public_url: ""
     allowed_origins:
       - "*"
     max_body_bytes: 1048576
@@ -267,12 +269,12 @@ serviceUser:
   # Defaults to empty = the cloud's auth_url.
   mintURL: ""
   # ── Catalog endpoints (public/internal/admin URLs — user-definable) ─────────
-  # All three default to the same public URL; split them if your cloud exposes
-  # different endpoints per interface.
+  # Empty = derive from gateway.fqdn (https://<fqdn>/v1) at provision time.
+  # Set them explicitly only when an interface needs a different URL.
   catalog:
-    publicURL: "https://substation-mcp.example.com"
-    internalURL: "https://substation-mcp.example.com"
-    adminURL: "https://substation-mcp.example.com"
+    publicURL: ""
+    internalURL: ""
+    adminURL: ""
   # ── Operator admin credential (input, for the provisioner only) ─────────────
   #
   # TWO WAYS to supply the operator credential:

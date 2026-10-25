@@ -116,8 +116,10 @@ echo "  substation-mcp: 0.1.0" >> /etc/genestack/helm-chart-versions.yaml
 Edit `/opt/genestack/base-helm-configs/substation-mcp/substation-mcp-helm-overrides.yaml`:
 
 - **`image.repository` / `image.tag`** — your registry + tag.
-- **`config.server.public_url`** — the FQDN that will be exposed (must match
-  `gateway.fqdn`).
+- **`config.server.public_url`** — optional when `gateway.enabled`: it derives
+  from `gateway.fqdn` automatically (the OAuth issuer + protected-resource
+  metadata derive from it, so a stale value breaks client discovery). Set it
+  only for gateway-less setups or when it must differ from the FQDN.
 - **`config.auth.keystone_url`** — your Keystone URL (drives `readyz`).
 - **`config.server.metrics_token`** — set a strong token to gate `/metrics`.
 - **`config.clouds.default`** — your cloud name.

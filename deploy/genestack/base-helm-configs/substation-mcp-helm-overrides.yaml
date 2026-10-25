@@ -25,7 +25,8 @@ image:
 config:
   server:
     # Public URL (must match the Gateway FQDN + register-catalog PUBLIC_URL).
-    public_url: https://substation-mcp.example.com
+    # Empty = derive from gateway.fqdn at render time (configmap template).
+    public_url: ""
     # Gate /metrics with a bearer token (recommended for production).
     # Set a strong, unique token — do NOT ship "change-me".
     metrics_token: ""
