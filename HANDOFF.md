@@ -1,6 +1,28 @@
-# Handoff: OpenStack MCP — v0.2.6 (live-verified import + tags fixes); v0.2.5/v0.2.4/v0.2.3 tagged
+# Handoff: OpenStack MCP — v0.2.7 (tag actions merge; live-verified); v0.2.6/v0.2.5/v0.2.4 tagged
 
 ## Current State
+
+- **`add_tag`/`remove_tag` deleted the image's other tags — closed and live-verified
+  in 0.2.7** (2026-10-29). The 0.2.5 fix moved tags onto a `replace /tags`
+  json-patch op, which is the only whole-list write Glance offers — but
+  `addTags` sent ONLY the new tags, so every tag the image already carried was
+  deleted. Invisible to the fake (it applied the same partial replace); live on
+  Genestack 2024.1, `add_tag y` on an image tagged `x` left `["y"]`. Glance has
+  no append for tags, probed live: `add /tags/-` → 400 `Invalid JSON pointer for
+  this resource: '/tags/'`, `add /tags` with an array → 200 but sets the list,
+  with a string → 400 `'p3' is not of type 'array'`. So adding is necessarily
+  read-merge-write: `addTags` now reads the image (uncached `getImage`, so it
+  sees writes from `glance image-tag` / python-glanceclient / another session),
+  unions, writes the whole set; `removeTag` shares that path and keeps Glance's
+  404 for an absent tag. Fixed in `5d96891`, released as 0.2.7 (image digest
+  `359d6898`, pod `substation-mcp-6498584d88-5r7zq`). **Live E2E on 0.2.7:**
+  create with `tags:[created]` → `["created"]`; external `PUT /tags/external` →
+  `["created","external"]`; `add_tag mine` → `["created","external","mine"]`;
+  `remove_tag created` → `["external","mine"]`; `remove_tag absent` → 404
+  `itemNotFound`. Regression pass unchanged: create+web-download cirros → active
+  21430272 bytes with `os_distro`/`min_disk`/tags intact, update nulls a
+  property, sets two, flips visibility, keeps tags. Full suite green
+  (350+310+61+43+34+2).
 
 - **Live E2E on Genestack 2024.1 (SAT0) — 0.2.5 verified, 3 more defects found**
   (2026-10-29). Rolled the cluster to 0.2.5 (helm revision 45, image digest
