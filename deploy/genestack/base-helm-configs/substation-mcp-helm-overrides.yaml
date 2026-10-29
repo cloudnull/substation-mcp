@@ -14,7 +14,7 @@
 image:
   # Replace with your cluster registry path + the tag you pushed.
   repository: registry.example.com/openstack/substation-mcp
-  tag: "0.2.4"
+  tag: "0.2.5"
   pullPolicy: IfNotPresent
 
 # ── Server config (snake_case keys, rendered to /etc/substation-mcp/config.yaml) ─
