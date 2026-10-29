@@ -1,8 +1,8 @@
-# Handoff: OpenStack MCP — v0.2.3 + Glance JSON-Patch follow-up; v0.2.2/v0.2.1 tagged
+# Handoff: OpenStack MCP — v0.2.4 (Glance json-patch PATCH); v0.2.3/v0.2.2/v0.2.1 tagged
 
 ## Current State
 
-- **v0.2.3's image PATCH was still broken against live Glance — fixed**
+- **v0.2.4: image PATCH is RFC 6902 json-patch, not a flat map**
   (2026-10-29, issue #4 follow-up, verified raw from inside the deployed pod on
   Genestack 2024.1). The 0.2.3 fix flattened the PATCH body but kept
   `application/json`, which the fake accepted and Glance does not:
@@ -25,10 +25,10 @@
   dispatch paths (`ToolRegistry` os_action, `NameResolver.actionPublic`) fail
   with `feature_unavailable` rather than letting a service reject the call
   confusingly. `GlanceFake` enforces the same contract (415 / 400 / 403), which
-  is what caught this class the first time. Tests: 4 new client-level contract
-  tests (415, flat-body 400, status 403, full patch round-trip incl. tags); the
-  tests that pinned the flat-PATCH shape and a working `deactivate` were
-  **deleted**, not re-pinned. Full suite green (348+296+61+43+34+2).
+  is what catches this class without a live cloud. Tests: 4 new client-level
+  contract tests (415, flat-body 400, status 403, full patch round-trip incl.
+  tags); the tests that pinned the flat-PATCH shape and a working `deactivate`
+  were **deleted**, not re-pinned. Full suite green (349+297+61+43+34+2).
 
   **Two more traps found while sweeping the same path.** (1) `addTags` built its
   `PUT /images/{id}/tags` body by raw interpolation, so a tag containing `"`
