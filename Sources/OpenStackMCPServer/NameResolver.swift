@@ -1698,9 +1698,10 @@ public actor NameResolver {
                     tags: tags, properties: properties
                 )
                 var img = try await r.createImage(vt, spec)
-                // Tags are not part of the create schema; addTags replaces them
-                // through the PATCH document (Glance has no whole-collection
-                // tags PUT — see ImageService.addTags).
+                // Tags are not part of the create schema, so they ride a PATCH
+                // after the create. `addTags` merges with whatever the image
+                // already carries (a fresh image carries nothing), which is why
+                // the tags below can be reported back as settled state.
                 if !tags.isEmpty {
                     try await r.addTags(vt, id: img.id, tags: tags)
                 }

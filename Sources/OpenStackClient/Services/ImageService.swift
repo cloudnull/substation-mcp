@@ -216,14 +216,35 @@ public struct ImageRegion: Sendable {
 
     // MARK: - Tags
 
-    /// Tags are replaced through the PATCH document, NOT the dedicated tags
-    /// route. Glance's real tags routes are per-member —
-    /// `PUT/DELETE /v2/images/{id}/tags/{tag_value}` with `body_reject=True`
-    /// (live-verified on Genestack 2024.1: `PUT /v2/images/{id}/tags` with a
-    /// `{"tags": [...]}` body is a 404, and Glance's own source registers only
-    /// the member route). A `replace` of `/tags` is the one atomic whole-set
-    /// write, and it shares the media type every other image mutation uses.
+    /// Adds tags without dropping the ones already on the image.
+    ///
+    /// Glance has no append operation for tags: `/tags` is patchable only as a
+    /// whole-list `replace` (live-verified on Genestack 2024.1 — `add` with the
+    /// RFC 6902 array-append pointer `/tags/-` is a 400 `Invalid JSON pointer
+    /// for this resource`, and `add /tags` with an array is accepted but just
+    /// sets the list). So a merge-then-replace is the only way to add: read the
+    /// image, union, write the whole set.
+    ///
+    /// The read is the point. A bare `replace` of just the new tags silently
+    /// deleted every tag the image already carried — live-verified on
+    /// Genestack 2024.1, where `add_tag y` on an image tagged `x` by another
+    /// writer left `["y"]`. The read is uncached: `getImage` hits Glance every
+    /// time, so the merge sees writes this server never made.
+    ///
+    /// The dedicated member route `PUT /v2/images/{id}/tags/{tag_value}` is NOT
+    /// used: it is a single-tag add with no whole-collection counterpart (a
+    /// `PUT` to the collection is a 404, and Glance's source registers only the
+    /// member route), so driving a multi-tag create through it would be one
+    /// request per tag.
     public func addTags(_ vt: ValidatedToken, id: String, tags: [String]) async throws {
+        let current = try await getImage(vt, id: id)
+        var merged = current.tags
+        for tag in tags where !merged.contains(tag) { merged.append(tag) }
+        try await replaceTags(vt, id: id, tags: merged)
+    }
+
+    /// The whole-set write behind `addTags` and `removeTag`.
+    private func replaceTags(_ vt: ValidatedToken, id: String, tags: [String]) async throws {
         let region = try resolveRegion(vt)
         let list = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
         let ops = [Self.patchOp("replace", "/tags", "[\(list)]")]
@@ -238,15 +259,21 @@ public struct ImageRegion: Sendable {
         await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
     }
 
+    /// Removes one tag through the same whole-set write as `addTags`, so the
+    /// tags the image carries stay intact. Glance's `DELETE
+    /// /v2/images/{id}/tags/{tag_value}` would also work and 404s when the tag
+    /// is absent, but it is a second mutation dialect for the same attribute;
+    /// one path keeps the read-modify-write story single.
     public func removeTag(_ vt: ValidatedToken, id: String, tag: String) async throws {
-        let region = try resolveRegion(vt)
-        let result = try await req(vt, region, method: "DELETE", path: "\(basePath)/images/\(id)/tags/\(tag)")
-        if ![200, 202, 204].contains(result.status) {
-            if !(200...299).contains(result.status) {
-                throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
-            }
+        let current = try await getImage(vt, id: id)
+        guard current.tags.contains(tag) else {
+            throw OpenStackError(
+                service: "image", status: 404, code: "itemNotFound",
+                message: "Image \(id) carries no tag '\(tag)'.",
+                hint: "Current tags: \(current.tags.isEmpty ? "(none)" : current.tags.joined(separator: ", "))."
+            )
         }
-        await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
+        try await replaceTags(vt, id: id, tags: current.tags.filter { $0 != tag })
     }
 
     // MARK: - Visibility / Protect

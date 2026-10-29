@@ -199,6 +199,78 @@ struct ImageServiceTests {
         #expect(withoutTag.tags.contains("env:dev"))
     }
 
+    /// Glance only lets `/tags` be patched as a whole list, so adding is a
+    /// read-merge-write. A `replace` of just the new tags instead deletes every
+    /// tag the image already carried — including ones this client never saw.
+    @Test("addTags keeps tags the image already carries", .timeLimit(.minutes(2)))
+    func addTagsKeepsExistingTags() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "merge-tags", diskFormat: "raw", containerFormat: "bare"))
+        try await region.addTags(vt, id: img.id, tags: ["first"])
+        try await region.addTags(vt, id: img.id, tags: ["second"])
+
+        let fetched = try await region.getImage(vt, id: img.id)
+        #expect(fetched.tags.sorted() == ["first", "second"],
+                "the second add replaced the first: \(fetched.tags)")
+    }
+
+    /// The tag surface must not depend on the server having made the earlier
+    /// write: a tag added straight through Glance's member route has to survive
+    /// the next `addTags`.
+    @Test("addTags keeps a tag written outside this client", .timeLimit(.minutes(2)))
+    func addTagsKeepsExternallyWrittenTag() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "external-tags", diskFormat: "raw", containerFormat: "bare"))
+        _ = try? await handle.state.addTag(id: img.id, projectID: vt.token.project.id, tag: "external")
+        try await region.addTags(vt, id: img.id, tags: ["mine"])
+
+        let fetched = try await region.getImage(vt, id: img.id)
+        #expect(fetched.tags.sorted() == ["external", "mine"],
+                "addTags dropped a tag it never wrote: \(fetched.tags)")
+    }
+
+    @Test("removeTag keeps the other tags", .timeLimit(.minutes(2)))
+    func removeTagKeepsOtherTags() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "drop-tags", diskFormat: "raw", containerFormat: "bare"))
+        try await region.addTags(vt, id: img.id, tags: ["keep", "drop"])
+        try await region.removeTag(vt, id: img.id, tag: "drop")
+
+        let fetched = try await region.getImage(vt, id: img.id)
+        #expect(fetched.tags == ["keep"], "removing one tag changed the others: \(fetched.tags)")
+    }
+
+    /// Glance's member route 404s removing a tag the image does not carry; the
+    /// merge path has to keep that signal instead of reporting success.
+    @Test("removeTag of an absent tag fails like Glance", .timeLimit(.minutes(2)))
+    func removeAbsentTagFails() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "no-tags", diskFormat: "raw", containerFormat: "bare"))
+
+        do {
+            try await region.removeTag(vt, id: img.id, tag: "never-set")
+            Issue.record("removing a tag the image never carried reported success")
+        } catch let error as OpenStackError {
+            #expect(error.status == 404, "expected 404, got \(error.status)")
+        }
+    }
+
     /// A tag is caller data: an unescaped `"` in one corrupts the PUT body, so
     /// Glance stores a mangled tag or rejects the request outright.
     @Test("a tag containing quotes and backslashes round-trips", .timeLimit(.minutes(2)))
