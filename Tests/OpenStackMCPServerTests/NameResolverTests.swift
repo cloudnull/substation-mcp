@@ -419,16 +419,27 @@ struct NameResolverTests {
         #expect(!tags.contains(.string("os:ubuntu")))
     }
 
-    @Test("image action reactivate restores an image to active", .timeLimit(.minutes(2)))
-    func imageReactivateAction() async throws {
+    // Glance's `status` is read-only on PATCH and its status route is admin-only,
+    // so the advertised actions report the gap instead of pretending to work.
+    @Test("image actions deactivate/reactivate report feature_unavailable", .timeLimit(.minutes(2)))
+    func imageStatusActionsUnsupported() async throws {
         let (handle, vt, _, resolver, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
 
         let descriptor = ResourceCatalog.phase1().descriptor("image")!
-        _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "deactivate", params: [:], region: "RegionOne")
-        let result = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: "reactivate", params: [:], region: "RegionOne")
-        #expect(result["id"]?.stringValue == "img-1")
-        #expect(result["status"]?.stringValue == "active")
+        for action in ["deactivate", "reactivate"] {
+            do {
+                _ = try await resolver.actionPublic(vt, descriptor: descriptor, id: "img-1", action: action, params: [:], region: "RegionOne")
+                Issue.record("\(action) must report feature_unavailable")
+            } catch let error as OpenStackError {
+                #expect(error.code == "feature_unavailable", "\(action): \(error.code ?? "nil") \(error.message)")
+                #expect(error.status == 501)
+                #expect(error.hint?.contains("glance image-\(action)") == true)
+            }
+        }
+        // The image is untouched.
+        let got = try await resolver.resolve(vt, descriptor: descriptor, idOrName: "img-1", region: "RegionOne")
+        #expect(got.raw["status"]?.stringValue == "active")
     }
 
     @Test("image action set_visibility without visibility param returns 400", .timeLimit(.minutes(2)))

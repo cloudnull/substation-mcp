@@ -509,14 +509,18 @@ public struct ToolRegistry: Sendable {
 
         var actions: [[String: JSONValue]] = []
         for a in d.actions {
-            actions.append([
+            var action: [String: JSONValue] = [
                 "name": .string(a.name),
                 "destructive": .bool(a.destructive),
                 "admin_only": .bool(a.adminOnly),
-                "params": .array(a.params.map { p in
-                    .object(["name": .string(p.name), "type": .string(p.type), "required": .bool(p.required)])
-                }),
-            ])
+            ]
+            if let unsupported = a.unsupported {
+                action["unsupported"] = .string(unsupported)
+            }
+            action["params"] = .array(a.params.map { p in
+                .object(["name": .string(p.name), "type": .string(p.type), "required": .bool(p.required)])
+            })
+            actions.append(action)
         }
 
         var links: [[String: JSONValue]] = []
@@ -1482,6 +1486,11 @@ public struct ToolRegistry: Sendable {
         guard let spec = d.actions.first(where: { $0.name == actionName }) else {
             throw OpenStackError(service: "mcp", status: 400,
                 message: "Unknown action: \(actionName) for \(d.name). Valid: \(d.actions.map(\.name).joined(separator: ", "))")
+        }
+        // An action the build cannot honour fails here, with the catalog's own
+        // reason, rather than reaching a service that rejects it confusingly.
+        if let error = spec.unsupportedActionError(resource: d.name, service: d.service) {
+            throw error
         }
         // adminOnly is ENFORCED, not advisory: the caller's token must carry a
         // write role (policy.write_roles, default [admin]) — the same role set

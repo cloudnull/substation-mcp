@@ -2046,6 +2046,8 @@ public actor NameResolver {
                     }
                     properties = props
                 }
+                // `tags` is a first-class image attribute, so it rides the same
+                // PATCH document as the rest of the update — one request, atomic.
                 let img = try await r.updateImage(
                     vt, id: id,
                     name: obj["name"]?.stringValue,
@@ -2053,20 +2055,8 @@ public actor NameResolver {
                     protected: obj["protected"]?.boolValue,
                     properties: properties,
                     minRAM: obj["min_ram"]?.intValue,
-                    status: nil
+                    tags: obj["tags"]?.arrayValue?.compactMap { $0.stringValue }
                 )
-                // Tags are replaced wholesale through the tags endpoint; Glance's
-                // PATCH has no tags attribute.
-                if let tags = obj["tags"]?.arrayValue?.compactMap({ $0.stringValue }) {
-                    let existing = try await r.getImage(vt, id: id)
-                    for gone in Set(existing.tags).subtracting(tags).sorted() {
-                        try await r.removeTag(vt, id: id, tag: gone)
-                    }
-                    let added = tags.filter { !existing.tags.contains($0) }
-                    if !added.isEmpty {
-                        try await r.addTags(vt, id: id, tags: added)
-                    }
-                }
                 return try Self.encodeObject(img)
             default:
                 throw OpenStackError(service: "image", status: 400, message: "Unknown image update: \(descriptor.name)")
@@ -2352,6 +2342,12 @@ public actor NameResolver {
     }
 
     public func actionPublic(_ vt: ValidatedToken, descriptor: ResourceDescriptor, id: String, action: String, params: [String: JSONValue], region: String) async throws -> [String: JSONValue] {
+        // Same guard as the os_action entry point: an action the catalog marks
+        // unsupported never reaches a service, whichever path dispatched it.
+        if let spec = descriptor.actions.first(where: { $0.name == action }),
+           let error = spec.unsupportedActionError(resource: descriptor.name, service: descriptor.service) {
+            throw error
+        }
         switch descriptor.service {
         case .compute:
             let r = await client.compute(region: region)
@@ -2587,8 +2583,6 @@ public actor NameResolver {
                 switch action {
                 case "protect": let img = try await r.protect(vt, id: id); return try Self.encodeObject(img)
                 case "unprotect": let img = try await r.unprotect(vt, id: id); return try Self.encodeObject(img)
-                case "deactivate": let img = try await r.deactivate(vt, id: id); return try Self.encodeObject(img)
-                case "reactivate": let img = try await r.reactivate(vt, id: id); return try Self.encodeObject(img)
                 case "set_visibility":
                     let visibility = params["visibility"]?.stringValue
                     guard let visibility else { throw OpenStackError(service: "image", status: 400, message: "set_visibility requires visibility") }

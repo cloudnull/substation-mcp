@@ -1,4 +1,5 @@
 import Foundation
+import OpenStackClient
 
 /// The five OpenStack services covered in phase 1.
 public enum Service: String, Sendable, CaseIterable, Codable {
@@ -94,12 +95,30 @@ public struct ActionSpec: Sendable {
     public let destructive: Bool
     public let adminOnly: Bool
     public let params: [ParamSpec]
+    /// Why this action cannot be performed on this build, when it cannot. The
+    /// action stays advertised — clients already know the name — but `os_describe`
+    /// says so up front and dispatch fails with `feature_unavailable` instead of
+    /// letting an upstream service reject the call with a confusing error.
+    public let unsupported: String?
 
-    public init(name: String, destructive: Bool = false, adminOnly: Bool = false, params: [ParamSpec] = []) {
+    public init(name: String, destructive: Bool = false, adminOnly: Bool = false, params: [ParamSpec] = [], unsupported: String? = nil) {
         self.name = name
         self.destructive = destructive
         self.adminOnly = adminOnly
         self.params = params
+        self.unsupported = unsupported
+    }
+
+    /// The `feature_unavailable` failure for this action, built from its own
+    /// `unsupported` reason. Every dispatch path calls this rather than
+    /// re-deriving the shape, so the code, status and hint stay identical.
+    public func unsupportedActionError(resource: String, service: Service) -> OpenStackError? {
+        guard let unsupported else { return nil }
+        return OpenStackError(
+            service: service.serviceTypeName, status: 501, code: "feature_unavailable",
+            message: "Action \(resource).\(name) is not supported: \(unsupported)",
+            hint: unsupported
+        )
     }
 }
 

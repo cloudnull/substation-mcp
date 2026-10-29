@@ -117,6 +117,25 @@ public struct ImageRegion: Sendable {
         return try JSONDecoder().decode(Image.self, from: result.body)
     }
 
+    /// The media type Glance requires on `PATCH /v2/images/{id}`. Any other
+    /// media type is refused with 415, and a flat attribute map is refused with
+    /// 400 even when the media type is right — the body must be an RFC 6902
+    /// operation array. Live-verified on Genestack 2024.1, and the Glance v2 API
+    /// reference states the same rule, so there is no Glance to negotiate away
+    /// from.
+    static let patchMediaType = "application/openstack-images-v2.1-json-patch"
+
+    /// Update an image through Glance's JSON-Patch surface.
+    ///
+    /// Only the attributes actually supplied become operations: an op for a nil
+    /// argument would clear a value the caller never mentioned. `properties`
+    /// carries Glance's CUSTOM properties, which are individual top-level keys
+    /// on the image representation — Glance's image schema has no `properties`
+    /// attribute — so each one is its own `add` op.
+    ///
+    /// `status` is deliberately not patchable: Glance refuses it with
+    /// `403 Attribute 'status' is read-only`, and the route that does change it
+    /// is admin-only (see the `deactivate`/`reactivate` action notes).
     public func updateImage(
         _ vt: ValidatedToken,
         id: String,
@@ -125,37 +144,45 @@ public struct ImageRegion: Sendable {
         protected: Bool? = nil,
         properties: [String: String]? = nil,
         minRAM: Int? = nil,
-        status: String? = nil
+        tags: [String]? = nil
     ) async throws -> Image {
         let region = try resolveRegion(vt)
-        // Glance v2 PATCH bodies are a flat JSON-Patch-style attribute map, NOT
-        // the `{"image": {...}}` envelope: `properties` is likewise a top-level
-        // map of custom properties, and only the keys actually present are sent
-        // (a null would clear an attribute the caller never mentioned).
-        var parts: [String] = []
-        if let name { parts.append("\"name\":\"\(jsonEscape(name))\"") }
-        if let visibility { parts.append("\"visibility\":\"\(jsonEscape(visibility))\"") }
-        if let protected { parts.append("\"protected\":\(protected ? "true" : "false")") }
-        if let minRAM { parts.append("\"min_ram\":\(minRAM)") }
-        if let properties {
-            let props = properties.sorted { $0.key < $1.key }
-                .map { "\"\(jsonEscape($0.key))\":\"\(jsonEscape($0.value))\"" }
-                .joined(separator: ",")
-            parts.append("\"properties\":{\(props)}")
+        var ops: [String] = []
+        if let name { ops.append(Self.patchOp("replace", "/name", "\"\(jsonEscape(name))\"")) }
+        if let visibility { ops.append(Self.patchOp("replace", "/visibility", "\"\(jsonEscape(visibility))\"")) }
+        if let protected { ops.append(Self.patchOp("replace", "/protected", protected ? "true" : "false")) }
+        if let minRAM { ops.append(Self.patchOp("replace", "/min_ram", "\(minRAM)")) }
+        if let tags {
+            let list = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
+            ops.append(Self.patchOp("replace", "/tags", "[\(list)]"))
         }
-        if let status { parts.append("\"status\":\"\(jsonEscape(status))\"") }
-        let body = "{\(parts.joined(separator: ","))}"
-
-        // Live Glance on regionone accepts application/json for PATCH.
-        // (Some Glance installations require application/openstack-images;version=2,
-        // but this one does not — it 415s on that media type.)
-        // The Transport adds the default application/json Content-Type.
-        let result = try await req(vt, region, method: "PATCH", path: "\(basePath)/images/\(id)", body: body.data(using: .utf8))
+        for (key, value) in (properties ?? [:]).sorted(by: { $0.key < $1.key }) {
+            ops.append(Self.patchOp("add", "/\(Self.patchPath(key))", "\"\(jsonEscape(value))\""))
+        }
+        let body = "[\(ops.joined(separator: ","))]"
+        let result = try await req(
+            vt, region, method: "PATCH", path: "\(basePath)/images/\(id)",
+            body: body.data(using: .utf8),
+            extraHeaders: [("Content-Type", Self.patchMediaType)]
+        )
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
         return try JSONDecoder().decode(Image.self, from: result.body)
+    }
+
+    /// One RFC 6902 operation. `value` is raw JSON, so integers, booleans and
+    /// arrays are carried unquoted instead of being stringified.
+    private static func patchOp(_ op: String, _ path: String, _ value: String) -> String {
+        "{\"op\":\"\(op)\",\"path\":\"\(path)\",\"value\":\(value)}"
+    }
+
+    /// An RFC 6901 path segment for a custom property name: `~` and `/` are the
+    /// pointer's own metacharacters, and the name is caller data.
+    private static func patchPath(_ key: String) -> String {
+        key.replacingOccurrences(of: "~", with: "~0")
+            .replacingOccurrences(of: "/", with: "~1")
     }
 
     public func deleteImage(_ vt: ValidatedToken, id: String) async throws {
@@ -173,7 +200,7 @@ public struct ImageRegion: Sendable {
 
     public func addTags(_ vt: ValidatedToken, id: String, tags: [String]) async throws {
         let region = try resolveRegion(vt)
-        let joined = tags.map { "\"\($0)\"" }.joined(separator: ",")
+        let joined = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
         let body = "{\"tags\":[\(joined)]}"
         let result = try await req(vt, region, method: "PUT", path: "\(basePath)/images/\(id)/tags", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
@@ -193,7 +220,7 @@ public struct ImageRegion: Sendable {
         await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
     }
 
-    // MARK: - Visibility / Protect / Deactivate
+    // MARK: - Visibility / Protect
 
     public func setVisibility(_ vt: ValidatedToken, id: String, visibility: String) async throws -> Image {
         try await updateImage(vt, id: id, visibility: visibility)
@@ -205,14 +232,6 @@ public struct ImageRegion: Sendable {
 
     public func unprotect(_ vt: ValidatedToken, id: String) async throws -> Image {
         try await updateImage(vt, id: id, protected: false)
-    }
-
-    public func deactivate(_ vt: ValidatedToken, id: String) async throws -> Image {
-        try await updateImage(vt, id: id, status: "deactivated")
-    }
-
-    public func reactivate(_ vt: ValidatedToken, id: String) async throws -> Image {
-        try await updateImage(vt, id: id, status: "active")
     }
 
     // MARK: - Upload
@@ -257,7 +276,7 @@ public struct ImageRegion: Sendable {
 
     private func resolveRegion(_ vt: ValidatedToken) throws -> String {
         let region = defaultRegion ?? cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
-        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        try guardEndpoint(serviceType: catalogType, region: region, vt: vt)
         return region
     }
 }

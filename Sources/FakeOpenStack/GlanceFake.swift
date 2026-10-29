@@ -89,7 +89,7 @@ public struct GlanceFake {
                 return Self.textError(status: .unauthorized, message: "401 Unauthorized")
             }
             let body = try await Self.readBody(req)
-            if let err = Self.schemaError(for: body, allowPropertiesObject: false) { return err }
+            if let err = Self.schemaError(for: body) { return err }
             let name = Self.stringField("name", in: body) ?? ""
             let visibility = Self.stringField("visibility", in: body) ?? "private"
             let diskFormat = Self.stringField("disk_format", in: body) ?? "raw"
@@ -109,25 +109,39 @@ public struct GlanceFake {
             return Self.jsonResponse(status: .created, body: Self.imageJSON(img))
         }
 
+        // Glance's PATCH contract, held to the letter: the media type must be
+        // application/openstack-images-v2.{0,1}-json-patch (anything else is a
+        // 415), the body must be an RFC 6902 operation ARRAY (a flat attribute
+        // map is a 400 even with the right media type), and `status` is a
+        // read-only attribute (403). Live-verified on Genestack 2024.1.
         router.patch("\(base)/images/:id") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.textError(status: .unauthorized, message: "401 Unauthorized")
             }
             let id = ctx.parameters.get("id") ?? ""
+            let mediaType = (req.headers[.contentType] ?? "")
+                .split(separator: ";").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+            guard Self.patchMediaTypes.contains(mediaType) else {
+                return Self.glanceError(
+                    status: .unsupportedMediaType,
+                    message: "415 Unsupported Media Type: The request media type \(mediaType.isEmpty ? "<unset>" : mediaType) is not supported by this server."
+                )
+            }
             let body = try await Self.readBody(req)
-            if let err = Self.schemaError(for: body, allowPropertiesObject: true) { return err }
-            let name = Self.stringField("name", in: body)
-            let visibility = Self.stringField("visibility", in: body)
-            let protected = Self.boolField("protected", in: body)
-            let status = Self.stringField("status", in: body)
-            let minRAM = Self.intField("min_ram", in: body)
+            guard let ops = Self.parsePatchOps(body) else {
+                return Self.glanceError(
+                    status: .badRequest,
+                    message: "400 Bad Request: Request body must be a JSON array of operation objects."
+                )
+            }
+            if let err = Self.patchOpsError(for: ops) { return err }
+            let edits = Self.imagePatchEdits(from: ops)
             guard let img = await state.updateImage(
                 id: id, projectID: token.projectID,
-                name: name, visibility: visibility,
-                protected: protected, status: status,
-                minRAM: minRAM,
-                properties: Self.propertiesObject(in: body)
+                name: edits.name, visibility: edits.visibility,
+                protected: edits.protected, minRAM: edits.minRAM, tags: edits.tags,
+                setProperties: edits.setProperties, removedProperties: edits.removedProperties
             ) else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
@@ -334,22 +348,116 @@ public struct GlanceFake {
         "imports", "os_hidden"
     ]
 
-    /// Attributes a client may never send. `status` is deliberately absent:
-    /// Glance accepts it on create (register an image directly as `active`) and on
-    /// PATCH — that is how deactivate/reactivate work — so rejecting it would
-    /// break a legal, load-bearing operation.
+    /// Attributes a client may never send on create. `status` is deliberately
+    /// absent: Glance accepts it on create (register an image directly as
+    /// `active`). On PATCH it is read-only — see `patchReadOnlyAttributes`.
     static let glanceReadOnlyAttributes: Set<String> = [
         "id", "status_reason", "created_at", "updated_at", "owner",
         "schema", "self", "file", "direct_url", "size", "checksum",
         "virtual_size", "os_hash_algo", "os_hash_value", "imports"
     ]
 
-    /// Validates a create/PATCH body against Glance's flat schema. Returns a
+    /// Media types Glance accepts on `PATCH /v2/images/{id}`. Anything else is a
+    /// 415, including plain `application/json` and `application/json-patch+json`.
+    static let patchMediaTypes: Set<String> = [
+        "application/openstack-images-v2.1-json-patch",
+        "application/openstack-images-v2.0-json-patch"
+    ]
+
+    /// Attributes Glance refuses to change over PATCH. `status` is the one that
+    /// matters here: it is set through Glance's admin-only v1-compatibility
+    /// route, not through PATCH.
+    static let patchReadOnlyAttributes: Set<String> = ["status"]
+
+    /// Parses a PATCH body into its RFC 6902 operation objects. Nil when the
+    /// body is not an array of objects — Glance's own 400 for that shape.
+    static func parsePatchOps(_ body: String) -> [[String: Any]]? {
+        guard let data = body.data(using: .utf8),
+              let array = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return nil }
+        var ops: [[String: Any]] = []
+        for element in array {
+            guard let op = element as? [String: Any], op["op"] is String, op["path"] is String else { return nil }
+            ops.append(op)
+        }
+        return ops
+    }
+
+    /// Glance's per-operation refusals. Returns the first one that applies.
+    static func patchOpsError(for ops: [[String: Any]]) -> Response? {
+        for op in ops {
+            let path = (op["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let attribute = path.components(separatedBy: "/").first ?? path
+            if patchReadOnlyAttributes.contains(attribute) {
+                return glanceError(
+                    status: .forbidden,
+                    message: "403 Forbidden: Attribute '\(attribute)' is read-only."
+                )
+            }
+            // Custom properties are string-valued; a non-string value on an
+            // attribute Glance does not type-check still has to be a string.
+            if !glanceImageAttributes.contains(attribute), let value = op["value"], !(value is String) {
+                return glanceError(
+                    status: .badRequest,
+                    message: "400 Bad Request: Provided object does not match schema 'image': "
+                        + "{\"\(attribute)\": \(jsonScalar(value))} is not of type 'string'"
+                )
+            }
+        }
+        return nil
+    }
+
+    /// The fake's own edit set for a patch document: which base attributes are
+    /// replaced, which custom properties are set or removed, and the whole-list
+    /// replacement for `tags`.
+    struct ImagePatchEdits: Sendable {
+        var name: String?
+        var visibility: String?
+        var protected: Bool?
+        var minRAM: Int?
+        var tags: [String]?
+        var setProperties: [String: String] = [:]
+        var removedProperties: [String] = []
+    }
+
+    /// Turns RFC 6902 operations into `ImagePatchEdits`. `add` and `replace` are
+    /// treated alike (Glance does, for these attributes); `remove` on a custom
+    /// property clears it.
+    static func imagePatchEdits(from ops: [[String: Any]]) -> ImagePatchEdits {
+        var edits = ImagePatchEdits()
+        for op in ops {
+            let name = op["op"] as? String ?? ""
+            let path = op["path"] as? String ?? ""
+            let attribute = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                .components(separatedBy: "/").first ?? path
+            let value = op["value"]
+            switch attribute {
+            case "name": edits.name = value as? String
+            case "visibility": edits.visibility = value as? String
+            case "protected": edits.protected = value as? Bool
+            case "min_ram":
+                if let i = value as? Int { edits.minRAM = i }
+                else if let d = value as? Double { edits.minRAM = Int(d) }
+            case "tags": edits.tags = (value as? [Any])?.compactMap { $0 as? String }
+            default:
+                if name == "remove" {
+                    edits.removedProperties.append(unescapePointerSegment(attribute))
+                } else if let s = value as? String {
+                    edits.setProperties[unescapePointerSegment(attribute)] = s
+                }
+            }
+        }
+        return edits
+    }
+
+    /// RFC 6901 percent/tilde unescaping for a path segment.
+    static func unescapePointerSegment(_ segment: String) -> String {
+        segment.replacingOccurrences(of: "~1", with: "/")
+            .replacingOccurrences(of: "~0", with: "~")
+    }
+
+    /// Validates a create body against Glance's flat schema. Returns a
     /// Glance-shaped 400 when unacceptable, nil when acceptable.
-    /// - Parameter allowPropertiesObject: PATCH accepts a top-level `properties`
-    ///   object; POST /images does not (custom properties must be individual
-    ///   top-level string keys there).
-    static func schemaError(for body: String, allowPropertiesObject: Bool) -> Response? {
+    static func schemaError(for body: String) -> Response? {
         guard let dict = parseObject(body) else {
             return glanceError(status: .badRequest, message: "400 Bad Request: malformed JSON body")
         }
@@ -360,7 +468,7 @@ public struct GlanceFake {
                     + "{\"image\": ...} is not of type 'string'"
             )
         }
-        if !allowPropertiesObject, dict["properties"] != nil {
+        if dict["properties"] != nil {
             return glanceError(
                 status: .badRequest,
                 message: "400 Bad Request: Provided object does not match schema 'image': "
@@ -392,19 +500,6 @@ public struct GlanceFake {
         var props: [String: String] = [:]
         for (key, value) in dict where !glanceImageAttributes.contains(key) {
             if let s = value as? String { props[key] = s }
-        }
-        return props
-    }
-
-    /// The `properties` object of a PATCH body as a flat string map.
-    static func propertiesObject(in body: String) -> [String: String]? {
-        guard let dict = parseObject(body), let raw = dict["properties"] as? [String: Any] else { return nil }
-        var props: [String: String] = [:]
-        for (key, value) in raw {
-            guard let s = value as? String else {
-                return nil
-            }
-            props[key] = s
         }
         return props
     }

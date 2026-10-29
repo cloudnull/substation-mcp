@@ -158,12 +158,17 @@ struct CatalogCompletenessTests {
         #expect(actions["enable"]?.destructive == false, "enable should NOT be destructive")
     }
 
-    @Test("image actions: deactivate destructive")
+    @Test("image actions: deactivate destructive and unsupported")
     func imageActions() {
         let actions = catalog.actions(for: "image")
         #expect(actions["deactivate"]?.destructive == true, "deactivate should be destructive")
         #expect(actions["protect"]?.destructive == false, "protect should NOT be destructive")
         #expect(actions["reactivate"]?.destructive == false, "reactivate should NOT be destructive")
+        // Glance's status is read-only on PATCH, so both stay advertised but
+        // report why they cannot run — the reason must reach os_describe.
+        #expect(actions["deactivate"]?.unsupported != nil, "deactivate must declare why it cannot run")
+        #expect(actions["reactivate"]?.unsupported != nil, "reactivate must declare why it cannot run")
+        #expect(actions["protect"]?.unsupported == nil, "protect works; it must not be marked unsupported")
     }
 
     @Test("volume_backup actions: restore destructive")

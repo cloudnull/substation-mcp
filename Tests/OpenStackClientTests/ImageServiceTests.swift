@@ -197,6 +197,29 @@ struct ImageServiceTests {
         #expect(withoutTag.tags.contains("env:dev"))
     }
 
+    /// A tag is caller data: an unescaped `"` in one corrupts the PUT body, so
+    /// Glance stores a mangled tag or rejects the request outright.
+    @Test("a tag containing quotes and backslashes round-trips", .timeLimit(.minutes(2)))
+    func tagWithJSONMetacharacters() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "tricky-tags", diskFormat: "raw", containerFormat: "bare"))
+
+        let nasty = "quote\"back\\slash"
+        try await region.addTags(vt, id: img.id, tags: [nasty, "plain"])
+        let withTags = try await region.getImage(vt, id: img.id)
+        #expect(withTags.tags.contains(nasty),
+                "an unescaped tag body corrupts the tag: \(withTags.tags)")
+
+        try await region.removeTag(vt, id: img.id, tag: "plain")
+        let withoutTag = try await region.getImage(vt, id: img.id)
+        #expect(!withoutTag.tags.contains("plain"))
+        #expect(withoutTag.tags.contains(nasty))
+    }
+
     @Test("protect and unprotect", .timeLimit(.minutes(2)))
     func protectUnprotect() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
@@ -213,24 +236,6 @@ struct ImageServiceTests {
         try await region.unprotect(vt, id: img.id)
         let unprotected = try await region.getImage(vt, id: img.id)
         #expect(unprotected.protected == false)
-    }
-
-    @Test("deactivate and reactivate", .timeLimit(.minutes(2)))
-    func deactivateReactivate() async throws {
-        let (handle, vt, images, _, _, transport) = try await makeSetup()
-        defer { handle.stop(); transport.syncShutdown() }
-
-        let region = images.region("RegionOne")
-        let spec = CreateImageSpec(name: "deact-me", diskFormat: "raw", containerFormat: "bare")
-        let img = try await region.createImage(vt, spec)
-
-        try await region.deactivate(vt, id: img.id)
-        let deactivated = try await region.getImage(vt, id: img.id)
-        #expect(deactivated.status == "deactivated")
-
-        try await region.reactivate(vt, id: img.id)
-        let reactivated = try await region.getImage(vt, id: img.id)
-        #expect(reactivated.status == "active")
     }
 
     @Test("delete image", .timeLimit(.minutes(2)))
@@ -277,13 +282,12 @@ struct ImageServiceTests {
         }
     }
 
-    // Regression test for the live-Glance 415 fix: updateImage's PATCH must
-    // carry the Glance images media type (application/openstack-images;version=2)
-    // rather than the Transport default of application/json. The fake Glance
-    // now rejects a PATCH whose Content-Type is application/json with a 415
-    // (live Glance on regionone accepts application/json for PATCH), so a successful
-    // update whose response reflects the change proves the PATCH was accepted.
-    @Test("updateImage PATCH works (no 415)", .timeLimit(.minutes(2)))
+    // Regression test for the live-Glance 415: updateImage's PATCH must carry
+    // application/openstack-images-v2.1-json-patch, not the Transport default of
+    // application/json. Live Glance (Genestack 2024.1) 415s anything else, so a
+    // successful update whose response reflects the change proves the media type
+    // was right.
+    @Test("updateImage PATCH carries the json-patch media type", .timeLimit(.minutes(2)))
     func updateImageGlanceMediaType() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
@@ -309,11 +313,14 @@ struct ImageServiceTests {
     /// Raw request to the fake Glance, bypassing the client. The transport
     /// normalises a non-2xx into a thrown error, so asserting on a *rejection*
     /// needs the status code and body directly.
-    private func rawGlance(_ handle: FakeHandle, tokenID: String, method: String, path: String, body: String) async throws -> (status: Int, body: String) {
+    private func rawGlance(
+        _ handle: FakeHandle, tokenID: String, method: String, path: String, body: String,
+        contentType: String = "application/json"
+    ) async throws -> (status: Int, body: String) {
         var req = URLRequest(url: handle.url.appendingPathComponent(path))
         req.httpMethod = method
         req.setValue(tokenID, forHTTPHeaderField: "X-Auth-Token")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         req.httpBody = Data(body.utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
@@ -392,42 +399,82 @@ struct ImageServiceTests {
         #expect(bad.status == 400, "additionalProperties is string-typed; an object value must fail: \(bad.status) \(bad.body)")
     }
 
-    @Test("update sends a FLAT PATCH body and decodes a FLAT reply", .timeLimit(.minutes(2)))
-    func updateUsesFlatSchema() async throws {
+    // PATCH is the one place Glance is NOT a flat attribute map: the body is an
+    // RFC 6902 operation array under the v2.1 json-patch media type. Live Glance
+    // 415s any other media type and 400s a flat map even with the right one, so
+    // the fake enforces both, and `status` is a read-only attribute (403).
+    @Test("update sends a JSON-PATCH body and decodes a FLAT reply", .timeLimit(.minutes(2)))
+    func updateUsesPatchDocument() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
         let region = images.region("RegionOne")
         let img = try await region.createImage(vt, CreateImageSpec(name: "patch-me", diskFormat: "raw", containerFormat: "bare"))
 
-        // Every advertised attribute must reach Glance through one PATCH and come
+        // Every advertised attribute must reach Glance through ONE PATCH and come
         // back in the (unwrapped) reply.
         let updated = try await region.updateImage(
             vt, id: img.id, name: "patched", visibility: "public",
-            protected: true, properties: ["os_distro": "fedora"], minRAM: 512
+            protected: true, properties: ["os_distro": "fedora"], minRAM: 512,
+            tags: ["env:prod", "os:fedora"]
         )
         #expect(updated.name == "patched")
         #expect(updated.visibility == "public")
         #expect(updated.protected == true)
         #expect(updated.minRAM == 512)
         #expect(updated.properties["os_distro"] == "fedora")
+        #expect(updated.tags.contains("env:prod"))
 
         let fetched = try await region.getImage(vt, id: img.id)
         #expect(fetched.visibility == "public")
         #expect(fetched.minRAM == 512)
         #expect(fetched.properties["os_distro"] == "fedora")
+        #expect(fetched.tags.sorted() == ["env:prod", "os:fedora"])
     }
 
-    @Test("a wrapped PATCH body is rejected", .timeLimit(.minutes(2)))
-    func wrappedPatchBodyRejected() async throws {
+    @Test("PATCH with the wrong media type is a 415", .timeLimit(.minutes(2)))
+    func patchWithWrongMediaTypeRejected() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
 
-        let rejected = try await rawGlance(handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
-                                           body: #"{"image":{"name":"wrapped-patch"}}"#)
-        #expect(rejected.status == 400, "A wrapped PATCH must be a 400, got \(rejected.status): \(rejected.body)")
-        // The image must be untouched: a wrapped PATCH may not silently rename it.
+        // Plain application/json — the shape the client used to send.
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"[{"op":"replace","path":"/name","value":"renamed-415"}]"#
+        )
+        #expect(rejected.status == 415, "Glance refuses a non-json-patch media type, got \(rejected.status): \(rejected.body)")
         let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
-        #expect(fetched.name != "wrapped-patch")
+        #expect(fetched.name != "renamed-415", "a rejected PATCH must not change the image")
+    }
+
+    @Test("a flat PATCH body is rejected even with the json-patch media type", .timeLimit(.minutes(2)))
+    func flatPatchBodyRejected() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"{"name":"flat-patch"}"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(rejected.status == 400, "A flat attribute map is not an operation array, got \(rejected.status): \(rejected.body)")
+        let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
+        #expect(fetched.name != "flat-patch")
+    }
+
+    @Test("patching status is refused as read-only", .timeLimit(.minutes(2)))
+    func patchStatusRejected() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"[{"op":"replace","path":"/status","value":"deactivated"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(rejected.status == 403, "status is read-only on PATCH, got \(rejected.status): \(rejected.body)")
+        #expect(rejected.body.contains("read-only"))
+        let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
+        #expect(fetched.status == "active", "a refused status patch must leave the image active")
     }
 
     @Test("an image name containing quotes and backslashes creates successfully", .timeLimit(.minutes(2)))

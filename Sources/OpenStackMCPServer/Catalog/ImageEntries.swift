@@ -15,8 +15,12 @@ enum ImageEntries {
                 ActionSpec(name: "unprotect"),
                 ActionSpec(name: "add_tag", params: [ParamSpec(name: "tag", required: true, description: "Tag to add")]),
                 ActionSpec(name: "remove_tag", params: [ParamSpec(name: "tag", required: true, description: "Tag to remove")]),
-                ActionSpec(name: "deactivate", destructive: true),
-                ActionSpec(name: "reactivate"),
+                // Glance's `status` is read-only on PATCH and its status route is
+                // admin-only, so these two cannot be honoured here.
+                ActionSpec(name: "deactivate", destructive: true,
+                           unsupported: "Glance treats an image's status as read-only on PATCH; the route that changes it is admin-only and not implemented. Use `glance image-deactivate`."),
+                ActionSpec(name: "reactivate",
+                           unsupported: "Glance treats an image's status as read-only on PATCH; the route that changes it is admin-only and not implemented. Use `glance image-reactivate`."),
             ],
             links: [
                 LinkSpec(

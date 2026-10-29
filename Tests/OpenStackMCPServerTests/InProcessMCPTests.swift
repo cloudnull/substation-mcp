@@ -301,6 +301,31 @@ struct InProcessMCPTests {
         #expect(text?.contains("\"network\"") == true, "create_schema should expose the networks[].network field, got: \(text ?? "nil")")
     }
 
+    /// An action this build cannot honour must be declared in `os_describe`, so
+    /// a caller learns why before spending a write-scoped call on it.
+    @Test("os_describe reports why an advertised action cannot run")
+    func describeReportsUnsupportedAction() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let result = try await bundle.mcpClient.callTool(name: "os_describe", arguments: ["resource": .string("image")])
+        #expect(result.isError != true, "os_describe image failed: \(firstText(result.content) ?? "nil")")
+        let text = firstText(result.content) ?? ""
+        #expect(text.contains("\"unsupported\""), "the unsupported reason must be a field, got: \(text)")
+        #expect(text.contains("read-only"), "the reason must name Glance's read-only status, got: \(text)")
+        // An action that works carries no such field.
+        let described = try parseResult(result)
+        let list = (described["actions"] as? [[String: Any]]) ?? []
+        #expect(!list.isEmpty, "os_describe returned no actions: \(described)")
+        let byName = Dictionary(uniqueKeysWithValues: list.compactMap { a in
+            (a["name"] as? String).map { ($0, a) }
+        })
+        #expect(byName["deactivate"]?["unsupported"] != nil, "deactivate must carry its reason")
+        #expect(byName["protect"]?["unsupported"] == nil, "protect must not be marked unsupported")
+    }
+
     /// `os_evacuation_plan` classifies every instance on a hypervisor from the
     /// flavor disk shape + inline volume attachments, and recommends the Nova
     /// action a 2.1-pinned cloud can actually perform. Regression guard: the

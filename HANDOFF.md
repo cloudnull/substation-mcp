@@ -1,6 +1,47 @@
-# Handoff: OpenStack MCP — v0.2.3 (Glance flat-envelope image create/import fix); v0.2.2/v0.2.1 tagged
+# Handoff: OpenStack MCP — v0.2.3 + Glance JSON-Patch follow-up; v0.2.2/v0.2.1 tagged
 
 ## Current State
+
+- **v0.2.3's image PATCH was still broken against live Glance — fixed**
+  (2026-10-29, issue #4 follow-up, verified raw from inside the deployed pod on
+  Genestack 2024.1). The 0.2.3 fix flattened the PATCH body but kept
+  `application/json`, which the fake accepted and Glance does not:
+  `PATCH /v2/images/{id}` **requires** `Content-Type:
+  application/openstack-images-v2.1-json-patch` (v2.0 also accepted) with an
+  **RFC 6902 array** of `{op,path,value}`. Live results: wrong media type → 415;
+  flat attribute map with the right media type → 400; `{"op":…,"path":"/status"}`
+  → `403 Attribute 'status' is read-only`; `add /os_distro` → 200 (custom
+  properties are individual pointer paths, never a nested `properties` object).
+  So `updateImage` now builds one patch document (`replace` for
+  name/visibility/protected/min_ram/tags, `add` per custom property, RFC 6901
+  escaping on the property path) and `tags` rides that document instead of being
+  diff-reconciled through `PUT /images/{id}/tags` — one atomic request, and the
+  tags endpoint stays only for the single-tag `add_tag`/`remove_tag` actions.
+  **`deactivate`/`reactivate` cannot work over PATCH** (403 above); the route
+  that changes status is Glance's admin-only v1-compat `PUT /v2/images/{id}/*`,
+  unimplemented here, so both actions now report `feature_unavailable` with the
+  `glance image-deactivate` workaround. New mechanism:
+  `ActionSpec.unsupported` — `os_describe` shows the reason up front and both
+  dispatch paths (`ToolRegistry` os_action, `NameResolver.actionPublic`) fail
+  with `feature_unavailable` rather than letting a service reject the call
+  confusingly. `GlanceFake` enforces the same contract (415 / 400 / 403), which
+  is what caught this class the first time. Tests: 4 new client-level contract
+  tests (415, flat-body 400, status 403, full patch round-trip incl. tags); the
+  tests that pinned the flat-PATCH shape and a working `deactivate` were
+  **deleted**, not re-pinned. Full suite green (348+296+61+43+34+2).
+
+  **Two more traps found while sweeping the same path.** (1) `addTags` built its
+  `PUT /images/{id}/tags` body by raw interpolation, so a tag containing `"`
+  reached Glance mangled — it now goes through `jsonEscape`, like every other
+  caller-visible string in this module. (2) Ten services guarded the endpoint
+  with their *transport* label while routing with `catalogType`; the two differ
+  for container (`container` vs `container-infra`) and load balancer
+  (`loadbalancer` vs `load-balancer`), so a guard could consult a catalog type no
+  endpoint is ever advertised under. Every `guardEndpoint` call now passes the
+  same identifier as its service's `resolveServiceEndpoint` (Compute has no
+  `catalogType`; its `serviceType` is already the catalog type). Three further
+  tests: tag escaping, `unsupported` in the catalog, `unsupported` surfaced
+  through `os_describe`.
 
 - **v0.2.3: `os_create image` fixed against live Glance v2** (2026-10-29,
   issue #4, reported against Genestack 2026.1). Glance v2 is the **only**
@@ -32,9 +73,10 @@
   enforces the schema (wrapped body → 400 with the live message, nested
   `properties` on POST → 400, non-string custom property → 400, read-only
   attributes refused, flat replies); the hand-rolled substring helpers are
-  deleted. **Trap:** `status` must stay writable on PATCH — that is how
-  deactivate/reactivate work. 12 regression tests added (8 client-level pinning
-  the flat schema in both directions + JSON escaping, 4 through
+  deleted. ~~**Trap:** `status` must stay writable on PATCH — that is how
+  deactivate/reactivate work.~~ **That trap was itself wrong** (see the entry
+  above: live Glance 403s a `status` patch). 12 regression tests added
+  (8 client-level pinning the flat schema in both directions + JSON escaping, 4 through
   `os_create`/`os_update` including the reported repro). Full suite green
   (348+295+63+43+34+2).
 - **Tool-surface defect sweep: 9 reported defects fixed + live-verified**
@@ -709,7 +751,7 @@ change for correct callers.
 | Compute (Nova) | `ComputeService.swift` | `ComputeRegion` | Microversion gating (2.90/2.96), actions, attachments |
 | Network (Neutron) | `NetworkService.swift` | `NetworkRegion` | Extension gating, auto-assign IPs, IP conflict 409 |
 | Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions |
-| Image (Glance) | `ImageService.swift` | `ImageRegion` | **FLAT request/response bodies — Glance is the only service with no `{"<resource>": {…}}` envelope; custom properties are top-level string keys.** `Link: rel=next` pagination, web-download import, base64 upload |
+| Image (Glance) | `ImageService.swift` | `ImageRegion` | **FLAT request/response bodies — Glance is the only service with no `{"<resource>": {…}}` envelope; custom properties are top-level string keys. PATCH is the exception: `Content-Type: application/openstack-images-v2.1-json-patch` + an RFC 6902 array, and `status` is read-only there.** `Link: rel=next` pagination, web-download import, base64 upload |
 | **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator** |
 | **Catalog** | **`Catalog/*.swift`** (9 files) | — | **35 resources, 25 server actions, 7 links, JSONSchema validate(), 37 tests** |
 

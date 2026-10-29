@@ -3124,17 +3124,24 @@ public actor FakeState {
         return img
     }
 
-    public func updateImage(id: String, projectID: String, name: String? = nil, visibility: String? = nil, protected: Bool? = nil, status: String? = nil, minRAM: Int? = nil, properties: [String: String]? = nil) -> FakeImage? {
+    /// Applies one Glance JSON-Patch document's edits to an image the caller
+    /// owns. Custom properties are individual top-level keys on Glance's image
+    /// representation, so a patch sets or clears them one at a time instead of
+    /// swapping the whole map.
+    public func updateImage(
+        id: String, projectID: String,
+        name: String? = nil, visibility: String? = nil, protected: Bool? = nil,
+        minRAM: Int? = nil, tags: [String]? = nil,
+        setProperties: [String: String] = [:], removedProperties: [String] = []
+    ) -> FakeImage? {
         guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
         if let name { images[idx].name = name }
         if let visibility { images[idx].visibility = visibility }
         if let protected { images[idx].protected = protected }
-        if let status { images[idx].status = status }
         if let minRAM { images[idx].minRAM = minRAM }
-        // A PATCH body's `properties` object REPLACES the custom-property map,
-        // as Glance does. Keys colliding with Glance's own attributes are
-        // rejected at the route, so only genuine custom properties arrive here.
-        if let properties { images[idx].properties = properties }
+        if let tags { images[idx].tags = tags }
+        for key in removedProperties { images[idx].properties.removeValue(forKey: key) }
+        for (key, value) in setProperties { images[idx].properties[key] = value }
         images[idx].updated = "2026-01-01T00:00:00.000"
         return images[idx]
     }

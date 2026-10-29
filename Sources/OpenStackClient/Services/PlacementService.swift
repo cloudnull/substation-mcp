@@ -183,7 +183,7 @@ public struct PlacementRegion: Sendable {
 
     private func resolveRegion(_ vt: ValidatedToken) throws -> String {
         let region = defaultRegion ?? cloud.regionName ?? vt.token.catalog.first?.endpoints.first?.region ?? "RegionOne"
-        try guardEndpoint(serviceType: serviceType, region: region, vt: vt)
+        try guardEndpoint(serviceType: catalogType, region: region, vt: vt)
         return region
     }
 }
