@@ -17,7 +17,7 @@ image:
   # Cluster-registry path to the built image (operator builds from deploy/Dockerfile
   # and pushes to their registry before install).
   repository: registry.example.com/openstack/substation-mcp
-  tag: "0.2.5"
+  tag: "0.2.6"
   pullPolicy: IfNotPresent
 
 # Optional imagePullSecrets (name of a k8s Secret in the openstack namespace).

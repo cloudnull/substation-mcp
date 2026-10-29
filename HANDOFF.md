@@ -1,6 +1,29 @@
-# Handoff: OpenStack MCP — v0.2.5 (issue #4 swept against Glance's source); v0.2.4/v0.2.3/v0.2.2/v0.2.1 tagged
+# Handoff: OpenStack MCP — v0.2.6 (live-verified import + tags fixes); v0.2.5/v0.2.4/v0.2.3 tagged
 
 ## Current State
+
+- **Live E2E on Genestack 2024.1 (SAT0) — 0.2.5 verified, 3 more defects found**
+  (2026-10-29). Rolled the cluster to 0.2.5 (helm revision 45, image digest
+  `85056592`, pod `substation-mcp-84fd8fd597-p8rcd`) and drove the real MCP
+  surface with an in-cluster admin token. **Verified working live:** create with
+  every spec field + custom properties (flat body accepted, 201), `os_get`
+  folds Glance's flat reply (`os_distro`/`os_version` round-trip through create,
+  get-by-id, get-by-name), `os_update` removes a property via null, changes
+  another, adds a third, and sets visibility — all confirmed by re-read.
+  **Found broken live, fixed in `a0619ac`:** (1) web-download import sent the
+  flat `{"method":"web-download","uri":…}` body — Glance's `_validate_import_body`
+  does `method['name']` on it and 500s; the real shape is
+  `{"method":{"name":…,"uri":…}}` (live cirros 0.6.2 import: 202 → active,
+  21430272 bytes, checksum `c8fc8077`). (2) `addTags` PUT
+  `{"tags":[…]}` to `/images/{id}/tags` — that collection route does not exist
+  (Glance's tags routes are per-member `PUT/DELETE /tags/{tag}` with
+  `body_reject=True`); create-with-tags and the `add_tag` action 404'd. Tags now
+  ride a `replace /tags` op on the json-patch PATCH. (3) A failed web-download
+  leaves the image **`queued` forever** live (records
+  `os_glance_failed_import`), never `killed` — the fake killed it, so the
+  failure path tested a state Glance never reaches; the poll timeout now maps
+  to `importFailed` with the recorded reason, and the poll is 120s (a failed
+  import cannot self-heal). Full suite green (350+306+61+43+34+2).
 
 - **Issue #4 swept against Glance's own source — six more defects, all closed**
   (2026-10-29). The two shipped fixes were checked line-by-line against
