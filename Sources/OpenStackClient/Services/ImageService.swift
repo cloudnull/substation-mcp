@@ -186,7 +186,7 @@ public struct ImageRegion: Sendable {
 
     /// One RFC 6902 operation. `value` is raw JSON, so integers, booleans and
     /// arrays are carried unquoted instead of being stringified.
-    private static func patchOp(_ op: String, _ path: String, _ value: String) -> String {
+    static func patchOp(_ op: String, _ path: String, _ value: String) -> String {
         "{\"op\":\"\(op)\",\"path\":\"\(path)\",\"value\":\(value)}"
     }
 
@@ -216,11 +216,22 @@ public struct ImageRegion: Sendable {
 
     // MARK: - Tags
 
+    /// Tags are replaced through the PATCH document, NOT the dedicated tags
+    /// route. Glance's real tags routes are per-member —
+    /// `PUT/DELETE /v2/images/{id}/tags/{tag_value}` with `body_reject=True`
+    /// (live-verified on Genestack 2024.1: `PUT /v2/images/{id}/tags` with a
+    /// `{"tags": [...]}` body is a 404, and Glance's own source registers only
+    /// the member route). A `replace` of `/tags` is the one atomic whole-set
+    /// write, and it shares the media type every other image mutation uses.
     public func addTags(_ vt: ValidatedToken, id: String, tags: [String]) async throws {
         let region = try resolveRegion(vt)
-        let joined = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
-        let body = "{\"tags\":[\(joined)]}"
-        let result = try await req(vt, region, method: "PUT", path: "\(basePath)/images/\(id)/tags", body: body.data(using: .utf8))
+        let list = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
+        let ops = [Self.patchOp("replace", "/tags", "[\(list)]")]
+        let result = try await req(
+            vt, region, method: "PATCH", path: "\(basePath)/images/\(id)",
+            body: "[\(ops.joined(separator: ","))]".data(using: .utf8),
+            extraHeaders: [("Content-Type", Self.patchMediaType)]
+        )
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
@@ -257,11 +268,18 @@ public struct ImageRegion: Sendable {
     /// Import an image via the web-download mechanism. The fake fetches from
     /// the given URI (which can point at its own static file route).
     ///
-    /// `POST /v2/images/{id}/import` takes a FLAT `{"method": …, "uri": …}` body;
-    /// the `{"import": {...}}` wrapper is not part of the Glance schema.
+    /// Glance's body is `{"method": {"name": …, "uri": …}}` — the method is an
+    /// OBJECT and `uri` lives INSIDE it. Live-verified on Genestack 2024.1: the
+    /// flat `{"method": "web-download", "uri": …}` form crashes Glance's
+    /// `_validate_import_body` (`method['name']` on a String) with a **500**,
+    /// and `{"method": {"name": …}}` with the uri omitted 400s "URI for
+    /// web-download does not pass filtering: None". The fake accepted the flat
+    /// form, which is how this shipped broken: the create path advertised
+    /// `import`, the whole suite was green, and every real import died with an
+    /// opaque HTTP 500.
     public func importImage(_ vt: ValidatedToken, id: String, mechanism: String, uri: String) async throws {
         let region = try resolveRegion(vt)
-        let body = "{\"method\":\"\(jsonEscape(mechanism))\",\"uri\":\"\(jsonEscape(uri))\"}"
+        let body = "{\"method\":{\"name\":\"\(jsonEscape(mechanism))\",\"uri\":\"\(jsonEscape(uri))\"}}"
         let result = try await req(vt, region, method: "POST", path: "\(basePath)/images/\(id)/import", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)

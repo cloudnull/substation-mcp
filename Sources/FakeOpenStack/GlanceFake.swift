@@ -179,22 +179,28 @@ public struct GlanceFake {
 
         // MARK: - Tags
 
-        router.put("\(base)/images/:id/tags") { req, ctx in
+        // Glance's tags routes are PER MEMBER, registered in
+        // glance/api/v2/router.py as `/images/{image_id}/tags/{tag_value}`
+        // with `body_reject=True` (live-verified on Genestack 2024.1:
+        // `PUT /v2/images/{id}/tags` — the collection — is a 404, and a body on
+        // the member route is rejected). There is NO whole-collection PUT.
+        router.put("\(base)/images/:id/tags/:tag") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.textError(status: .unauthorized, message: "401 Unauthorized")
             }
             let id = ctx.parameters.get("id") ?? ""
+            let tag = ctx.parameters.get("tag") ?? ""
+            // body_reject=True: Glance's resource is built with
+            // JSONDeserializer(deserialize_from=None), so ANY body 400s.
             let body = try await Self.readBody(req)
-            guard let tags = Self.stringArrayField("tags", in: body) else {
-                return Self.glanceError(status: .badRequest,
-                                        message: "400 Bad Request: Provided object does not match schema 'tags'")
+            guard body.isEmpty else {
+                return Self.textError(status: .badRequest, message: "400 Bad Request")
             }
-            guard let img = await state.addTags(id: id, projectID: token.projectID, tags: tags) else {
+            guard await state.addTag(id: id, projectID: token.projectID, tag: tag) != nil else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
-            // Glance returns the updated image, unwrapped.
-            return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
+            return Response(status: .noContent)
         }
 
         router.delete("\(base)/images/:id/tags/:tag") { req, ctx in
@@ -204,6 +210,8 @@ public struct GlanceFake {
             }
             let id = ctx.parameters.get("id") ?? ""
             let tag = ctx.parameters.get("tag") ?? ""
+            // Glance 404s removing a tag the image does not carry (live 204 for
+            // a present tag, 404 for an absent one).
             guard await state.removeTag(id: id, projectID: token.projectID, tag: tag) != nil else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
@@ -219,36 +227,45 @@ public struct GlanceFake {
             }
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
-            // POST /images/{id}/import takes a FLAT {"method","uri"} body; the
-            // `{"import": {...}}` wrapper is not in the Glance schema.
+            // Glance's body is {"method": {"name": …, "uri": …}}: `method` is an
+            // OBJECT and `uri` lives inside it. Live-verified on Genestack
+            // 2024.1 — the flat {"method":"web-download","uri":…} form crashes
+            // _validate_import_body with a 500, and a method object without uri
+            // 400s "URI for web-download does not pass filtering: None". The
+            // fake previously accepted the flat form, which is how the wrong
+            // client body escaped the suite.
             guard let importBody = Self.parseObject(body),
-                  Self.stringField("import", in: body) == nil,
                   importBody["import"] == nil else {
                 return Self.textError(status: .badRequest, message: "400 Bad Request")
             }
-            let method = importBody["method"] as? String ?? ""
-            let uri = importBody["uri"] as? String ?? ""
+            guard let methodObj = importBody["method"] as? [String: Any] else {
+                // Glance reads method['name'] on a String with a TypeError (500);
+                // the fake refuses the flat form with the message a correct
+                // shape error deserves, and pins the shape.
+                return Self.textError(status: .badRequest,
+                                      message: "400 Bad Request: 'method' must be an object {\"name\": …, \"uri\": …}")
+            }
+            let method = methodObj["name"] as? String ?? ""
+            let uri = methodObj["uri"] as? String ?? ""
             guard method == "web-download" else {
                 return Self.textError(status: .badRequest, message: "400 Bad Request")
             }
 
-            // Fetch the URI. The fake's own base host is registered in state.
-            let baseHost = await state.baseHost
-            _ = baseHost
+            // A failed web-download leaves the image `queued` (live-verified:
+            // Glance records the failure, never moves it to `killed`).
             guard !uri.isEmpty else {
-                _ = await state.setImportResult(id: id, projectID: token.projectID, active: false, size: 0, statusReason: "import URI is empty")
+                _ = await state.setImportFailure(id: id, projectID: token.projectID,
+                                                 reason: "Import request requires a 'uri' field.")
                 return Self.textError(status: .badRequest, message: "400 Bad Request")
             }
-
-            // Determine if the URI is reachable: it must be one of the fake's
-            // static routes. We test by checking the path against known routes.
             let path = URL(string: uri)?.path ?? ""
             if path == "/static/image.qcow2" {
                 let size = "FAKEQCOW2PAYLOAD-0123456789".utf8.count
-                _ = await state.setImportResult(id: id, projectID: token.projectID, active: true, size: size, statusReason: nil)
+                _ = await state.setImportActive(id: id, projectID: token.projectID, size: size)
                 return Response(status: .accepted)
             } else {
-                _ = await state.setImportResult(id: id, projectID: token.projectID, active: false, size: 0, statusReason: "import source not found: \(path)")
+                _ = await state.setImportFailure(id: id, projectID: token.projectID,
+                                                 reason: "Unable to retrieve image data from represented URL: \(uri)")
                 return Response(status: .accepted)
             }
         }

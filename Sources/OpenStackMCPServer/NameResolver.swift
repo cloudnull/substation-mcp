@@ -1698,8 +1698,9 @@ public actor NameResolver {
                     tags: tags, properties: properties
                 )
                 var img = try await r.createImage(vt, spec)
-                // Tags are not part of the create schema; Glance sets them via
-                // PUT /images/{id}/tags.
+                // Tags are not part of the create schema; addTags replaces them
+                // through the PATCH document (Glance has no whole-collection
+                // tags PUT — see ImageService.addTags).
                 if !tags.isEmpty {
                     try await r.addTags(vt, id: img.id, tags: tags)
                 }
@@ -2806,16 +2807,33 @@ public actor NameResolver {
                 message: "Unknown import.method '\(method)'. Supported: web-download."
             )
         }
-        // Poll to a terminal state. `killed` is a fault state, so the waiter
-        // returns promptly instead of spinning to the 300s timeout; the image is
-        // then re-read so the caller sees the real attributes (size,
-        // status_reason) rather than the pre-import shell.
+        // Poll to a terminal state, then re-read so the caller sees the real
+        // attributes (size, status_reason) rather than the pre-import shell.
+        //
+        // Live-verified on Genestack 2024.1: a FAILED web-download does NOT move
+        // the image to `killed` — Glance records the failure and the image stays
+        // `queued` forever. So the waiter's timeout is the failure signal, and
+        // it must be reported as `importFailed` (with the image's own state),
+        // not leaked as an opaque `timeout`. `killed` remains handled for the
+        // store-verification path, which does use it.
         let waiter = Waiter(client: client, catalog: catalog)
-        _ = try await waiter.wait(
-            vt, resource: "image", id: image.id, region: region,
-            until: ["active", "killed"], timeout: 300
-        )
-        let settled = try await r.getImage(vt, id: image.id)
+        let settled: Image
+        do {
+            _ = try await waiter.wait(
+                vt, resource: "image", id: image.id, region: region,
+                until: ["active", "killed"], timeout: 120
+            )
+            settled = try await r.getImage(vt, id: image.id)
+        } catch let error as OpenStackError where error.code == "timeout" {
+            let stuck = try? await r.getImage(vt, id: image.id)
+            let why = stuck?.statusReason ?? "the image never left status \(stuck?.status ?? "queued")"
+            throw OpenStackError(
+                service: "image", status: 400, code: "importFailed",
+                message: "Image \(image.id) import did not complete within 120s: \(why). Glance leaves a failed web-download `queued` rather than faulting it.",
+                requestID: nil, retriable: false,
+                hint: "Check that import.uri is reachable FROM THE CLOUD, not from this client, and serves the image bytes directly."
+            )
+        }
         if settled.status == "killed" {
             throw OpenStackError(
                 service: "image", status: 400, code: "importFailed",

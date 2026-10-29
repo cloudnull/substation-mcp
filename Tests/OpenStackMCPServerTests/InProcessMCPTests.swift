@@ -1828,7 +1828,7 @@ struct InProcessMCPTests {
         #expect((img?["size"] as? Int ?? 0) > 0, "the image carries no payload")
     }
 
-    @Test("os_create image import failure surfaces Glance's status_reason")
+    @Test("os_create image import failure surfaces Glance's status_reason", .timeLimit(.minutes(4)))
     func createImageImportFailureReportsReason() async throws {
         let handle = try await FakeApp.start()
         defer { handle.stop() }
@@ -1845,11 +1845,15 @@ struct InProcessMCPTests {
                 "import": .object(["method": .string("web-download"), "uri": .string(badURL)]),
             ]),
         ])
-        // A killed image is NOT a success: an empty image is worse than an error,
-        // because the caller believes it can boot from it.
+        // A failed import is NOT a success: an empty `queued` shell is worse
+        // than an error, because the caller believes it can boot from it. Live
+        // Glance leaves the image `queued` (never `killed`), so the failure
+        // surfaces through our poll timeout, and the image's recorded reason
+        // must reach the caller.
         #expect(created.isError == true, "a failed import must not report success: \(firstText(created.content) ?? "nil")")
         let text = firstText(created.content) ?? ""
-        #expect(text.contains("not found"), "the Glance status_reason must reach the caller, got: \(text)")
+        #expect(text.contains("importFailed") && text.contains("Unable to retrieve"),
+                "the import failure and Glance's reason must reach the caller, got: \(text)")
     }
 
     @Test("os_create image rejects an unsupported import method instead of silently skipping it")

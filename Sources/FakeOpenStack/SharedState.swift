@@ -3159,16 +3159,41 @@ public actor FakeState {
         return images[idx]
     }
 
-    public func setImportResult(id: String, projectID: String, active: Bool, size: Int, statusReason: String?) -> FakeImage? {
+    /// A successful web-download import: the payload landed, the image is
+    /// `active` with its real size.
+    public func setImportActive(id: String, projectID: String, size: Int) -> FakeImage? {
         guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
-        if active {
-            images[idx].status = "active"
-            images[idx].size = size
-            images[idx].statusReason = nil
-        } else {
-            images[idx].status = "killed"
-            images[idx].statusReason = statusReason ?? "import failed"
-        }
+        images[idx].status = "active"
+        images[idx].size = size
+        images[idx].statusReason = nil
+        return images[idx]
+    }
+
+    /// A FAILED web-download import. Live-verified on Genestack 2024.1: Glance
+    /// records the failure and leaves the image `queued` — it does NOT move it
+    /// to `killed`. `killed` is reserved for a data payload that fails the
+    /// store-verification step after upload, not for a web-download fetch error.
+    public func setImportFailure(id: String, projectID: String, reason: String) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        images[idx].statusReason = reason
+        return images[idx]
+    }
+
+    /// Per-member tag add, mirroring `PUT /v2/images/{id}/tags/{tag}`.
+    /// Glance adds to the set (idempotent) and answers 204 with no body.
+    public func addTag(id: String, projectID: String, tag: String) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        if !images[idx].tags.contains(tag) { images[idx].tags.append(tag) }
+        return images[idx]
+    }
+
+    /// Per-member tag remove. Glance 404s when the tag is absent (live:
+    /// 204 for a present tag, 404 for an absent one), so absence must be
+    /// distinguishable from a successful removal.
+    public func removeTag(id: String, projectID: String, tag: String) -> FakeImage? {
+        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
+        guard images[idx].tags.contains(tag) else { return nil }
+        images[idx].tags.removeAll { $0 == tag }
         return images[idx]
     }
 
@@ -3179,17 +3204,6 @@ public actor FakeState {
         return true
     }
 
-    public func addTags(id: String, projectID: String, tags: [String]) -> FakeImage? {
-        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
-        images[idx].tags = Array(Set(images[idx].tags + tags))
-        return images[idx]
-    }
-
-    public func removeTag(id: String, projectID: String, tag: String) -> FakeImage? {
-        guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
-        images[idx].tags.removeAll { $0 == tag }
-        return images[idx]
-    }
 
     // MARK: - Swift (object storage) CRUD
 

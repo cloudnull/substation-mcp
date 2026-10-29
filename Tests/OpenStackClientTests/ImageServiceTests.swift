@@ -113,8 +113,8 @@ struct ImageServiceTests {
         #expect(active.size == payload.count)
     }
 
-    @Test("failed web-download import sets image to killed", .timeLimit(.minutes(2)))
-    func failedImportKillsImage() async throws {
+    @Test("a failed web-download import leaves the image queued, not killed", .timeLimit(.minutes(2)))
+    func failedImportLeavesImageQueued() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
 
@@ -131,9 +131,11 @@ struct ImageServiceTests {
         let badURL = handle.url.appendingPathComponent("static/nonexistent.qcow2")
         try await region.importImage(vt, id: img.id, mechanism: "web-download", uri: badURL.absoluteString)
 
-        let killed = try await region.getImage(vt, id: img.id)
-        #expect(killed.status == "killed")
-        #expect(killed.statusReason?.contains("not found") == true)
+        // Live-verified on Genestack 2024.1: a failed web-download records the
+        // failure and leaves the image `queued` — it never becomes `killed`.
+        let stuck = try await region.getImage(vt, id: img.id)
+        #expect(stuck.status == "queued")
+        #expect(stuck.statusReason?.contains("Unable to retrieve") == true)
     }
 
     @Test("get image by id", .timeLimit(.minutes(2)))
@@ -666,8 +668,8 @@ struct ImageServiceTests {
         #expect(img.properties["note.key"] == "a\"b")
     }
 
-    @Test("import sends a FLAT {method,uri} body", .timeLimit(.minutes(2)))
-    func importUsesFlatBody() async throws {
+    @Test("import sends the {method:{name,uri}} body Glance actually parses", .timeLimit(.minutes(2)))
+    func importUsesMethodObjectBody() async throws {
         let (handle, vt, images, _, _, transport) = try await makeSetup()
         defer { handle.stop(); transport.syncShutdown() }
         let region = images.region("RegionOne")
@@ -678,7 +680,15 @@ struct ImageServiceTests {
         let active = try await region.getImage(vt, id: img.id)
         #expect(active.status == "active")
 
-        // A wrapped import body must not be honoured.
+        // The FLAT {"method":"web-download","uri":…} form must be rejected: it
+        // is what we shipped, and live Glance crashes on it with a 500
+        // (_validate_import_body does method['name'] on a String). The fake now
+        // refuses it so the wrong client body can never pass the suite again.
+        let flat = try await rawGlance(handle, tokenID: vt.token.id, method: "POST", path: "glance/v2/images/\(img.id)/import",
+                                       body: #"{"method":"web-download","uri":"\#(importURL.absoluteString)"}"#)
+        #expect(flat.status == 400, "a flat method string must be rejected, got \(flat.status): \(flat.body)")
+
+        // A wrapped import body must not be honoured either.
         let rejected = try await rawGlance(handle, tokenID: vt.token.id, method: "POST", path: "glance/v2/images/\(img.id)/import",
                                            body: #"{"import":{"method":"web-download","uri":"\#(importURL.absoluteString)"}}"#)
         #expect(rejected.status == 400, "A wrapped import body must be rejected, got \(rejected.status): \(rejected.body)")
