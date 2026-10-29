@@ -6,8 +6,8 @@ description: |
   into the `openstack` namespace. Mirrors the Genestack add-on pattern
   (barbican-exporter reference).
 type: application
-version: 0.2.2
-appVersion: "0.2.2"
+version: 0.2.3
+appVersion: "0.2.3"
 keywords:
   - openstack
   - mcp

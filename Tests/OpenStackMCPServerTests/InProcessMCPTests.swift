@@ -1732,4 +1732,165 @@ struct InProcessMCPTests {
         ])
         #expect(deleted.isError != true, "delete cfn_stack failed: \(firstText(deleted.content) ?? "")")
     }
+
+    // MARK: - Issue #4: os_create image against a schema-strict Glance
+    //
+    // The live report: "download the CirrOS 0.6.2 image" produced a 400 from
+    // Glance because the create body was wrapped, and the spec fields the model
+    // sent were dropped even when the call would have succeeded. These go through
+    // os_create itself, because the client-level tests cannot see the field
+    // plumbing or the import step.
+
+    @Test("os_create image carries the spec fields through to Glance")
+    func createImageCarriesSpecFields() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object([
+                "name": .string("cirros-0.6.2-x86_64"),
+                "disk_format": .string("qcow2"),
+                "container_format": .string("bare"),
+                "visibility": .string("community"),
+                "min_ram": .int(256),
+                "properties": .object(["os_distro": .string("cirros")]),
+                "tags": .array([.string("mcp-test")]),
+            ]),
+        ])
+        #expect(created.isError != true, "os_create image failed: \(firstText(created.content) ?? "nil")")
+        let data = try parseResult(created)
+        let img = data["data"] as? [String: Any]
+        #expect(img?["disk_format"] as? String == "qcow2", "disk_format was dropped: \(String(describing: data))")
+        #expect(img?["container_format"] as? String == "bare")
+        #expect(img?["visibility"] as? String == "community", "visibility was dropped")
+        #expect(img?["min_ram"] as? Int == 256, "min_ram was dropped")
+        let props = img?["properties"] as? [String: Any]
+        #expect(props?["os_distro"] as? String == "cirros", "custom properties were dropped")
+        // Tags are set through the tags endpoint after create.
+        let got = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("image"),
+            "id_or_name": .string((img?["id"] as? String) ?? ""),
+        ])
+        #expect((firstText(got.content) ?? "").contains("mcp-test"), "tags were never applied")
+    }
+
+    @Test("os_create image with a web-download import returns an active image")
+    func createImageWithWebDownloadImport() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let importURL = handle.url.appendingPathComponent("static/image.qcow2").absoluteString
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object([
+                "name": .string("cirros-imported"),
+                "disk_format": .string("qcow2"),
+                "container_format": .string("bare"),
+                "import": .object(["method": .string("web-download"), "uri": .string(importURL)]),
+            ]),
+        ])
+        #expect(created.isError != true, "create+import failed: \(firstText(created.content) ?? "nil")")
+        let img = try parseResult(created)["data"] as? [String: Any]
+        // The whole point of wiring the import: the caller gets a usable image,
+        // not a `queued` shell that cannot boot.
+        #expect(img?["status"] as? String == "active", "import was never performed: \(String(describing: img))")
+        #expect((img?["size"] as? Int ?? 0) > 0, "the image carries no payload")
+    }
+
+    @Test("os_create image import failure surfaces Glance's status_reason")
+    func createImageImportFailureReportsReason() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let badURL = handle.url.appendingPathComponent("static/nope.qcow2").absoluteString
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object([
+                "name": .string("cirros-bad-import"),
+                "disk_format": .string("qcow2"),
+                "container_format": .string("bare"),
+                "import": .object(["method": .string("web-download"), "uri": .string(badURL)]),
+            ]),
+        ])
+        // A killed image is NOT a success: an empty image is worse than an error,
+        // because the caller believes it can boot from it.
+        #expect(created.isError == true, "a failed import must not report success: \(firstText(created.content) ?? "nil")")
+        let text = firstText(created.content) ?? ""
+        #expect(text.contains("not found"), "the Glance status_reason must reach the caller, got: \(text)")
+    }
+
+    @Test("os_create image rejects an unsupported import method instead of silently skipping it")
+    func createImageRejectsUnsupportedImportMethod() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object([
+                "name": .string("direct-import"),
+                "disk_format": .string("qcow2"),
+                "container_format": .string("bare"),
+                "import": .object(["method": .string("direct")]),
+            ]),
+        ])
+        #expect(created.isError == true, "an unimplemented import method must fail loudly: \(firstText(created.content) ?? "nil")")
+        #expect((firstText(created.content) ?? "").contains("direct"))
+    }
+
+    @Test("os_update image applies visibility, protection, min_ram and properties")
+    func updateImageAppliesAllFields() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object(["name": .string("updatable-img"), "disk_format": .string("raw"), "container_format": .string("bare")]),
+        ])
+        #expect(created.isError != true, "create failed: \(firstText(created.content) ?? "nil")")
+        let img = try parseResult(created)["data"] as? [String: Any]
+        let id = (img?["id"] as? String) ?? ""
+
+        let updated = try await bundle.mcpClient.callTool(name: "os_update", arguments: [
+            "resource": .string("image"),
+            "id_or_name": .string(id),
+            "patch": .object([
+                "visibility": .string("public"),
+                "protected": .bool(true),
+                "min_ram": .int(1024),
+                "properties": .object(["os_version": .string("0.6.2")]),
+                "tags": .array([.string("prod")]),
+            ]),
+        ])
+        #expect(updated.isError != true, "os_update image failed: \(firstText(updated.content) ?? "nil")")
+        let text = firstText(updated.content) ?? ""
+        #expect(text.contains("public"), "visibility change was ignored: \(text)")
+        #expect(text.contains("1024"), "min_ram change was ignored: \(text)")
+        #expect(text.contains("0.6.2"), "properties change was ignored: \(text)")
+
+        // Assert on the parsed payload: the serialised spacing is not the contract.
+        let got = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
+            "resource": .string("image"),
+            "id_or_name": .string(id),
+        ])
+        #expect(got.isError != true, "os_get after update failed: \(firstText(got.content) ?? "nil")")
+        let stored = try parseResult(got)["data"] as? [String: Any]
+        #expect(stored?["visibility"] as? String == "public", "visibility not persisted: \(String(describing: stored))")
+        #expect(stored?["protected"] as? Bool == true, "protected not persisted: \(String(describing: stored))")
+        #expect(stored?["min_ram"] as? Int == 1024, "min_ram not persisted: \(String(describing: stored))")
+        #expect((stored?["properties"] as? [String: Any])?["os_version"] as? String == "0.6.2",
+                "properties not persisted: \(String(describing: stored))")
+        #expect((stored?["tags"] as? [String] ?? []).contains("prod"),
+                "tags not persisted: \(String(describing: stored))")
+    }
 }

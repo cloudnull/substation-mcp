@@ -295,4 +295,170 @@ struct ImageServiceTests {
         let fetched = try await region.getImage(vt, id: "img-1")
         #expect(fetched.name == "renamed-glance")
     }
+
+    // MARK: - Issue #4: Glance's flat request/response schema
+    //
+    // Glance v2 is the only service here with FLAT bodies: Nova and Cinder wrap in
+    // {"server": …}/{"volume": …}, Glance takes attributes at the top level and
+    // carries custom properties as top-level string keys (its schema's
+    // additionalProperties is {"type": "string"}). A wrapped body is therefore a
+    // hard 400, and a wrapped REPLY cannot be decoded. These tests pin both
+    // directions plus the attribute round-trip, because the fake previously
+    // accepted either envelope and could not see the difference.
+
+    /// Raw request to the fake Glance, bypassing the client. The transport
+    /// normalises a non-2xx into a thrown error, so asserting on a *rejection*
+    /// needs the status code and body directly.
+    private func rawGlance(_ handle: FakeHandle, tokenID: String, method: String, path: String, body: String) async throws -> (status: Int, body: String) {
+        var req = URLRequest(url: handle.url.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue(tokenID, forHTTPHeaderField: "X-Auth-Token")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data(body.utf8)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        return (status, String(decoding: data, as: UTF8.self))
+    }
+
+    @Test("create sends a FLAT body and decodes a FLAT reply", .timeLimit(.minutes(2)))
+    func createUsesFlatSchema() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // The client's own create must be accepted by a schema-strict Glance and
+        // must round-trip the non-default attributes, not just the name.
+        let spec = CreateImageSpec(
+            name: "cirros-0.6.2", diskFormat: "qcow2", containerFormat: "bare",
+            visibility: "shared", minRAM: 256, properties: ["os_distro": "cirros"]
+        )
+        let img = try await images.region("RegionOne").createImage(vt, spec)
+        #expect(img.diskFormat == "qcow2")
+        #expect(img.containerFormat == "bare")
+        #expect(img.visibility == "shared")
+        #expect(img.minRAM == 256)
+        #expect(img.properties["os_distro"] == "cirros")
+    }
+
+    @Test("a wrapped create body is rejected, exactly like live Glance", .timeLimit(.minutes(2)))
+    func wrappedCreateBodyRejected() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let tokenID = vt.token.id
+
+        let wrapped = try await rawGlance(handle, tokenID: tokenID, method: "POST", path: "glance/v2/images",
+                                          body: #"{"image":{"name":"wrapped","disk_format":"raw","container_format":"bare"}}"#)
+        #expect(wrapped.status == 400, "A {\"image\": {...}} body must be a 400, got \(wrapped.status): \(wrapped.body)")
+        #expect(wrapped.body.contains("is not of type 'string'"),
+                "The rejection must be the schema error live Glance produces, got: \(wrapped.body)")
+
+        // The same body, flat, is accepted — proving the 400 came from the
+        // envelope and not from the attributes.
+        let flat = try await rawGlance(handle, tokenID: tokenID, method: "POST", path: "glance/v2/images",
+                                       body: #"{"name":"flat","disk_format":"qcow2","container_format":"bare"}"#)
+        #expect(flat.status == 201, "A flat create body must be accepted: \(flat.status) \(flat.body)")
+        // And the reply is the bare image object: no "image" key to unwrap.
+        let decoded = try JSONSerialization.jsonObject(with: Data(flat.body.utf8)) as? [String: Any]
+        #expect(decoded?["image"] == nil, "Glance replies with the image unwrapped")
+        #expect(decoded?["id"] != nil)
+    }
+
+    @Test("custom properties travel as top-level string keys on create", .timeLimit(.minutes(2)))
+    func customPropertiesAreTopLevelStrings() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let tokenID = vt.token.id
+
+        // Nesting them under `properties` is illegal on POST /images: `properties`
+        // would itself be a non-string custom property.
+        let nested = try await rawGlance(handle, tokenID: tokenID, method: "POST", path: "glance/v2/images",
+                                         body: #"{"name":"nested","disk_format":"raw","container_format":"bare","properties":{"os_distro":"cirros"}}"#)
+        #expect(nested.status == 400, "A nested properties object must be rejected on create, got \(nested.status): \(nested.body)")
+
+        let flat = try await rawGlance(handle, tokenID: tokenID, method: "POST", path: "glance/v2/images",
+                                       body: #"{"name":"flatprops","disk_format":"raw","container_format":"bare","os_distro":"cirros"}"#)
+        #expect(flat.status == 201, "A top-level custom property must be accepted: \(flat.status) \(flat.body)")
+        let decoded = try JSONSerialization.jsonObject(with: Data(flat.body.utf8)) as? [String: Any]
+        let props = decoded?["properties"] as? [String: Any]
+        #expect(props?["os_distro"] as? String == "cirros")
+    }
+
+    @Test("a non-string custom property is rejected", .timeLimit(.minutes(2)))
+    func nonStringCustomPropertyRejected() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let bad = try await rawGlance(handle, tokenID: vt.token.id, method: "POST", path: "glance/v2/images",
+                                      body: #"{"name":"badprop","disk_format":"raw","container_format":"bare","os_distro":{"nested":"object"}}"#)
+        #expect(bad.status == 400, "additionalProperties is string-typed; an object value must fail: \(bad.status) \(bad.body)")
+    }
+
+    @Test("update sends a FLAT PATCH body and decodes a FLAT reply", .timeLimit(.minutes(2)))
+    func updateUsesFlatSchema() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(vt, CreateImageSpec(name: "patch-me", diskFormat: "raw", containerFormat: "bare"))
+
+        // Every advertised attribute must reach Glance through one PATCH and come
+        // back in the (unwrapped) reply.
+        let updated = try await region.updateImage(
+            vt, id: img.id, name: "patched", visibility: "public",
+            protected: true, properties: ["os_distro": "fedora"], minRAM: 512
+        )
+        #expect(updated.name == "patched")
+        #expect(updated.visibility == "public")
+        #expect(updated.protected == true)
+        #expect(updated.minRAM == 512)
+        #expect(updated.properties["os_distro"] == "fedora")
+
+        let fetched = try await region.getImage(vt, id: img.id)
+        #expect(fetched.visibility == "public")
+        #expect(fetched.minRAM == 512)
+        #expect(fetched.properties["os_distro"] == "fedora")
+    }
+
+    @Test("a wrapped PATCH body is rejected", .timeLimit(.minutes(2)))
+    func wrappedPatchBodyRejected() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+                                           body: #"{"image":{"name":"wrapped-patch"}}"#)
+        #expect(rejected.status == 400, "A wrapped PATCH must be a 400, got \(rejected.status): \(rejected.body)")
+        // The image must be untouched: a wrapped PATCH may not silently rename it.
+        let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
+        #expect(fetched.name != "wrapped-patch")
+    }
+
+    @Test("an image name containing quotes and backslashes creates successfully", .timeLimit(.minutes(2)))
+    func escapingInImageName() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let tricky = "he said \"hi\" \\ back\nnewline"
+        let img = try await images.region("RegionOne").createImage(
+            vt, CreateImageSpec(name: tricky, diskFormat: "raw", containerFormat: "bare",
+                                properties: ["note.key": "a\"b"])
+        )
+        #expect(img.name == tricky, "An unescaped name would corrupt the body; got \(img.name.debugDescription)")
+        #expect(img.properties["note.key"] == "a\"b")
+    }
+
+    @Test("import sends a FLAT {method,uri} body", .timeLimit(.minutes(2)))
+    func importUsesFlatBody() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(vt, CreateImageSpec(name: "import-flat", diskFormat: "qcow2", containerFormat: "bare"))
+
+        let importURL = handle.url.appendingPathComponent("static/image.qcow2")
+        try await region.importImage(vt, id: img.id, mechanism: "web-download", uri: importURL.absoluteString)
+        let active = try await region.getImage(vt, id: img.id)
+        #expect(active.status == "active")
+
+        // A wrapped import body must not be honoured.
+        let rejected = try await rawGlance(handle, tokenID: vt.token.id, method: "POST", path: "glance/v2/images/\(img.id)/import",
+                                           body: #"{"import":{"method":"web-download","uri":"\#(importURL.absoluteString)"}}"#)
+        #expect(rejected.status == 400, "A wrapped import body must be rejected, got \(rejected.status): \(rejected.body)")
+    }
 }

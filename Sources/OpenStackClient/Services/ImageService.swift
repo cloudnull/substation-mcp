@@ -110,9 +110,11 @@ public struct ImageRegion: Sendable {
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
-        await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
-        struct Resp: Decodable { let image: Image }
-        return try JSONDecoder().decode(Resp.self, from: result.body).image
+        // Glance v2 replies with the image object UNWRAPPED, exactly like
+        // GET /images/{id}. Decoding `{image: Image}` here throws keyNotFound
+        // *after* the image was created, so the caller sees a decode failure
+        // for work that actually succeeded.
+        return try JSONDecoder().decode(Image.self, from: result.body)
     }
 
     public func updateImage(
@@ -122,19 +124,27 @@ public struct ImageRegion: Sendable {
         visibility: String? = nil,
         protected: Bool? = nil,
         properties: [String: String]? = nil,
+        minRAM: Int? = nil,
         status: String? = nil
     ) async throws -> Image {
         let region = try resolveRegion(vt)
+        // Glance v2 PATCH bodies are a flat JSON-Patch-style attribute map, NOT
+        // the `{"image": {...}}` envelope: `properties` is likewise a top-level
+        // map of custom properties, and only the keys actually present are sent
+        // (a null would clear an attribute the caller never mentioned).
         var parts: [String] = []
-        if let name { parts.append("\"name\":\"\(name)\"") }
-        if let visibility { parts.append("\"visibility\":\"\(visibility)\"") }
+        if let name { parts.append("\"name\":\"\(jsonEscape(name))\"") }
+        if let visibility { parts.append("\"visibility\":\"\(jsonEscape(visibility))\"") }
         if let protected { parts.append("\"protected\":\(protected ? "true" : "false")") }
+        if let minRAM { parts.append("\"min_ram\":\(minRAM)") }
         if let properties {
-            let props = properties.map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
+            let props = properties.sorted { $0.key < $1.key }
+                .map { "\"\(jsonEscape($0.key))\":\"\(jsonEscape($0.value))\"" }
+                .joined(separator: ",")
             parts.append("\"properties\":{\(props)}")
         }
-        if let status { parts.append("\"status\":\"\(status)\"") }
-        let body = "{\"image\":{\(parts.joined(separator: ","))}}"
+        if let status { parts.append("\"status\":\"\(jsonEscape(status))\"") }
+        let body = "{\(parts.joined(separator: ","))}"
 
         // Live Glance on regionone accepts application/json for PATCH.
         // (Some Glance installations require application/openstack-images;version=2,
@@ -145,8 +155,7 @@ public struct ImageRegion: Sendable {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)
         }
         await cache.invalidate(resource: "image", tokenID: vt.token.id, region: region)
-        struct Resp: Decodable { let image: Image }
-        return try JSONDecoder().decode(Resp.self, from: result.body).image
+        return try JSONDecoder().decode(Image.self, from: result.body)
     }
 
     public func deleteImage(_ vt: ValidatedToken, id: String) async throws {
@@ -210,9 +219,12 @@ public struct ImageRegion: Sendable {
 
     /// Import an image via the web-download mechanism. The fake fetches from
     /// the given URI (which can point at its own static file route).
+    ///
+    /// `POST /v2/images/{id}/import` takes a FLAT `{"method": …, "uri": …}` body;
+    /// the `{"import": {...}}` wrapper is not part of the Glance schema.
     public func importImage(_ vt: ValidatedToken, id: String, mechanism: String, uri: String) async throws {
         let region = try resolveRegion(vt)
-        let body = "{\"import\":\(mechanism == "web-download" ? "{\"method\":\"web-download\",\"uri\":\"\(uri)\"}" : "{}}")}"
+        let body = "{\"method\":\"\(jsonEscape(mechanism))\",\"uri\":\"\(jsonEscape(uri))\"}"
         let result = try await req(vt, region, method: "POST", path: "\(basePath)/images/\(id)/import", body: body.data(using: .utf8))
         if !(200...299).contains(result.status) {
             throw OpenStackError.normalize(body: result.body, status: result.status, service: "image", requestID: result.requestID, hasAccessRules: false)

@@ -1667,10 +1667,52 @@ public actor NameResolver {
             let r = await client.image(region: region)
             switch descriptor.name {
             case "image":
+                // Every field the create schema advertises must reach Glance.
+                // Reading `name` alone meant every image was created
+                // raw/bare/private with no properties and no payload, whatever
+                // the caller asked for.
                 let name = obj["name"]?.stringValue ?? "mcp-image"
-                let spec = CreateImageSpec(name: name)
-                let img = try await r.createImage(vt, spec)
-                return try Self.encodeObject(img)
+                let diskFormat = obj["disk_format"]?.stringValue ?? "raw"
+                let containerFormat = obj["container_format"]?.stringValue ?? "bare"
+                let visibility = obj["visibility"]?.stringValue ?? "private"
+                let minRAM = obj["min_ram"]?.intValue ?? 0
+                let protected = obj["protected"]?.boolValue ?? false
+                let tags = obj["tags"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+                // Custom properties: Glance carries them as top-level string
+                // keys, so only string-valued entries can be forwarded.
+                var properties: [String: String] = [:]
+                for (key, value) in obj["properties"]?.objectValue ?? [:] {
+                    guard let s = value.stringValue else {
+                        throw OpenStackError(
+                            service: "image", status: 400,
+                            message: "Image property '\(key)' must be a string: Glance custom properties are string-valued."
+                        )
+                    }
+                    properties[key] = s
+                }
+                let spec = CreateImageSpec(
+                    name: name, diskFormat: diskFormat, containerFormat: containerFormat,
+                    visibility: visibility, minRAM: minRAM, protected: protected,
+                    tags: tags, properties: properties
+                )
+                var img = try await r.createImage(vt, spec)
+                // Tags are not part of the create schema; Glance sets them via
+                // PUT /images/{id}/tags.
+                if !tags.isEmpty {
+                    try await r.addTags(vt, id: img.id, tags: tags)
+                }
+                // Import: an image created without a payload stays `queued` and
+                // is useless. The create schema advertises `import`, so honour it
+                // and report the settled state rather than the pre-import shell.
+                if let importSpec = obj["import"]?.objectValue {
+                    img = try await Self.importImagePayload(
+                        vt, region: region, image: img, spec: importSpec,
+                        client: client, catalog: catalog
+                    )
+                }
+                var result = try Self.encodeObject(img)
+                if !tags.isEmpty { result["tags"] = .array(tags.map { .string($0) }) }
+                return result
             default:
                 throw OpenStackError(service: "image", status: 400, message: "Unknown image create: \(descriptor.name)")
             }
@@ -1987,7 +2029,44 @@ public actor NameResolver {
             let r = await client.image(region: region)
             switch descriptor.name {
             case "image":
-                let img = try await r.updateImage(vt, id: id, name: obj["name"]?.stringValue)
+                // Forward every field the update schema advertises. Reading
+                // `name` alone meant os_update silently ignored a visibility,
+                // protection, min_ram, tags or properties change.
+                var properties: [String: String]? = nil
+                if let raw = obj["properties"]?.objectValue {
+                    var props: [String: String] = [:]
+                    for (key, value) in raw {
+                        guard let s = value.stringValue else {
+                            throw OpenStackError(
+                                service: "image", status: 400,
+                                message: "Image property '\(key)' must be a string: Glance custom properties are string-valued."
+                            )
+                        }
+                        props[key] = s
+                    }
+                    properties = props
+                }
+                let img = try await r.updateImage(
+                    vt, id: id,
+                    name: obj["name"]?.stringValue,
+                    visibility: obj["visibility"]?.stringValue,
+                    protected: obj["protected"]?.boolValue,
+                    properties: properties,
+                    minRAM: obj["min_ram"]?.intValue,
+                    status: nil
+                )
+                // Tags are replaced wholesale through the tags endpoint; Glance's
+                // PATCH has no tags attribute.
+                if let tags = obj["tags"]?.arrayValue?.compactMap({ $0.stringValue }) {
+                    let existing = try await r.getImage(vt, id: id)
+                    for gone in Set(existing.tags).subtracting(tags).sorted() {
+                        try await r.removeTag(vt, id: id, tag: gone)
+                    }
+                    let added = tags.filter { !existing.tags.contains($0) }
+                    if !added.isEmpty {
+                        try await r.addTags(vt, id: id, tags: added)
+                    }
+                }
                 return try Self.encodeObject(img)
             default:
                 throw OpenStackError(service: "image", status: 400, message: "Unknown image update: \(descriptor.name)")
@@ -2660,6 +2739,82 @@ public actor NameResolver {
                 throw OpenStackError(service: "cloudformation", status: 400, message: "Unknown cloudformation action: \(descriptor.name).\(action)")
             }
         }
+    }
+
+    // MARK: - Image import
+
+    /// Fetches an image payload after the metadata shell exists, and returns the
+    /// image as it settles.
+    ///
+    /// A Glance image created without data stays `queued` forever and cannot boot
+    /// anything, so a create that carries `import` is only complete once the
+    /// payload has landed. `web-download` asks Glance itself to pull the URI
+    /// (`POST /images/{id}/import`), then the image transitions to `active` or
+    /// `killed`; `killed` is reported as an error carrying Glance's
+    /// `status_reason`, because a shell image is not a usable result.
+    ///
+    /// `direct` is deliberately NOT accepted here: it means streaming bytes with
+    /// `PUT /v2/images/{id}` (`Content-Type: application/octet-stream`), and
+    /// `uploadImage` takes a base64 string and forwards it verbatim, so a JSON
+    /// body field could not deliver real image bytes. `copy` needs a source image
+    /// reference and the Glance `copy-from` staging flow. Both are advertised by
+    /// the create schema; until they are implemented they fail loudly rather than
+    /// returning an empty image that looks like a success.
+    static func importImagePayload(
+        _ vt: ValidatedToken,
+        region: String,
+        image: Image,
+        spec: [String: JSONValue],
+        client: OpenStackClient,
+        catalog: ResourceCatalog
+    ) async throws -> Image {
+        let r = await client.image(region: region)
+        let method = spec["method"]?.stringValue ?? "web-download"
+        switch method {
+        case "web-download":
+            guard let uri = spec["uri"]?.stringValue, !uri.isEmpty else {
+                throw OpenStackError(
+                    service: "image", status: 400,
+                    message: "import.method web-download requires import.uri (a URL the cloud can reach)."
+                )
+            }
+            try await r.importImage(vt, id: image.id, mechanism: "web-download", uri: uri)
+        case "direct":
+            throw OpenStackError(
+                service: "image", status: 501, code: "feature_unavailable",
+                message: "import.method direct is not supported: image bytes must be streamed to PUT /v2/images/{id} as application/octet-stream, which this tool surface cannot carry in a JSON body.",
+                hint: "Create the image, then upload the payload with a Glance client (glance image-upload / python-glanceclient)."
+            )
+        case "copy":
+            throw OpenStackError(
+                service: "image", status: 501, code: "feature_unavailable",
+                message: "import.method copy is not supported: Glance copies between stores via the copy-from staging URI, which this tool surface does not implement."
+            )
+        default:
+            throw OpenStackError(
+                service: "image", status: 400,
+                message: "Unknown import.method '\(method)'. Supported: web-download."
+            )
+        }
+        // Poll to a terminal state. `killed` is a fault state, so the waiter
+        // returns promptly instead of spinning to the 300s timeout; the image is
+        // then re-read so the caller sees the real attributes (size,
+        // status_reason) rather than the pre-import shell.
+        let waiter = Waiter(client: client, catalog: catalog)
+        _ = try await waiter.wait(
+            vt, resource: "image", id: image.id, region: region,
+            until: ["active", "killed"], timeout: 300
+        )
+        let settled = try await r.getImage(vt, id: image.id)
+        if settled.status == "killed" {
+            throw OpenStackError(
+                service: "image", status: 400, code: "importFailed",
+                message: "Image \(image.id) import failed: \(settled.statusReason ?? "no status_reason from Glance")",
+                requestID: nil, retriable: false,
+                hint: "Check that import.uri is reachable FROM THE CLOUD, not from this client, and serves the image bytes directly."
+            )
+        }
+        return settled
     }
 
     // MARK: - Encoding

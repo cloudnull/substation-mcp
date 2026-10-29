@@ -38,11 +38,9 @@ enum ImageEntries {
                     "properties": .init(type: "object", description: "Image properties"),
                     "tags": .init(type: "array", items: .init(type: "string"), description: "Tags"),
                     "import": .init(type: "object", properties: [
-                        "method": .init(type: "string", enumValues: ["web-download", "direct", "copy"], description: "Import method"),
-                        "uri": .init(type: "string", description: "Source URI (for web-download)"),
-                        "disk_format": .init(type: "string", description: "Disk format for import"),
-                        "container_format": .init(type: "string", description: "Container format for import")
-                    ], description: "Import specification (for web-download or direct upload)")
+                        "method": .init(type: "string", enumValues: ["web-download"], description: "Import method (only web-download is supported)"),
+                        "uri": .init(type: "string", description: "Source URI, reachable FROM THE CLOUD (required for web-download)")
+                    ], description: "Fetch the image payload after registering metadata. web-download makes Glance pull `uri`; the create returns only once the image is active (or the import fails). Omit to register an empty shell, which stays `queued` and cannot boot.")
                 ],
                 required: ["name", "disk_format", "container_format"]
             ),

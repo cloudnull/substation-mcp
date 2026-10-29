@@ -104,6 +104,8 @@ public struct CreateImageSpec: Sendable {
     public var diskFormat: String
     public var containerFormat: String
     public var minRAM: Int
+    public var protected: Bool
+    public var tags: [String]
     public var properties: [String: String]
 
     public init(
@@ -112,6 +114,8 @@ public struct CreateImageSpec: Sendable {
         containerFormat: String = "bare",
         visibility: String = "private",
         minRAM: Int = 0,
+        protected: Bool = false,
+        tags: [String] = [],
         properties: [String: String] = [:]
     ) {
         self.name = name
@@ -119,21 +123,36 @@ public struct CreateImageSpec: Sendable {
         self.diskFormat = diskFormat
         self.containerFormat = containerFormat
         self.minRAM = minRAM
+        self.protected = protected
+        self.tags = tags
         self.properties = properties
     }
 
+    /// The `POST /v2/images` request body.
+    ///
+    /// Glance v2 takes the image's attributes at the TOP LEVEL: the schema's
+    /// `additionalProperties` is `{"type": "string"}` because custom properties
+    /// are top-level string keys. A `{"image": {...}}` wrapper — the shape Nova
+    /// and Cinder use — is therefore rejected outright: Glance reads `image` as
+    /// a custom property and fails it with
+    /// `Provided object does not match schema 'image': {...} is not of type 'string'`.
+    /// Same for custom properties: nesting them under `properties` would make
+    /// `properties` itself a non-string custom property.
+    ///
+    /// `tags` is deliberately absent. Glance's create schema does not accept it;
+    /// tags go through `PUT /v2/images/{id}/tags` (see `ImageRegion.addTags`).
     func body() -> String {
         var parts: [String] = [
-            "\"visibility\":\"\(visibility)\"",
-            "\"disk_format\":\"\(diskFormat)\"",
-            "\"container_format\":\"\(containerFormat)\""
+            "\"visibility\":\"\(jsonEscape(visibility))\"",
+            "\"disk_format\":\"\(jsonEscape(diskFormat))\"",
+            "\"container_format\":\"\(jsonEscape(containerFormat))\""
         ]
-        if !name.isEmpty { parts.append("\"name\":\"\(name)\"") }
+        if !name.isEmpty { parts.append("\"name\":\"\(jsonEscape(name))\"") }
         if minRAM > 0 { parts.append("\"min_ram\":\(minRAM)") }
-        if !properties.isEmpty {
-            let props = properties.map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
-            parts.append("\"properties\":{\(props)}")
+        if protected { parts.append("\"protected\":true") }
+        for (key, value) in properties.sorted(by: { $0.key < $1.key }) {
+            parts.append("\"\(jsonEscape(key))\":\"\(jsonEscape(value))\"")
         }
-        return "{\"image\":{\(parts.joined(separator: ","))}}"
+        return "{\(parts.joined(separator: ","))}"
     }
 }

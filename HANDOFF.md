@@ -1,7 +1,42 @@
-# Handoff: OpenStack MCP — v0.2.2 (role select + defect sweep + cascade); v0.2.1 tagged, v0.2.0 in production
+# Handoff: OpenStack MCP — v0.2.3 (Glance flat-envelope image create/import fix); v0.2.2/v0.2.1 tagged
 
 ## Current State
 
+- **v0.2.3: `os_create image` fixed against live Glance v2** (2026-10-29,
+  issue #4, reported against Genestack 2026.1). Glance v2 is the **only**
+  service in this codebase with FLAT request *and* response bodies — Nova
+  (`ComputeModels.swift`) and Cinder (`BlockStorageModels.swift`) legitimately
+  wrap in `{"server": …}`/`{"volume": …}`. The image path had copied that
+  envelope in six places: the create body, the create reply decode, the PATCH
+  body, the PATCH reply decode (so `set_visibility`/`protect`/`deactivate`/
+  `reactivate` all mutated upstream and *then* threw a decode error), the
+  import body, and the nested `properties` map. Glance's schema declares
+  `additionalProperties: {"type": "string"}` — that is how custom properties
+  travel — so a `{"image": {…}}` body is a hard 400, not a tolerated alias.
+  Also fixed: `NameResolver` built `CreateImageSpec(name:)` from `name` alone,
+  so every image was created `raw`/`bare`/`private` with no properties and no
+  payload whatever the caller asked for, and the update path dropped every
+  non-name field; `importImage`/`uploadImage` were dead outside tests, so an
+  advertised `import` block silently produced a `queued` shell image. Now all
+  advertised create/update fields are forwarded (tags via
+  `PUT /images/{id}/tags`, reconciled by diff on update), `web-download` import
+  runs after create and polls to `active`/`killed` through `Waiter` (a `killed`
+  image raises `importFailed` carrying Glance's `status_reason` rather than
+  returning a shell that looks like success), and `direct`/`copy` were dropped
+  from the advertised enum and fail as `feature_unavailable` (`uploadImage`
+  forwards base64 verbatim, so a JSON field cannot carry image bytes).
+  **Root cause of the escape:** `GlanceFake` accepted *both* envelopes
+  (`objectForKey("image") ?? body`) and replied wrapped, so it was more
+  permissive than Glance in both directions and the entire suite could not see
+  the bug class. The fake now parses bodies with `JSONSerialization` and
+  enforces the schema (wrapped body → 400 with the live message, nested
+  `properties` on POST → 400, non-string custom property → 400, read-only
+  attributes refused, flat replies); the hand-rolled substring helpers are
+  deleted. **Trap:** `status` must stay writable on PATCH — that is how
+  deactivate/reactivate work. 12 regression tests added (8 client-level pinning
+  the flat schema in both directions + JSON escaping, 4 through
+  `os_create`/`os_update` including the reported repro). Full suite green
+  (348+295+63+43+34+2).
 - **Tool-surface defect sweep: 9 reported defects fixed + live-verified**
   (2026-10-25). All user-reported against live Rackspace DFW3: (1) flavor
   recommendation ranks by ordered-family-prefix then ascending size; (2)
@@ -674,7 +709,7 @@ change for correct callers.
 | Compute (Nova) | `ComputeService.swift` | `ComputeRegion` | Microversion gating (2.90/2.96), actions, attachments |
 | Network (Neutron) | `NetworkService.swift` | `NetworkRegion` | Extension gating, auto-assign IPs, IP conflict 409 |
 | Block Storage (Cinder) | `BlockStorageService.swift` | `BlockStorageRegion` | `OpenStack-API-Version: volume 3.x` header required, actions |
-| Image (Glance) | `ImageService.swift` | `ImageRegion` | `Link: rel=next` pagination, web-download import, base64 upload |
+| Image (Glance) | `ImageService.swift` | `ImageRegion` | **FLAT request/response bodies — Glance is the only service with no `{"<resource>": {…}}` envelope; custom properties are top-level string keys.** `Link: rel=next` pagination, web-download import, base64 upload |
 | **Facade** | **`OpenStackClient.swift`** | — | **Stateless-per-identity actor, shared Transport/Cache/TokenValidator** |
 | **Catalog** | **`Catalog/*.swift`** (9 files) | — | **35 resources, 25 server actions, 7 links, JSONSchema validate(), 37 tests** |
 

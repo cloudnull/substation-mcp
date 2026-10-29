@@ -78,29 +78,35 @@ public struct GlanceFake {
             return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
         }
 
+        // Glance v2 accepts the image attributes at the TOP LEVEL. A `{"image":
+        // {...}}` body is not merely tolerated — it is a hard 400, because the
+        // schema's `additionalProperties` is `{"type": "string"}` (custom
+        // properties) and an object-valued `image` key fails it. The fake holds
+        // that line so a wrapped request cannot pass tests, and replies flat.
         router.post("\(base)/images") { req, _ in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
                 return Self.textError(status: .unauthorized, message: "401 Unauthorized")
             }
             let body = try await Self.readBody(req)
-            let imgBody = Self.objectForKey("image", in: body) ?? body
-            let name = Self.extractString("name", from: imgBody) ?? ""
-            let visibility = Self.extractString("visibility", from: imgBody) ?? "private"
-            let diskFormat = Self.extractString("disk_format", from: imgBody) ?? "raw"
-            let containerFormat = Self.extractString("container_format", from: imgBody) ?? "bare"
-            let minRAM = Self.extractInt("min_ram", from: imgBody) ?? 0
+            if let err = Self.schemaError(for: body, allowPropertiesObject: false) { return err }
+            let name = Self.stringField("name", in: body) ?? ""
+            let visibility = Self.stringField("visibility", in: body) ?? "private"
+            let diskFormat = Self.stringField("disk_format", in: body) ?? "raw"
+            let containerFormat = Self.stringField("container_format", in: body) ?? "bare"
+            let minRAM = Self.intField("min_ram", in: body) ?? 0
+            let protected = Self.boolField("protected", in: body) ?? false
             let img = await state.createImage(
                 projectID: token.projectID,
                 name: name,
                 visibility: visibility,
                 diskFormat: diskFormat,
                 containerFormat: containerFormat,
-                minRAM: minRAM
+                minRAM: minRAM,
+                protected: protected,
+                properties: Self.customProperties(in: body)
             )
-            return Self.jsonResponse(status: .created, body: """
-            {"image":\(Self.imageJSON(img))}
-            """)
+            return Self.jsonResponse(status: .created, body: Self.imageJSON(img))
         }
 
         router.patch("\(base)/images/:id") { req, ctx in
@@ -110,21 +116,22 @@ public struct GlanceFake {
             }
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
-            let imgBody = Self.objectForKey("image", in: body) ?? body
-            let name = Self.extractString("name", from: imgBody)
-            let visibility = Self.extractString("visibility", from: imgBody)
-            let protected = Self.extractBool("protected", from: imgBody)
-            let status = Self.extractString("status", from: imgBody)
+            if let err = Self.schemaError(for: body, allowPropertiesObject: true) { return err }
+            let name = Self.stringField("name", in: body)
+            let visibility = Self.stringField("visibility", in: body)
+            let protected = Self.boolField("protected", in: body)
+            let status = Self.stringField("status", in: body)
+            let minRAM = Self.intField("min_ram", in: body)
             guard let img = await state.updateImage(
                 id: id, projectID: token.projectID,
                 name: name, visibility: visibility,
-                protected: protected, status: status
+                protected: protected, status: status,
+                minRAM: minRAM,
+                properties: Self.propertiesObject(in: body)
             ) else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
-            return Self.jsonResponse(status: .ok, body: """
-            {"image":\(Self.imageJSON(img))}
-            """)
+            return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
         }
 
         router.delete("\(base)/images/:id") { req, ctx in
@@ -148,22 +155,15 @@ public struct GlanceFake {
             }
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
-            var tags: [String] = []
-            if let arr = Self.arrayForValue("tags", in: body) {
-                for element in arr {
-                    var s = element.trimmingCharacters(in: .whitespaces)
-                    if s.hasPrefix("\""), s.hasSuffix("\""), s.count >= 2 {
-                        s = String(s.dropFirst().dropLast())
-                    }
-                    if !s.isEmpty { tags.append(s) }
-                }
+            guard let tags = Self.stringArrayField("tags", in: body) else {
+                return Self.glanceError(status: .badRequest,
+                                        message: "400 Bad Request: Provided object does not match schema 'tags'")
             }
             guard let img = await state.addTags(id: id, projectID: token.projectID, tags: tags) else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
-            return Self.jsonResponse(status: .ok, body: """
-            {"image":\(Self.imageJSON(img))}
-            """)
+            // Glance returns the updated image, unwrapped.
+            return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
         }
 
         router.delete("\(base)/images/:id/tags/:tag") { req, ctx in
@@ -188,8 +188,18 @@ public struct GlanceFake {
             }
             let id = ctx.parameters.get("id") ?? ""
             let body = try await Self.readBody(req)
-            let importObj = Self.objectForKey("import", in: body) ?? body
-            let uri = Self.extractString("uri", from: importObj) ?? ""
+            // POST /images/{id}/import takes a FLAT {"method","uri"} body; the
+            // `{"import": {...}}` wrapper is not in the Glance schema.
+            guard let importBody = Self.parseObject(body),
+                  Self.stringField("import", in: body) == nil,
+                  importBody["import"] == nil else {
+                return Self.textError(status: .badRequest, message: "400 Bad Request")
+            }
+            let method = importBody["method"] as? String ?? ""
+            let uri = importBody["uri"] as? String ?? ""
+            guard method == "web-download" else {
+                return Self.textError(status: .badRequest, message: "400 Bad Request")
+            }
 
             // Fetch the URI. The fake's own base host is registered in state.
             let baseHost = await state.baseHost
@@ -245,26 +255,191 @@ public struct GlanceFake {
 
     static func imageJSON(_ img: FakeState.FakeImage) -> String {
         var parts: [String] = []
-        parts.append("\"id\":\"\(img.id)\"")
-        parts.append("\"name\":\"\(img.name)\"")
-        parts.append("\"status\":\"\(img.status)\"")
+        parts.append("\"id\":\"\(jsonString(img.id))\"")
+        parts.append("\"name\":\"\(jsonString(img.name))\"")
+        parts.append("\"status\":\"\(jsonString(img.status))\"")
         if let reason = img.statusReason {
-            parts.append("\"status_reason\":\"\(reason)\"")
+            parts.append("\"status_reason\":\"\(jsonString(reason))\"")
         }
-        parts.append("\"visibility\":\"\(img.visibility)\"")
-        parts.append("\"disk_format\":\"\(img.diskFormat)\"")
-        parts.append("\"container_format\":\"\(img.containerFormat)\"")
+        parts.append("\"visibility\":\"\(jsonString(img.visibility))\"")
+        parts.append("\"disk_format\":\"\(jsonString(img.diskFormat))\"")
+        parts.append("\"container_format\":\"\(jsonString(img.containerFormat))\"")
         parts.append("\"size\":\(img.size)")
         parts.append("\"min_ram\":\(img.minRAM)")
         parts.append("\"protected\":\(img.protected)")
-        let tags = img.tags.map { "\"\($0)\"" }.joined(separator: ",")
+        let tags = img.tags.map { "\"\(jsonString($0))\"" }.joined(separator: ",")
         parts.append("\"tags\":[\(tags)]")
-        let props = img.properties.map { "\"\($0.key)\":\"\($0.value)\"" }.joined(separator: ",")
+        let props = img.properties.sorted { $0.key < $1.key }
+            .map { "\"\(jsonString($0.key))\":\"\(jsonString($0.value))\"" }
+            .joined(separator: ",")
         parts.append("\"properties\":{\(props)}")
-        parts.append("\"created_at\":\"\(img.created)\"")
-        parts.append("\"updated_at\":\"\(img.updated)\"")
+        parts.append("\"created_at\":\"\(jsonString(img.created))\"")
+        parts.append("\"updated_at\":\"\(jsonString(img.updated))\"")
         return "{" + parts.joined(separator: ",") + "}"
     }
+
+    /// Escapes a value for a JSON string literal in a hand-built reply. Names and
+    /// custom properties are caller data: an unescaped quote or newline in one
+    /// would make the fake's own reply unparseable, which reads as a client bug.
+    static func jsonString(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        for ch in s {
+            switch ch {
+            case "\\": out += "\\\\"
+            case "\"": out += "\\\""
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if let scalar = ch.unicodeScalars.first, scalar.value < 0x20 {
+                    out += String(format: "\\u%04X", scalar.value)
+                } else {
+                    out.append(ch)
+                }
+            }
+        }
+        return out
+    }
+
+    // MARK: - Request body parsing
+
+    /// Glance v2's image schema takes attributes at the TOP LEVEL and declares
+    /// `additionalProperties: {"type": "string"}` — that is how custom properties
+    /// travel. Two consequences the fake must reproduce, because they are the only
+    /// thing that catches a wrapped request body:
+    ///   * `{"image": {...}}` is a hard 400, not a tolerated alias: `image` is
+    ///     read as a custom property and an object is not a string.
+    ///   * a read-only attribute in a create/PATCH body is a 400.
+    ///
+    /// Parsed with `JSONSerialization`, not substring scanning: the value of a
+    /// custom property is caller data and may itself contain `":"`, `","` or a
+    /// brace, which the substring helpers would mis-scan into a wrong verdict.
+    static func parseObject(_ body: String) -> [String: Any]? {
+        guard let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else {
+            return nil
+        }
+        return dict
+    }
+
+    /// Glance's own image attributes as they appear on the wire. Any other
+    /// top-level key is a custom property and must carry a string value.
+    static let glanceImageAttributes: Set<String> = [
+        "id", "name", "status", "status_reason", "visibility", "disk_format",
+        "container_format", "size", "min_ram", "min_disk", "protected", "tags",
+        "properties", "created_at", "updated_at", "owner", "schema", "direct_url",
+        "self", "file", "virtual_size", "checksum", "os_hash_algo", "os_hash_value",
+        "imports", "os_hidden"
+    ]
+
+    /// Attributes a client may never send. `status` is deliberately absent:
+    /// Glance accepts it on create (register an image directly as `active`) and on
+    /// PATCH — that is how deactivate/reactivate work — so rejecting it would
+    /// break a legal, load-bearing operation.
+    static let glanceReadOnlyAttributes: Set<String> = [
+        "id", "status_reason", "created_at", "updated_at", "owner",
+        "schema", "self", "file", "direct_url", "size", "checksum",
+        "virtual_size", "os_hash_algo", "os_hash_value", "imports"
+    ]
+
+    /// Validates a create/PATCH body against Glance's flat schema. Returns a
+    /// Glance-shaped 400 when unacceptable, nil when acceptable.
+    /// - Parameter allowPropertiesObject: PATCH accepts a top-level `properties`
+    ///   object; POST /images does not (custom properties must be individual
+    ///   top-level string keys there).
+    static func schemaError(for body: String, allowPropertiesObject: Bool) -> Response? {
+        guard let dict = parseObject(body) else {
+            return glanceError(status: .badRequest, message: "400 Bad Request: malformed JSON body")
+        }
+        if dict["image"] != nil {
+            return glanceError(
+                status: .badRequest,
+                message: "400 Bad Request: Provided object does not match schema 'image': "
+                    + "{\"image\": ...} is not of type 'string'"
+            )
+        }
+        if !allowPropertiesObject, dict["properties"] != nil {
+            return glanceError(
+                status: .badRequest,
+                message: "400 Bad Request: Provided object does not match schema 'image': "
+                    + "{\"properties\": ...} is not of type 'string'"
+            )
+        }
+        for key in dict.keys.sorted() where glanceReadOnlyAttributes.contains(key) {
+            return glanceError(
+                status: .badRequest,
+                message: "400 Bad Request: Property \(key) is read-only and cannot be set."
+            )
+        }
+        // Every non-attribute top-level key is a custom property: string-typed.
+        for (key, value) in dict.sorted(by: { $0.key < $1.key })
+        where !glanceImageAttributes.contains(key) {
+            if value is String { continue }
+            return glanceError(
+                status: .badRequest,
+                message: "400 Bad Request: Provided object does not match schema 'image': "
+                    + "{\"\(key)\": \(jsonScalar(value))} is not of type 'string'"
+            )
+        }
+        return nil
+    }
+
+    /// Custom properties carried as top-level string keys on a create body.
+    static func customProperties(in body: String) -> [String: String] {
+        guard let dict = parseObject(body) else { return [:] }
+        var props: [String: String] = [:]
+        for (key, value) in dict where !glanceImageAttributes.contains(key) {
+            if let s = value as? String { props[key] = s }
+        }
+        return props
+    }
+
+    /// The `properties` object of a PATCH body as a flat string map.
+    static func propertiesObject(in body: String) -> [String: String]? {
+        guard let dict = parseObject(body), let raw = dict["properties"] as? [String: Any] else { return nil }
+        var props: [String: String] = [:]
+        for (key, value) in raw {
+            guard let s = value as? String else {
+                return nil
+            }
+            props[key] = s
+        }
+        return props
+    }
+
+    /// A JSON rendering of a scalar, for error text.
+    private static func jsonScalar(_ value: Any) -> String {
+        if let s = value as? String { return "\"\(s)\"" }
+        if value is [Any] { return "[...]" }
+        if value is [String: Any] { return "{...}" }
+        return "\(value)"
+    }
+
+    /// A top-level string attribute of a parsed body.
+    static func stringField(_ key: String, in body: String) -> String? {
+        parseObject(body)?[key] as? String
+    }
+
+    /// A top-level integer attribute of a parsed body.
+    static func intField(_ key: String, in body: String) -> Int? {
+        guard let value = parseObject(body)?[key] else { return nil }
+        if let i = value as? Int { return i }
+        if let d = value as? Double { return Int(d) }
+        return nil
+    }
+
+    /// A top-level boolean attribute of a parsed body.
+    static func boolField(_ key: String, in body: String) -> Bool? {
+        parseObject(body)?[key] as? Bool
+    }
+
+    /// A top-level string array of a parsed body.
+    static func stringArrayField(_ key: String, in body: String) -> [String]? {
+        parseObject(body)?[key] as? [String]
+    }
+
 
     // MARK: - Helpers
 
@@ -278,109 +453,6 @@ public struct GlanceFake {
 
     static func queryParam(_ name: String, from req: Request) -> String? {
         req.uri.queryParameters[Substring(name)].map { String($0) }
-    }
-
-    static func objectForKey(_ key: String, in json: String) -> String? {
-        let pattern = "\"\(key)\":"
-        guard let start = json.range(of: pattern) else { return nil }
-        let afterColon = json[start.upperBound...]
-        guard let open = afterColon.firstIndex(of: "{") else { return nil }
-        var depth = 0
-        for (idx, ch) in afterColon.enumerated() {
-            _ = idx
-            if ch == "{" { depth += 1 }
-            if ch == "}" {
-                depth -= 1
-                if depth == 0 {
-                    let end = afterColon.index(afterColon.startIndex, offsetBy: idx)
-                    return String(afterColon[open...end])
-                }
-            }
-        }
-        return nil
-    }
-
-    static func arrayForValue(_ key: String, in json: String) -> [String]? {
-        let pattern = "\"\(key)\""
-        guard let keyRange = json.range(of: pattern) else { return nil }
-        let afterKey = json[keyRange.upperBound...]
-        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
-        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        guard afterColon.hasPrefix("[") else { return nil }
-        var depth = 0
-        var foundEnd: String.Index? = nil
-        for (idx, ch) in afterColon.enumerated() {
-            if ch == "[" { depth += 1 }
-            if ch == "]" {
-                depth -= 1
-                if depth == 0 {
-                    foundEnd = afterColon.index(afterColon.startIndex, offsetBy: idx)
-                    break
-                }
-            }
-        }
-        guard let end = foundEnd else { return nil }
-        let innerStart = afterColon.index(afterColon.startIndex, offsetBy: 1)
-        return Self.splitTopLevel(String(afterColon[innerStart..<end]))
-    }
-
-    static func splitTopLevel(_ inner: String) -> [String] {
-        var elements: [String] = []
-        var depth = 0
-        var current = ""
-        for ch in inner {
-            if ch == "{" || ch == "[" { depth += 1 }
-            if ch == "}" || ch == "]" { depth -= 1 }
-            if ch == "," && depth == 0 {
-                elements.append(current)
-                current = ""
-            } else {
-                current.append(ch)
-            }
-        }
-        if !current.trimmingCharacters(in: .whitespaces).isEmpty {
-            elements.append(current)
-        }
-        return elements
-    }
-
-    static func extractString(_ key: String, from json: String) -> String? {
-        let pattern = "\"\(key)\""
-        guard let keyRange = json.range(of: pattern) else { return nil }
-        let afterKey = json[keyRange.upperBound...]
-        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
-        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        if afterColon.hasPrefix("\"") {
-            let rest = afterColon.dropFirst()
-            guard let close = rest.firstIndex(of: "\"") else { return nil }
-            return String(rest[rest.startIndex..<close])
-        }
-        return nil
-    }
-
-    static func extractInt(_ key: String, from json: String) -> Int? {
-        let pattern = "\"\(key)\""
-        guard let keyRange = json.range(of: pattern) else { return nil }
-        let afterKey = json[keyRange.upperBound...]
-        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
-        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        var numStr = ""
-        for ch in afterColon {
-            if ch == "," || ch == "}" || ch == "]" { break }
-            numStr.append(ch)
-        }
-        return Int(numStr)
-    }
-
-    static func extractBool(_ key: String, from json: String) -> Bool? {
-        let pattern = "\"\(key)\""
-        guard let keyRange = json.range(of: pattern) else { return nil }
-        let afterKey = json[keyRange.upperBound...]
-        guard let colon = afterKey.firstIndex(of: ":") else { return nil }
-        let afterColon = afterKey[afterKey.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-        if afterColon.hasPrefix("true") { return true }
-        if afterColon.hasPrefix("false") { return false }
-        return nil
     }
 
     // MARK: - Responses

@@ -3104,7 +3104,7 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createImage(projectID: String, name: String, visibility: String = "private", diskFormat: String = "raw", containerFormat: String = "bare", minRAM: Int = 0, properties: [String: String] = [:]) -> FakeImage {
+    public func createImage(projectID: String, name: String, visibility: String = "private", diskFormat: String = "raw", containerFormat: String = "bare", minRAM: Int = 0, protected: Bool = false, properties: [String: String] = [:]) -> FakeImage {
         imgIDCounter += 1
         let img = FakeImage(
             id: "img-\(imgIDCounter)",
@@ -3115,6 +3115,7 @@ public actor FakeState {
             diskFormat: diskFormat,
             containerFormat: containerFormat,
             minRAM: minRAM,
+            protected: protected,
             properties: properties,
             created: "2026-01-01T00:00:00.000",
             updated: "2026-01-01T00:00:00.000"
@@ -3123,12 +3124,17 @@ public actor FakeState {
         return img
     }
 
-    public func updateImage(id: String, projectID: String, name: String? = nil, visibility: String? = nil, protected: Bool? = nil, status: String? = nil) -> FakeImage? {
+    public func updateImage(id: String, projectID: String, name: String? = nil, visibility: String? = nil, protected: Bool? = nil, status: String? = nil, minRAM: Int? = nil, properties: [String: String]? = nil) -> FakeImage? {
         guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
         if let name { images[idx].name = name }
         if let visibility { images[idx].visibility = visibility }
         if let protected { images[idx].protected = protected }
         if let status { images[idx].status = status }
+        if let minRAM { images[idx].minRAM = minRAM }
+        // A PATCH body's `properties` object REPLACES the custom-property map,
+        // as Glance does. Keys colliding with Glance's own attributes are
+        // rejected at the route, so only genuine custom properties arrive here.
+        if let properties { images[idx].properties = properties }
         images[idx].updated = "2026-01-01T00:00:00.000"
         return images[idx]
     }
