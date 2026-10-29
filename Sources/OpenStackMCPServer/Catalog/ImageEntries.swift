@@ -38,8 +38,9 @@ enum ImageEntries {
                     "container_format": .init(type: "string", enumValues: ["bare", "aki", "ari", "ami", "ovf", "ova", "docker"], description: "Container format"),
                     "visibility": .init(type: "string", enumValues: ["public", "private", "shared", "community"], description: "Visibility"),
                     "min_ram": .init(type: "integer", description: "Minimum RAM in MB"),
+                    "min_disk": .init(type: "integer", description: "Minimum disk in GB — what actually gates scheduling onto a store with room for the image"),
                     "protected": .init(type: "boolean", description: "Protection flag"),
-                    "properties": .init(type: "object", description: "Image properties"),
+                    "properties": .init(type: "object", description: "Custom image properties (string values; Glance carries them as top-level keys)"),
                     "tags": .init(type: "array", items: .init(type: "string"), description: "Tags"),
                     "import": .init(type: "object", properties: [
                         "method": .init(type: "string", enumValues: ["web-download"], description: "Import method (only web-download is supported)"),
@@ -53,8 +54,9 @@ enum ImageEntries {
                 "visibility": .init(type: "string", enumValues: ["public", "private", "shared", "community"]),
                 "protected": .init(type: "boolean"),
                 "min_ram": .init(type: "integer"),
+                "min_disk": .init(type: "integer"),
                 "tags": .init(type: "array", items: .init(type: "string")),
-                "properties": .init(type: "object")
+                "properties": .init(type: "object", description: "Custom image properties. Set a key to a string to add/replace it; set it to null to REMOVE it (Glance has no other way to clear a custom property). Keys you omit are left untouched.")
             ]),
             listFilters: ["name", "status", "visibility", "disk_format", "container_format", "tags", "protected"],
             idField: "id",

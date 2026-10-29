@@ -1792,8 +1792,9 @@ struct InProcessMCPTests {
         #expect(img?["container_format"] as? String == "bare")
         #expect(img?["visibility"] as? String == "community", "visibility was dropped")
         #expect(img?["min_ram"] as? Int == 256, "min_ram was dropped")
-        let props = img?["properties"] as? [String: Any]
-        #expect(props?["os_distro"] as? String == "cirros", "custom properties were dropped")
+        // Glance carries custom properties as TOP-LEVEL keys, so the payload does
+        // too; there is no nested `properties` object to read.
+        #expect(img?["os_distro"] as? String == "cirros", "custom properties were dropped: \(String(describing: img))")
         // Tags are set through the tags endpoint after create.
         let got = try await bundle.mcpClient.callTool(name: "os_get", arguments: [
             "resource": .string("image"),
@@ -1893,7 +1894,8 @@ struct InProcessMCPTests {
                 "visibility": .string("public"),
                 "protected": .bool(true),
                 "min_ram": .int(1024),
-                "properties": .object(["os_version": .string("0.6.2")]),
+                "min_disk": .int(20),
+                "properties": .object(["os_version": .string("0.6.2"), "os_distro": .string("cirros")]),
                 "tags": .array([.string("prod")]),
             ]),
         ])
@@ -1913,9 +1915,45 @@ struct InProcessMCPTests {
         #expect(stored?["visibility"] as? String == "public", "visibility not persisted: \(String(describing: stored))")
         #expect(stored?["protected"] as? Bool == true, "protected not persisted: \(String(describing: stored))")
         #expect(stored?["min_ram"] as? Int == 1024, "min_ram not persisted: \(String(describing: stored))")
-        #expect((stored?["properties"] as? [String: Any])?["os_version"] as? String == "0.6.2",
+        #expect(stored?["min_disk"] as? Int == 20, "min_disk not persisted: \(String(describing: stored))")
+        #expect(stored?["os_version"] as? String == "0.6.2",
                 "properties not persisted: \(String(describing: stored))")
         #expect((stored?["tags"] as? [String] ?? []).contains("prod"),
                 "tags not persisted: \(String(describing: stored))")
+    }
+
+    /// A custom property set to null is a REMOVAL: Glance has no other way to
+    /// clear one, and a `replace` of an absent key 409s, so `add` cannot stand in
+    /// for it. This is driven through `NameResolver.updatePublic` rather than
+    /// `os_update`, because the in-process MCP test client's `Value` encoder drops
+    /// null object members before the server sees them; a real client's
+    /// `{"properties":{"os_distro":null}}` arrives over the wire intact.
+    @Test("update dispatch turns a null property into a removal", .timeLimit(.minutes(2)))
+    func updateDispatchRemovesNullProperty() async throws {
+        let handle = try await FakeApp.start()
+        defer { handle.stop() }
+        let bundle = try await makeRegistry(handle: handle, credID: "fake-cred-admin", secret: "secret-admin")
+        defer { bundle.shutdown() }
+        let catalog = ResourceCatalog.phase1()
+        let descriptor = catalog.descriptor("image")
+        let created = try await bundle.mcpClient.callTool(name: "os_create", arguments: [
+            "resource": .string("image"),
+            "spec": .object([
+                "name": .string("removal-dispatch"), "disk_format": .string("raw"), "container_format": .string("bare"),
+                "properties": .object(["os_distro": .string("cirros"), "os_version": .string("0.6.2")]),
+            ]),
+        ])
+        #expect(created.isError != true, "create failed: \(firstText(created.content) ?? "nil")")
+        let id = ((try parseResult(created)["data"] as? [String: Any])?["id"] as? String) ?? ""
+
+        let resolver = NameResolver(catalog: catalog, client: bundle.client)
+        let body = JSONValue.object(["properties": .object(["os_distro": .null, "os_version": .string("9")])])
+        let patched = try await resolver.updatePublic(
+            bundle.identity.vt, descriptor: descriptor!, id: id,
+            body: body, region: "RegionOne"
+        )
+        #expect(patched["os_distro"] == nil, "null must remove the property: \(patched)")
+        #expect(patched["os_version"]?.stringValue == "9",
+                "the sibling property must survive the removal: \(patched)")
     }
 }

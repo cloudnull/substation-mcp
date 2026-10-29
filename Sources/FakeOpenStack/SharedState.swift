@@ -332,6 +332,7 @@ public actor FakeState {
         public var containerFormat: String
         public var size: Int
         public var minRAM: Int
+        public var minDisk: Int
         public var protected: Bool
         public var tags: [String]
         public var properties: [String: String]
@@ -351,6 +352,7 @@ public actor FakeState {
             containerFormat: String = "bare",
             size: Int = 0,
             minRAM: Int = 0,
+            minDisk: Int = 0,
             protected: Bool = false,
             tags: [String] = [],
             properties: [String: String] = [:],
@@ -368,6 +370,7 @@ public actor FakeState {
             self.containerFormat = containerFormat
             self.size = size
             self.minRAM = minRAM
+            self.minDisk = minDisk
             self.protected = protected
             self.tags = tags
             self.properties = properties
@@ -3104,7 +3107,7 @@ public actor FakeState {
     }
 
     @discardableResult
-    public func createImage(projectID: String, name: String, visibility: String = "private", diskFormat: String = "raw", containerFormat: String = "bare", minRAM: Int = 0, protected: Bool = false, properties: [String: String] = [:]) -> FakeImage {
+    public func createImage(projectID: String, name: String, visibility: String = "private", diskFormat: String = "raw", containerFormat: String = "bare", minRAM: Int = 0, minDisk: Int = 0, protected: Bool = false, properties: [String: String] = [:]) -> FakeImage {
         imgIDCounter += 1
         let img = FakeImage(
             id: "img-\(imgIDCounter)",
@@ -3115,6 +3118,7 @@ public actor FakeState {
             diskFormat: diskFormat,
             containerFormat: containerFormat,
             minRAM: minRAM,
+            minDisk: minDisk,
             protected: protected,
             properties: properties,
             created: "2026-01-01T00:00:00.000",
@@ -3131,7 +3135,7 @@ public actor FakeState {
     public func updateImage(
         id: String, projectID: String,
         name: String? = nil, visibility: String? = nil, protected: Bool? = nil,
-        minRAM: Int? = nil, tags: [String]? = nil,
+        minRAM: Int? = nil, minDisk: Int? = nil, tags: [String]? = nil,
         setProperties: [String: String] = [:], removedProperties: [String] = []
     ) -> FakeImage? {
         guard let idx = images.firstIndex(where: { $0.id == id && $0.projectID == projectID }) else { return nil }
@@ -3139,6 +3143,7 @@ public actor FakeState {
         if let visibility { images[idx].visibility = visibility }
         if let protected { images[idx].protected = protected }
         if let minRAM { images[idx].minRAM = minRAM }
+        if let minDisk { images[idx].minDisk = minDisk }
         if let tags { images[idx].tags = tags }
         for key in removedProperties { images[idx].properties.removeValue(forKey: key) }
         for (key, value) in setProperties { images[idx].properties[key] = value }

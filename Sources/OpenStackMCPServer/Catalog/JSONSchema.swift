@@ -28,7 +28,13 @@ public final class JSONSchema: @unchecked Sendable {
     /// Whether an explicit JSON `null` is an accepted value for this property,
     /// on top of `type`. Octavia uses `"field": null` to CLEAR an optional
     /// attribute (e.g. `default_pool_id: null` unbinds a listener's default
-    /// pool), so an update schema must be able to declare that.
+    /// pool), and Glance image custom properties use it to REMOVE a key, so an
+    /// update schema must be able to declare that.
+    ///
+    /// NOTE: this permits null for the property this schema is attached to. A
+    /// free-form `type: "object"` with no `properties` map (Glance's image
+    /// `properties` bag) validates nothing at all, so its null values pass
+    /// without this flag — see `ImageEntries.updateSchema`.
     public let allowsNull: Bool
 
     public init(

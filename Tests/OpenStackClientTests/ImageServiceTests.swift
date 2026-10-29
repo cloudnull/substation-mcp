@@ -385,8 +385,13 @@ struct ImageServiceTests {
                                        body: #"{"name":"flatprops","disk_format":"raw","container_format":"bare","os_distro":"cirros"}"#)
         #expect(flat.status == 201, "A top-level custom property must be accepted: \(flat.status) \(flat.body)")
         let decoded = try JSONSerialization.jsonObject(with: Data(flat.body.utf8)) as? [String: Any]
-        let props = decoded?["properties"] as? [String: Any]
-        #expect(props?["os_distro"] as? String == "cirros")
+        // Glance replies with the property as a TOP-LEVEL string key and no
+        // `properties` object at all — that is the shape the client decoder has
+        // to fold, and the shape the fake has to send.
+        #expect(decoded?["os_distro"] as? String == "cirros",
+                "the reply must carry the property at the top level: \(flat.body)")
+        #expect(decoded?["properties"] == nil,
+                "Glance never echoes a nested properties object: \(flat.body)")
     }
 
     @Test("a non-string custom property is rejected", .timeLimit(.minutes(2)))
@@ -475,6 +480,176 @@ struct ImageServiceTests {
         #expect(rejected.body.contains("read-only"))
         let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
         #expect(fetched.status == "active", "a refused status patch must leave the image active")
+    }
+
+    // Glance's PATCH path does more than check the media type and the array
+    // shape: it validates the operation name and the pointer, refuses
+    // read-only/reserved attributes, requires `value` on add/replace, and looks
+    // the property up on the image (`replace`/`remove` of an absent custom
+    // property is 409; `remove` of a base attribute is 403). All of that is
+    // `glance/api/v2/images.py`; the fake holds it so a live cloud is not needed
+    // to catch a client that gets it wrong.
+    @Test("a PATCH operation Glance does not implement is refused", .timeLimit(.minutes(2)))
+    func unsupportedPatchOperationRejected() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"[{"op":"move","from":"/name","path":"/visibility"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(rejected.status == 400, "only add/remove/replace exist in Glance's PATCH, got \(rejected.status): \(rejected.body)")
+        #expect(rejected.body.contains("Invalid operation"), "got: \(rejected.body)")
+        let fetched = try await images.region("RegionOne").getImage(vt, id: "img-1")
+        #expect(fetched.visibility == "public", "a refused operation must change nothing")
+    }
+
+    @Test("a malformed JSON pointer is refused", .timeLimit(.minutes(2)))
+    func malformedPointerRejected() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        // No leading slash, a trailing slash, and a bad ~ escape: all three are
+        // Glance's `_validate_json_pointer` 400s.
+        for body in [
+            #"[{"op":"add","path":"os_distro","value":"cirros"}]"#,
+            #"[{"op":"add","path":"/os_distro/","value":"cirros"}]"#,
+            #"[{"op":"add","path":"/os~2distro","value":"cirros"}]"#
+        ] {
+            let rejected = try await rawGlance(
+                handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+                body: body, contentType: "application/openstack-images-v2.1-json-patch"
+            )
+            #expect(rejected.status == 400, "pointer \(body) must be refused, got \(rejected.status): \(rejected.body)")
+        }
+    }
+
+    @Test("an add/replace operation without a value member is refused", .timeLimit(.minutes(2)))
+    func patchValueMemberRequired() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"[{"op":"add","path":"/os_distro"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(rejected.status == 400, "RFC 6902 puts no value on `remove` but does on `add`, got \(rejected.status): \(rejected.body)")
+        #expect(rejected.body.contains("value"), "got: \(rejected.body)")
+    }
+
+    @Test("replacing or removing a property the image does not carry is 409", .timeLimit(.minutes(2)))
+    func patchAbsentPropertyConflicts() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(vt, CreateImageSpec(name: "no-props", diskFormat: "raw", containerFormat: "bare"))
+
+        let badReplace = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/\(img.id)",
+            body: #"[{"op":"replace","path":"/os_distro","value":"cirros"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(badReplace.status == 409, "replace will not invent a property, got \(badReplace.status)")
+        #expect(badReplace.body.contains("does not exist"))
+
+        let badRemove = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/\(img.id)",
+            body: #"[{"op":"remove","path":"/os_distro"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(badRemove.status == 409, "removing an absent property is a conflict, got \(badRemove.status)")
+    }
+
+    @Test("removing a base image attribute is refused", .timeLimit(.minutes(2)))
+    func removeBaseAttributeRejected() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        let rejected = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: #"[{"op":"remove","path":"/min_ram"}]"#,
+            contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(rejected.status == 403, "a base attribute may not be removed, got \(rejected.status): \(rejected.body)")
+        #expect(rejected.body.contains("may not be removed"), "got: \(rejected.body)")
+    }
+
+    @Test("a reserved PATCH attribute is refused", .timeLimit(.minutes(2)))
+    func reservedPatchAttributeRejected() async throws {
+        let (handle, vt, _, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+
+        for path in ["/deleted", "/os_glance_managed"] {
+            let rejected = try await rawGlance(
+                handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+                body: #"[{"op":"add","path":"\#(path)","value":"x"}]"#,
+                contentType: "application/openstack-images-v2.1-json-patch"
+            )
+            #expect(rejected.status == 403, "\(path) is reserved, got \(rejected.status): \(rejected.body)")
+        }
+    }
+
+    @Test("an empty PATCH document is a no-op", .timeLimit(.minutes(2)))
+    func emptyPatchDocumentIsNoOp() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+        let before = try await region.getImage(vt, id: "img-1")
+
+        let ok = try await rawGlance(
+            handle, tokenID: vt.token.id, method: "PATCH", path: "glance/v2/images/img-1",
+            body: "[]", contentType: "application/openstack-images-v2.1-json-patch"
+        )
+        #expect(ok.status == 200, "Glance accepts an empty document, got \(ok.status): \(ok.body)")
+        let after = try await region.getImage(vt, id: "img-1")
+        #expect(after.name == before.name && after.updated == before.updated,
+                "an empty document must not touch the image")
+    }
+
+    /// `min_disk` is what gates scheduling onto a store with room for the image,
+    /// and Glance lets it be patched (`_readonly_properties` does not list it).
+    /// It was neither forwarded nor decoded, so every image was created with a
+    /// 0 GB floor.
+    @Test("min_disk round-trips through create and update", .timeLimit(.minutes(2)))
+    func minDiskRoundTrips() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+
+        let created = try await region.createImage(
+            vt, CreateImageSpec(name: "needs-disk", diskFormat: "qcow2", containerFormat: "bare", minDisk: 20)
+        )
+        #expect(created.minDisk == 20, "create must forward min_disk, got \(created.minDisk)")
+
+        let updated = try await region.updateImage(vt, id: created.id, minDisk: 40)
+        #expect(updated.minDisk == 40, "PATCH must carry min_disk, got \(updated.minDisk)")
+        let fetched = try await region.getImage(vt, id: created.id)
+        #expect(fetched.minDisk == 40, "min_disk must survive the reply, got \(fetched.minDisk)")
+        #expect(fetched.minRAM == created.minRAM, "patching min_disk must not disturb min_ram")
+    }
+
+    /// A custom property can only be cleared with a `remove` operation, so
+    /// `properties[key] == nil` has to produce one. Without it a caller can add
+    /// a property but never take it away, and Glance 409s a `replace` of an
+    /// absent key, so `add` cannot stand in for it either.
+    @Test("a nil property value removes the custom property", .timeLimit(.minutes(2)))
+    func nilPropertyValueRemovesIt() async throws {
+        let (handle, vt, images, _, _, transport) = try await makeSetup()
+        defer { handle.stop(); transport.syncShutdown() }
+        let region = images.region("RegionOne")
+        let img = try await region.createImage(
+            vt, CreateImageSpec(name: "removable", diskFormat: "raw", containerFormat: "bare",
+                                properties: ["os_distro": "cirros", "hw_rng": "on"])
+        )
+        #expect(img.properties["os_distro"] == "cirros")
+
+        let after = try await region.updateImage(vt, id: img.id, properties: ["os_distro": nil])
+        #expect(after.properties["os_distro"] == nil, "the property must be gone: \(after.properties)")
+        #expect(after.properties["hw_rng"] == "on", "removing one property must not disturb another")
+        let fetched = try await region.getImage(vt, id: img.id)
+        #expect(fetched.properties == ["hw_rng": "on"], "removal must persist: \(fetched.properties)")
     }
 
     @Test("an image name containing quotes and backslashes creates successfully", .timeLimit(.minutes(2)))

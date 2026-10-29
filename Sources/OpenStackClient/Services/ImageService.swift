@@ -131,7 +131,12 @@ public struct ImageRegion: Sendable {
     /// argument would clear a value the caller never mentioned. `properties`
     /// carries Glance's CUSTOM properties, which are individual top-level keys
     /// on the image representation — Glance's image schema has no `properties`
-    /// attribute — so each one is its own `add` op.
+    /// attribute — so each one is its own `add` op, and a nil value is a `remove`
+    /// (Glance has no other way to clear a custom property).
+    ///
+    /// `min_disk` is patchable; Glance's `_readonly_properties` list does not
+    /// include it, and it is the attribute that actually gates scheduling onto a
+    /// store with enough room (`min_ram` alone is not enough for a large image).
     ///
     /// `status` is deliberately not patchable: Glance refuses it with
     /// `403 Attribute 'status' is read-only`, and the route that does change it
@@ -142,8 +147,9 @@ public struct ImageRegion: Sendable {
         name: String? = nil,
         visibility: String? = nil,
         protected: Bool? = nil,
-        properties: [String: String]? = nil,
+        properties: [String: String?]? = nil,
         minRAM: Int? = nil,
+        minDisk: Int? = nil,
         tags: [String]? = nil
     ) async throws -> Image {
         let region = try resolveRegion(vt)
@@ -152,12 +158,18 @@ public struct ImageRegion: Sendable {
         if let visibility { ops.append(Self.patchOp("replace", "/visibility", "\"\(jsonEscape(visibility))\"")) }
         if let protected { ops.append(Self.patchOp("replace", "/protected", protected ? "true" : "false")) }
         if let minRAM { ops.append(Self.patchOp("replace", "/min_ram", "\(minRAM)")) }
+        if let minDisk { ops.append(Self.patchOp("replace", "/min_disk", "\(minDisk)")) }
         if let tags {
             let list = tags.map { "\"\(jsonEscape($0))\"" }.joined(separator: ",")
             ops.append(Self.patchOp("replace", "/tags", "[\(list)]"))
         }
         for (key, value) in (properties ?? [:]).sorted(by: { $0.key < $1.key }) {
-            ops.append(Self.patchOp("add", "/\(Self.patchPath(key))", "\"\(jsonEscape(value))\""))
+            let path = Self.patchPath(key)
+            if let value {
+                ops.append(Self.patchOp("add", "/\(path)", "\"\(jsonEscape(value))\""))
+            } else {
+                ops.append(Self.patchRemoveOp("/\(path)"))
+            }
         }
         let body = "[\(ops.joined(separator: ","))]"
         let result = try await req(
@@ -176,6 +188,12 @@ public struct ImageRegion: Sendable {
     /// arrays are carried unquoted instead of being stringified.
     private static func patchOp(_ op: String, _ path: String, _ value: String) -> String {
         "{\"op\":\"\(op)\",\"path\":\"\(path)\",\"value\":\(value)}"
+    }
+
+    /// A `remove` operation, which carries no `value` member. RFC 6902 says so,
+    /// and Glance's deserializer reads `value` for `add`/`replace` only.
+    private static func patchRemoveOp(_ path: String) -> String {
+        "{\"op\":\"remove\",\"path\":\"\(path)\"}"
     }
 
     /// An RFC 6901 path segment for a custom property name: `~` and `/` are the

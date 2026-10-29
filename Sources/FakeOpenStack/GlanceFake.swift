@@ -95,6 +95,7 @@ public struct GlanceFake {
             let diskFormat = Self.stringField("disk_format", in: body) ?? "raw"
             let containerFormat = Self.stringField("container_format", in: body) ?? "bare"
             let minRAM = Self.intField("min_ram", in: body) ?? 0
+            let minDisk = Self.intField("min_disk", in: body) ?? 0
             let protected = Self.boolField("protected", in: body) ?? false
             let img = await state.createImage(
                 projectID: token.projectID,
@@ -103,6 +104,7 @@ public struct GlanceFake {
                 diskFormat: diskFormat,
                 containerFormat: containerFormat,
                 minRAM: minRAM,
+                minDisk: minDisk,
                 protected: protected,
                 properties: Self.customProperties(in: body)
             )
@@ -112,8 +114,10 @@ public struct GlanceFake {
         // Glance's PATCH contract, held to the letter: the media type must be
         // application/openstack-images-v2.{0,1}-json-patch (anything else is a
         // 415), the body must be an RFC 6902 operation ARRAY (a flat attribute
-        // map is a 400 even with the right media type), and `status` is a
-        // read-only attribute (403). Live-verified on Genestack 2024.1.
+        // map is a 400 even with the right media type), read-only/reserved
+        // attributes are 403, and `replace`/`remove` of a custom property that
+        // the image does not carry is 409. Live-verified on Genestack 2024.1;
+        // the rest mirrors glance/api/v2/images.py.
         router.patch("\(base)/images/:id") { req, ctx in
             guard let tokenID = req.headers[FakeHeaders.xAuthToken],
                   let token = await state.validateToken(tokenID) else {
@@ -136,16 +140,29 @@ public struct GlanceFake {
                 )
             }
             if let err = Self.patchOpsError(for: ops) { return err }
-            let edits = Self.imagePatchEdits(from: ops)
-            guard let img = await state.updateImage(
-                id: id, projectID: token.projectID,
-                name: edits.name, visibility: edits.visibility,
-                protected: edits.protected, minRAM: edits.minRAM, tags: edits.tags,
-                setProperties: edits.setProperties, removedProperties: edits.removedProperties
-            ) else {
+            guard let current = await state.getImage(id: id, projectID: token.projectID) else {
                 return Self.textError(status: .notFound, message: "404 Not Found")
             }
-            return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
+            switch Self.imagePatchOutcome(for: ops, current: current) {
+            case let .failure(status, message):
+                return Self.glanceError(status: status, message: message)
+            case let .apply(edits):
+                // An empty document changes nothing, so Glance never reaches
+                // image_repo.save() and updated_at stays put.
+                guard !ops.isEmpty else {
+                    return Self.jsonResponse(status: .ok, body: Self.imageJSON(current))
+                }
+                guard let img = await state.updateImage(
+                    id: id, projectID: token.projectID,
+                    name: edits.name, visibility: edits.visibility,
+                    protected: edits.protected, minRAM: edits.minRAM, minDisk: edits.minDisk,
+                    tags: edits.tags,
+                    setProperties: edits.setProperties, removedProperties: edits.removedProperties
+                ) else {
+                    return Self.textError(status: .notFound, message: "404 Not Found")
+                }
+                return Self.jsonResponse(status: .ok, body: Self.imageJSON(img))
+            }
         }
 
         router.delete("\(base)/images/:id") { req, ctx in
@@ -280,13 +297,18 @@ public struct GlanceFake {
         parts.append("\"container_format\":\"\(jsonString(img.containerFormat))\"")
         parts.append("\"size\":\(img.size)")
         parts.append("\"min_ram\":\(img.minRAM)")
+        parts.append("\"min_disk\":\(img.minDisk)")
         parts.append("\"protected\":\(img.protected)")
         let tags = img.tags.map { "\"\(jsonString($0))\"" }.joined(separator: ",")
         parts.append("\"tags\":[\(tags)]")
+        // Glance carries custom properties as TOP-LEVEL string keys, and does
+        // NOT echo a `properties` object at all. The client's `Image` decoder
+        // folds any non-attribute top-level key into `properties`, so the fake
+        // has to be the faithful one — a nested `properties` reply would let the
+        // client look right while a live cloud returned something it ignores.
         let props = img.properties.sorted { $0.key < $1.key }
             .map { "\"\(jsonString($0.key))\":\"\(jsonString($0.value))\"" }
-            .joined(separator: ",")
-        parts.append("\"properties\":{\(props)}")
+        for prop in props { parts.append(prop) }
         parts.append("\"created_at\":\"\(jsonString(img.created))\"")
         parts.append("\"updated_at\":\"\(jsonString(img.updated))\"")
         return "{" + parts.joined(separator: ",") + "}"
@@ -340,13 +362,23 @@ public struct GlanceFake {
 
     /// Glance's own image attributes as they appear on the wire. Any other
     /// top-level key is a custom property and must carry a string value.
+    /// `properties` is deliberately NOT in here: Glance's schema has no such
+    /// attribute, so a nested `properties` object is itself a bad custom
+    /// property — see `glanceLegacyPropertiesKey`.
     static let glanceImageAttributes: Set<String> = [
         "id", "name", "status", "status_reason", "visibility", "disk_format",
         "container_format", "size", "min_ram", "min_disk", "protected", "tags",
-        "properties", "created_at", "updated_at", "owner", "schema", "direct_url",
+        "created_at", "updated_at", "owner", "schema", "direct_url",
         "self", "file", "virtual_size", "checksum", "os_hash_algo", "os_hash_value",
         "imports", "os_hidden"
     ]
+
+    /// The nested `properties` key, which this project's own create/update
+    /// schemas advertise. Glance rejects it outright on POST, but accepts it
+    /// harmlessly on PATCH (its schema declares `additionalProperties:
+    /// {"type": "string"}`, and a nested object simply is not a string). The
+    /// fake refuses it on create and tolerates it on PATCH, like Glance.
+    static let glanceLegacyPropertiesKey = "properties"
 
     /// Attributes a client may never send on create. `status` is deliberately
     /// absent: Glance accepts it on create (register an image directly as
@@ -364,10 +396,21 @@ public struct GlanceFake {
         "application/openstack-images-v2.0-json-patch"
     ]
 
-    /// Attributes Glance refuses to change over PATCH. `status` is the one that
+    /// Attributes Glance refuses to change over PATCH — its
+    /// `RequestDeserializer._readonly_properties`. `status` is the one that
     /// matters here: it is set through Glance's admin-only v1-compatibility
-    /// route, not through PATCH.
-    static let patchReadOnlyAttributes: Set<String> = ["status"]
+    /// route, not through PATCH. `min_disk` is deliberately absent: it IS
+    /// patchable, and it is the attribute that gates scheduling onto a store
+    /// with room for the image.
+    static let patchReadOnlyAttributes: Set<String> = [
+        "created_at", "updated_at", "status", "checksum", "size", "virtual_size",
+        "direct_url", "self", "file", "schema", "id", "os_hash_algo", "os_hash_value"
+    ]
+
+    /// Attributes Glance refuses even to name in a PATCH path — its
+    /// `_reserved_properties` plus the `os_glance` reserved namespace
+    /// (`glance/api/common.py:GLANCE_RESERVED_NS`). 403, not 400.
+    static let patchReservedAttributes: Set<String> = ["location", "deleted", "deleted_at"]
 
     /// Parses a PATCH body into its RFC 6902 operation objects. Nil when the
     /// body is not an array of objects — Glance's own 400 for that shape.
@@ -382,26 +425,100 @@ public struct GlanceFake {
         return ops
     }
 
-    /// Glance's per-operation refusals. Returns the first one that applies.
+    /// Glance's per-operation refusals, in the order its `RequestDeserializer`
+    /// applies them: op name, pointer shape, read-only, reserved, then the
+    /// custom-property string check. Returns the first refusal that applies.
     static func patchOpsError(for ops: [[String: Any]]) -> Response? {
         for op in ops {
-            let path = (op["path"] as? String ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let attribute = path.components(separatedBy: "/").first ?? path
+            let operation = op["op"] as? String ?? ""
+            guard patchOperations.contains(operation) else {
+                return glanceError(
+                    status: .badRequest,
+                    message: "400 Bad Request: Invalid operation: `\(operation)`. "
+                        + "It must be one of the following: add, remove, replace."
+                )
+            }
+            let path = op["path"] as? String ?? ""
+            if let why = pointerError(path) {
+                return glanceError(status: .badRequest, message: "400 Bad Request: \(why)")
+            }
+            let attribute = unescapePointerSegment(rootSegment(path))
             if patchReadOnlyAttributes.contains(attribute) {
                 return glanceError(
                     status: .forbidden,
                     message: "403 Forbidden: Attribute '\(attribute)' is read-only."
                 )
             }
+            if patchReservedAttributes.contains(attribute) {
+                return glanceError(
+                    status: .forbidden,
+                    message: "403 Forbidden: Attribute '\(attribute)' is reserved."
+                )
+            }
+            if attribute.hasPrefix(glanceReservedNamespace) {
+                return glanceError(
+                    status: .forbidden,
+                    message: "403 Forbidden: Attribute '\(attribute)' is reserved."
+                )
+            }
+            // `add`/`replace` read `value`; `remove` does not (RFC 6902, and
+            // Glance's `_get_change_value` is only called for the other two).
+            guard operation != "remove" else { continue }
+            guard let value = op["value"] else {
+                return glanceError(
+                    status: .badRequest,
+                    message: "400 Bad Request: Operation \"\(operation)\" requires a member named \"value\"."
+                )
+            }
             // Custom properties are string-valued; a non-string value on an
             // attribute Glance does not type-check still has to be a string.
-            if !glanceImageAttributes.contains(attribute), let value = op["value"], !(value is String) {
+            // The nested `properties` key is exempt: Glance's schema declares
+            // `additionalProperties: {"type": "string"}` but its PATCH path
+            // never schema-validates the operation value, so a nested object
+            // there is accepted and ignored rather than refused.
+            if attribute != glanceLegacyPropertiesKey,
+               !glanceImageAttributes.contains(attribute), !(value is String) {
                 return glanceError(
                     status: .badRequest,
                     message: "400 Bad Request: Provided object does not match schema 'image': "
                         + "{\"\(attribute)\": \(jsonScalar(value))} is not of type 'string'"
                 )
             }
+        }
+        return nil
+    }
+
+    /// The operations Glance accepts on a PATCH body.
+    static let patchOperations: Set<String> = ["add", "remove", "replace"]
+
+    /// Glance's reserved property namespace (`os_glance`); a path rooted there
+    /// is refused as reserved rather than treated as a custom property.
+    static let glanceReservedNamespace = "os_glance"
+
+    /// The single attribute a pointer addresses: Glance only accepts a
+    /// one-token pointer here (`tags/N` and `locations/N` are not modelled).
+    static func rootSegment(_ pointer: String) -> String {
+        pointer.dropFirst().split(separator: "/", omittingEmptySubsequences: false).first.map(String.init) ?? ""
+    }
+
+    /// Glance's `_validate_json_pointer`: the limited pointer form it accepts.
+    /// Returns the reason the pointer is unacceptable, nil when it is.
+    static func pointerError(_ pointer: String) -> String? {
+        if !pointer.hasPrefix("/") {
+            return "Pointer `\(pointer)` does not start with \"/\"."
+        }
+        let body = pointer.dropFirst()
+        if body.contains(where: { $0 == "/" }), body.range(of: #"/\s*/"#, options: .regularExpression) != nil {
+            return "Pointer `\(pointer)` contains adjacent \"/\"."
+        }
+        if pointer.count > 1 && pointer.hasSuffix("/") {
+            return "Pointer `\(pointer)` end with \"/\"."
+        }
+        if body.trimmingCharacters(in: .whitespaces) == "/" {
+            return "Pointer `\(pointer)` does not contains valid token."
+        }
+        if pointer.range(of: #"~[^01]"#, options: .regularExpression) != nil || pointer.hasSuffix("~") {
+            return "Pointer `\(pointer)` contains \"~\" not part of a recognized escape sequence."
         }
         return nil
     }
@@ -414,22 +531,49 @@ public struct GlanceFake {
         var visibility: String?
         var protected: Bool?
         var minRAM: Int?
+        var minDisk: Int?
         var tags: [String]?
         var setProperties: [String: String] = [:]
         var removedProperties: [String] = []
     }
 
-    /// Turns RFC 6902 operations into `ImagePatchEdits`. `add` and `replace` are
-    /// treated alike (Glance does, for these attributes); `remove` on a custom
-    /// property clears it.
-    static func imagePatchEdits(from ops: [[String: Any]]) -> ImagePatchEdits {
+    /// Glance's per-operation result: the edits to apply, or the failure the
+    /// operation raises once Glance has looked the property up on the image.
+    /// `replace` and `remove` both require the property to exist
+    /// (`_do_replace`/`_do_remove` → `409 Property %s does not exist.`), and
+    /// `remove` refuses a base attribute outright (`403 Property %s may not be
+    /// removed.`). A no-op document applies nothing and saves nothing, which is
+    /// why `changes` guards `image_repo.save()` upstream.
+    enum PatchApplyOutcome: Sendable {
+        case apply(ImagePatchEdits)
+        case failure(status: HTTPResponse.Status, message: String)
+    }
+
+    /// Turns RFC 6902 operations into `ImagePatchEdits`, checking each one
+    /// against the image's current properties. `add` and `replace` are treated
+    /// alike for base attributes (Glance's `_do_add` only distinguishes them for
+    /// the legacy json_schema_version 4 body, which this fake never sees).
+    static func imagePatchOutcome(for ops: [[String: Any]], current: FakeState.FakeImage) -> PatchApplyOutcome {
         var edits = ImagePatchEdits()
         for op in ops {
-            let name = op["op"] as? String ?? ""
-            let path = op["path"] as? String ?? ""
-            let attribute = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                .components(separatedBy: "/").first ?? path
+            let operation = op["op"] as? String ?? ""
+            let attribute = unescapePointerSegment(rootSegment(op["path"] as? String ?? ""))
             let value = op["value"]
+            let isBaseAttribute = glanceImageAttributes.contains(attribute)
+            // Glance checks this before looking at the attribute at all:
+            // `_do_remove` refuses any base property outright.
+            if operation == "remove" {
+                if isBaseAttribute {
+                    return .failure(status: .forbidden,
+                                    message: "403 Forbidden: Property \(attribute) may not be removed.")
+                }
+                guard current.properties[attribute] != nil else {
+                    return .failure(status: .conflict,
+                                    message: "409 Conflict: Property \(attribute) does not exist.")
+                }
+                edits.removedProperties.append(attribute)
+                continue
+            }
             switch attribute {
             case "name": edits.name = value as? String
             case "visibility": edits.visibility = value as? String
@@ -437,16 +581,24 @@ public struct GlanceFake {
             case "min_ram":
                 if let i = value as? Int { edits.minRAM = i }
                 else if let d = value as? Double { edits.minRAM = Int(d) }
+            case "min_disk":
+                if let i = value as? Int { edits.minDisk = i }
+                else if let d = value as? Double { edits.minDisk = Int(d) }
             case "tags": edits.tags = (value as? [Any])?.compactMap { $0 as? String }
             default:
-                if name == "remove" {
-                    edits.removedProperties.append(unescapePointerSegment(attribute))
+                if operation == "replace", !isBaseAttribute {
+                    // Glance's `_do_replace` will not invent a property; use `add`.
+                    guard current.properties[attribute] != nil else {
+                        return .failure(status: .conflict,
+                                        message: "409 Conflict: Property \(attribute) does not exist.")
+                    }
+                    if let s = value as? String { edits.setProperties[attribute] = s }
                 } else if let s = value as? String {
-                    edits.setProperties[unescapePointerSegment(attribute)] = s
+                    edits.setProperties[attribute] = s
                 }
             }
         }
-        return edits
+        return .apply(edits)
     }
 
     /// RFC 6901 percent/tilde unescaping for a path segment.

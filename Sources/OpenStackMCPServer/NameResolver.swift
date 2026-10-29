@@ -1676,6 +1676,7 @@ public actor NameResolver {
                 let containerFormat = obj["container_format"]?.stringValue ?? "bare"
                 let visibility = obj["visibility"]?.stringValue ?? "private"
                 let minRAM = obj["min_ram"]?.intValue ?? 0
+                let minDisk = obj["min_disk"]?.intValue ?? 0
                 let protected = obj["protected"]?.boolValue ?? false
                 let tags = obj["tags"]?.arrayValue?.compactMap { $0.stringValue } ?? []
                 // Custom properties: Glance carries them as top-level string
@@ -1692,7 +1693,8 @@ public actor NameResolver {
                 }
                 let spec = CreateImageSpec(
                     name: name, diskFormat: diskFormat, containerFormat: containerFormat,
-                    visibility: visibility, minRAM: minRAM, protected: protected,
+                    visibility: visibility, minRAM: minRAM, minDisk: minDisk,
+                    protected: protected,
                     tags: tags, properties: properties
                 )
                 var img = try await r.createImage(vt, spec)
@@ -2032,17 +2034,30 @@ public actor NameResolver {
                 // Forward every field the update schema advertises. Reading
                 // `name` alone meant os_update silently ignored a visibility,
                 // protection, min_ram, tags or properties change.
-                var properties: [String: String]? = nil
+                // A property whose value is JSON null is a REMOVAL: Glance has
+                // no way to clear a custom property except a `remove` op, and
+                // without an explicit spelling an omitted property is
+                // indistinguishable from a cleared one.
+                var properties: [String: String?]? = nil
                 if let raw = obj["properties"]?.objectValue {
-                    var props: [String: String] = [:]
+                    var props: [String: String?] = [:]
                     for (key, value) in raw {
-                        guard let s = value.stringValue else {
-                            throw OpenStackError(
-                                service: "image", status: 400,
-                                message: "Image property '\(key)' must be a string: Glance custom properties are string-valued."
-                            )
+                        // `props[key] = nil` on a `[String: String?]` is the
+                        // optional-subscript REMOVE form, not an assignment of a
+                        // nil value — the key vanishes and the removal is silently
+                        // dropped. updateValue is the only form that stores nil.
+                        switch value {
+                        case .null:
+                            props.updateValue(nil, forKey: key)
+                        default:
+                            guard let s = value.stringValue else {
+                                throw OpenStackError(
+                                    service: "image", status: 400,
+                                    message: "Image property '\(key)' must be a string (or null to remove it): Glance custom properties are string-valued."
+                                )
+                            }
+                            props.updateValue(s, forKey: key)
                         }
-                        props[key] = s
                     }
                     properties = props
                 }
@@ -2055,6 +2070,7 @@ public actor NameResolver {
                     protected: obj["protected"]?.boolValue,
                     properties: properties,
                     minRAM: obj["min_ram"]?.intValue,
+                    minDisk: obj["min_disk"]?.intValue,
                     tags: obj["tags"]?.arrayValue?.compactMap { $0.stringValue }
                 )
                 return try Self.encodeObject(img)

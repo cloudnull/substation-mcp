@@ -13,6 +13,7 @@ public struct Image: Sendable, Codable, Identifiable {
     public var containerFormat: String
     public var size: Int
     public var minRAM: Int
+    public var minDisk: Int
     public var protected: Bool
     public var tags: [String]
     public var properties: [String: String]
@@ -29,6 +30,7 @@ public struct Image: Sendable, Codable, Identifiable {
         containerFormat: String = "bare",
         size: Int = 0,
         minRAM: Int = 0,
+        minDisk: Int = 0,
         protected: Bool = false,
         tags: [String] = [],
         properties: [String: String] = [:],
@@ -44,6 +46,7 @@ public struct Image: Sendable, Codable, Identifiable {
         self.containerFormat = containerFormat
         self.size = size
         self.minRAM = minRAM
+        self.minDisk = minDisk
         self.protected = protected
         self.tags = tags
         self.properties = properties
@@ -57,10 +60,28 @@ public struct Image: Sendable, Codable, Identifiable {
         case diskFormat = "disk_format"
         case containerFormat = "container_format"
         case minRAM = "min_ram"
+        case minDisk = "min_disk"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
 
+    /// Glance's wire attributes, i.e. every key that is NOT a custom property.
+    /// Its schema declares `additionalProperties: {"type": "string"}`, so any
+    /// other top-level key is a custom property, and Glance never replies with a
+    /// nested `properties` object at all.
+    private static let wireAttributes: Set<String> = [
+        "id", "name", "status", "status_reason", "visibility", "disk_format",
+        "container_format", "size", "min_ram", "min_disk", "protected", "tags",
+        "created_at", "updated_at", "owner", "schema", "direct_url", "self",
+        "file", "virtual_size", "checksum", "os_hash_algo", "os_hash_value",
+        "imports", "os_hidden", "locations", "stores", "os_glance_granted_till",
+        "os_glance_importing_to_stores", "os_glance_failed_import"
+    ]
+
+    /// Decodes Glance's FLAT image representation: the declared attributes come
+    /// from their keys, and every remaining top-level string key is a custom
+    /// property folded into `properties`. A nested `properties` object is also
+    /// accepted, so a test double that replies that way still round-trips.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -72,13 +93,28 @@ public struct Image: Sendable, Codable, Identifiable {
         containerFormat = try c.decodeIfPresent(String.self, forKey: .containerFormat) ?? ""
         size = try c.decodeIfPresent(Int.self, forKey: .size) ?? 0
         minRAM = try c.decodeIfPresent(Int.self, forKey: .minRAM) ?? 0
+        minDisk = try c.decodeIfPresent(Int.self, forKey: .minDisk) ?? 0
         protected = try c.decodeIfPresent(Bool.self, forKey: .protected) ?? false
         tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
-        properties = try c.decodeIfPresent([String: String].self, forKey: .properties) ?? [:]
+        var props = try c.decodeIfPresent([String: String].self, forKey: .properties) ?? [:]
+        let any = try decoder.container(keyedBy: JSONAnyKey.self)
+        for key in any.allKeys {
+            let raw = key.stringValue
+            guard !Self.wireAttributes.contains(raw) else { continue }
+            if let s = try? any.decode(String.self, forKey: key) {
+                props[raw] = s
+            }
+        }
+        properties = props
         created = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         updated = try c.decodeIfPresent(String.self, forKey: .updatedAt) ?? ""
     }
 
+    /// Encodes back the way Glance replies: declared attributes under their own
+    /// keys, custom properties as additional TOP-LEVEL string keys, and no
+    /// nested `properties` object. Keeping the reply shape faithful is what stops
+    /// the test double from looking right while a live cloud returns something the
+    /// decoder would ignore.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
@@ -90,12 +126,25 @@ public struct Image: Sendable, Codable, Identifiable {
         try c.encode(containerFormat, forKey: .containerFormat)
         try c.encode(size, forKey: .size)
         try c.encode(minRAM, forKey: .minRAM)
+        try c.encode(minDisk, forKey: .minDisk)
         try c.encode(protected, forKey: .protected)
         try c.encode(tags, forKey: .tags)
-        try c.encode(properties, forKey: .properties)
         try c.encode(created, forKey: .createdAt)
         try c.encode(updated, forKey: .updatedAt)
+        var any = encoder.container(keyedBy: JSONAnyKey.self)
+        for (key, value) in properties.sorted(by: { $0.key < $1.key }) {
+            try any.encode(value, forKey: JSONAnyKey(stringValue: key)!)
+        }
     }
+}
+
+/// A coding key that accepts any string, for the attributes a schema-declared
+/// `additionalProperties` map allows on Glance's image representation.
+struct JSONAnyKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
 }
 
 public struct CreateImageSpec: Sendable {
@@ -104,6 +153,7 @@ public struct CreateImageSpec: Sendable {
     public var diskFormat: String
     public var containerFormat: String
     public var minRAM: Int
+    public var minDisk: Int
     public var protected: Bool
     public var tags: [String]
     public var properties: [String: String]
@@ -114,6 +164,7 @@ public struct CreateImageSpec: Sendable {
         containerFormat: String = "bare",
         visibility: String = "private",
         minRAM: Int = 0,
+        minDisk: Int = 0,
         protected: Bool = false,
         tags: [String] = [],
         properties: [String: String] = [:]
@@ -123,6 +174,7 @@ public struct CreateImageSpec: Sendable {
         self.diskFormat = diskFormat
         self.containerFormat = containerFormat
         self.minRAM = minRAM
+        self.minDisk = minDisk
         self.protected = protected
         self.tags = tags
         self.properties = properties
@@ -149,6 +201,7 @@ public struct CreateImageSpec: Sendable {
         ]
         if !name.isEmpty { parts.append("\"name\":\"\(jsonEscape(name))\"") }
         if minRAM > 0 { parts.append("\"min_ram\":\(minRAM)") }
+        if minDisk > 0 { parts.append("\"min_disk\":\(minDisk)") }
         if protected { parts.append("\"protected\":true") }
         for (key, value) in properties.sorted(by: { $0.key < $1.key }) {
             parts.append("\"\(jsonEscape(key))\":\"\(jsonEscape(value))\"")

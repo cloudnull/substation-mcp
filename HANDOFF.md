@@ -1,6 +1,49 @@
-# Handoff: OpenStack MCP — v0.2.4 (Glance json-patch PATCH); v0.2.3/v0.2.2/v0.2.1 tagged
+# Handoff: OpenStack MCP — v0.2.5 (issue #4 swept against Glance's source); v0.2.4/v0.2.3/v0.2.2/v0.2.1 tagged
 
 ## Current State
+
+- **Issue #4 swept against Glance's own source — six more defects, all closed**
+  (2026-10-29). The two shipped fixes were checked line-by-line against
+  `glance/api/v2/images.py` rather than against the fake, which found the fake was
+  still more permissive than Glance in six ways and the client still wrong in two:
+  (1) **the reply shape was never faithful.** Glance carries custom properties as
+  TOP-LEVEL string keys and replies with no `properties` object at all; the fake
+  echoed a nested one and `Image` decoded only that nested key — so against a live
+  cloud every image's `properties` came back EMPTY, silently breaking
+  `Distro.detect` (which reads `os_distro` to pick cloud-init) and every
+  property-bearing `os_get`. `Image.init(from:)` now folds any non-attribute
+  top-level key into `properties`, and both the fake and `Image.encode` emit the
+  flat shape, so a regression cannot hide again.
+  (2) **`min_disk` did not exist anywhere** — not in `Image`, not in
+  `CreateImageSpec`, not in either advertised schema. It is the attribute that
+  gates scheduling onto a store with room for the image, and Glance lets it be
+  patched (`_readonly_properties` omits it); every image was created with a 0 GB
+  floor.
+  (3) **a custom property could never be removed.** Glance clears one only with a
+  `remove` op, and 409s a `replace` of an absent key, so `add` cannot substitute.
+  `updateImage` now takes `[String: String?]` (nil ⇒ `remove`, which carries no
+  `value` member), and `os_update` spells it `"properties": {"key": null}`.
+  **Trap:** `props[key] = nil` on a `[String: String?]` is the optional-subscript
+  REMOVE form — the key vanishes and the removal is silently dropped. Only
+  `updateValue(nil, forKey:)` stores nil; that bug survived the first test run.
+  (4) the fake accepted any `op` name, any malformed pointer, `add`/`replace`
+  without `value`, `replace`/`remove` of a property the image does not carry
+  (409), `remove` of a base attribute (403), and read-only/reserved attributes
+  beyond `status`. All six are now enforced with Glance's own messages; its
+  read-only set is 13 attributes, not 1, and `os_glance*` is a reserved namespace.
+  (5) the fake applied an empty PATCH document as a save; Glance guards
+  `image_repo.save()` on `changes` and leaves `updated_at` alone.
+  (6) `glanceImageAttributes` listed `properties`, which made the fake accept a
+  nested `properties` object as a legal *attribute* on PATCH — Glance's schema has
+  no such attribute; it is tolerated there only because PATCH never
+  schema-validates the operation value.
+  Tests: 9 new (unsupported op, malformed pointer ×3, missing `value`, absent-key
+  409 ×2, base-attribute remove 403, reserved 403, empty-document no-op,
+  `min_disk` round-trip, nil-value removal at client level, removal through
+  `NameResolver.updatePublic`). The removal test drives the dispatch directly:
+  `MCP.Value.init(object:)` drops null members, so the in-process test client
+  cannot express it — a real client's JSON arrives over the wire intact.
+  Full suite green (350+306+61+43+34+2).
 
 - **v0.2.4: image PATCH is RFC 6902 json-patch, not a flat map**
   (2026-10-29, issue #4 follow-up, verified raw from inside the deployed pod on
